@@ -6,6 +6,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import axios from "axios";
+import { getGmgnPoolFees } from "../tools/gmgn.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -125,10 +126,10 @@ export async function deployerCheck(poolAddress) {
   return { pass: true };
 }
 
-// Stage 6: Global fees check — priority + jito tips via Jupiter ChainInsight API
+// Stage 6: Legacy global fees check — kept for compatibility, not used by signal queue.
 // Reads minTokenFeesSol from user-config.json (same threshold executor.js uses before deploy)
-export async function feesCheck(mint) {
-  if (!mint) return { pass: true, global_fees_sol: null };
+export async function feesCheck(mint, poolAddress) {
+  if (!mint && !poolAddress) return { pass: true, pool_fees_sol: null };
 
   let minFeesSol = 30;
   try {
@@ -155,6 +156,32 @@ export async function feesCheck(mint) {
   } catch (e) {
     console.warn(`  [fees] Jupiter API error: ${e.message} — passing`);
     return { pass: true, global_fees_sol: null };
+  }
+}
+
+async function poolFeesCheck(mint, poolAddress) {
+  let minFeesSol = 30;
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, "user-config.json"), "utf8"));
+    minFeesSol = cfg.screening?.minTokenFeesSol ?? cfg.minTokenFeesSol ?? 30;
+  } catch { /* use default */ }
+
+  try {
+    const gmgn = await getGmgnPoolFees({ mint, pool_address: poolAddress });
+    let poolFees = gmgn.pool_fees_sol;
+    let source = gmgn.source;
+
+    if (poolFees == null) {
+      console.warn(`  [fees] No pool fee data for ${poolAddress || mint} - passing`);
+      return { pass: true, pool_fees_sol: null, pool_fees_source: source };
+    }
+    if (poolFees < minFeesSol) {
+      return { pass: false, reason: `pool fees too low: ${poolFees.toFixed(2)} SOL < ${minFeesSol} SOL threshold` };
+    }
+    return { pass: true, pool_fees_sol: poolFees, pool_fees_source: source };
+  } catch (e) {
+    console.warn(`  [fees] GMGN pool fee API error: ${e.message} - passing`);
+    return { pass: true, pool_fees_sol: null };
   }
 }
 
@@ -188,9 +215,9 @@ export async function runPreChecks(address) {
   if (!deployer.pass) { console.log(`  REJECT [deployer] ${deployer.reason}`); return { pass: false, ...deployer, ...pool }; }
   console.log(`  OK [deployer]`);
 
-  const fees = await feesCheck(pool.base_mint);
+  const fees = await poolFeesCheck(pool.base_mint, pool.pool_address);
   if (!fees.pass) { console.log(`  REJECT [fees] ${fees.reason}`); return { pass: false, ...fees, ...pool }; }
-  console.log(`  OK [fees] global_fees=${fees.global_fees_sol ?? "n/a"} SOL`);
+  console.log(`  OK [fees] pool_fees=${fees.pool_fees_sol ?? "n/a"} SOL${fees.pool_fees_source ? ` (${fees.pool_fees_source})` : ""}`);
 
   console.log(`  PASS → queuing signal (token age: ${pool.token_age_minutes ?? "unknown"} min)`);
   return {
@@ -199,7 +226,8 @@ export async function runPreChecks(address) {
     base_mint: pool.base_mint,
     symbol: pool.symbol,
     rug_score: rug.rug_score,
-    total_fees_sol: fees.total_fees_sol,
+    total_fees_sol: fees.pool_fees_sol,
+    pool_fees_source: fees.pool_fees_source,
     token_age_minutes: pool.token_age_minutes,
   };
 }

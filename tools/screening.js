@@ -2,6 +2,7 @@ import { config } from "../config.js";
 import { isBlacklisted } from "../token-blacklist.js";
 import { isDevBlocked, getBlockedDevs } from "../dev-blocklist.js";
 import { log } from "../logger.js";
+import { getGmgnPoolFees } from "./gmgn.js";
 
 const DATAPI_JUP = "https://datapi.jup.ag/v1";
 
@@ -125,6 +126,20 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   const eligible = pools
     .filter((p) => !occupiedPools.has(p.pool) && !occupiedMints.has(p.base?.mint))
     .slice(0, limit);
+
+  // Pool fee gate/reporting must use pool-specific fees, not Jupiter token/global fees.
+  if (eligible.length > 0) {
+    const feeResults = await Promise.allSettled(
+      eligible.map((p) => getGmgnPoolFees({ mint: p.base?.mint, pool_address: p.pool }))
+    );
+    for (let i = 0; i < eligible.length; i++) {
+      const r = feeResults[i];
+      if (r.status === "fulfilled" && r.value?.pool_fees_sol != null) {
+        eligible[i].pool_fees_sol = r.value.pool_fees_sol;
+        eligible[i].pool_fees_source = r.value.source;
+      }
+    }
+  }
 
   // Enrich with OKX data — advanced info (risk/bundle/sniper) + ATH price (no API key required)
   if (eligible.length > 0) {
@@ -258,6 +273,8 @@ function condensePool(p) {
     // Core metrics (the numbers that matter)
     active_tvl: round(p.active_tvl),
     fee_window: round(p.fee),
+    pool_fees_sol: null,
+    pool_fees_source: null,
     volume_window: round(p.volume),
     // API sometimes returns 0 for fee_active_tvl_ratio on short timeframes — compute from raw values as fallback
     fee_active_tvl_ratio: p.fee_active_tvl_ratio > 0

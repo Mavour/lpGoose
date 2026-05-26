@@ -533,10 +533,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
         log("screening", `Skipping ${pool.name} — blocked launchpad (${launchpad})`);
         return false;
       }
-      // Min token fees SOL hard filter: 30 SOL minimum.
-      const feesSol = ti?.global_fees_sol ?? null;
+      // Min pool fees SOL hard filter: use pool-specific fees, not Jupiter token/global fees.
+      const feesSol = pool.pool_fees_sol ?? null;
       if (feesSol != null && feesSol < 30) {
-        log("screening", `Skipping ${pool.name} - total fees ${feesSol} SOL < 30 SOL (hard min)`);
+        log("screening", `Skipping ${pool.name} - pool fees ${feesSol} SOL < 30 SOL (hard min)`);
         return false;
       }
 
@@ -563,7 +563,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const candidateBlocks = passing.map(({ pool, sw, n, ti, mem }, i) => {
       const botPct = ti?.audit?.bot_holders_pct ?? "?";
       const top10Pct = ti?.audit?.top_holders_pct ?? "?";
-      const feesSol = ti?.global_fees_sol ?? "?";
+      const feesSol = pool.pool_fees_sol ?? "?";
       const launchpad = ti?.launchpad ?? null;
       const priceChange = ti?.stats_1h?.price_change;
       const netBuyers = ti?.stats_1h?.net_buyers;
@@ -591,7 +591,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const block = [
         `POOL: ${pool.name} (${pool.pool})`,
         `  metrics: bin_step=${pool.bin_step}, fee_pct=${pool.fee_pct}%, fee_tvl=${pool.fee_active_tvl_ratio}, vol=$${pool.volume_window}, tvl=$${pool.active_tvl}, volatility=${pool.volatility}, mcap=$${pool.mcap}, organic=${pool.organic_score}${pool.token_age_hours != null ? `, age=${pool.token_age_hours}h` : ""}`,
-        `  audit: top10=${top10Pct}%, bots=${botPct}%, fees=${feesSol}SOL${launchpad ? `, launchpad=${launchpad}` : ""}`,
+        `  audit: top10=${top10Pct}%, bots=${botPct}%, pool_fees=${feesSol}SOL${pool.pool_fees_source ? ` (${pool.pool_fees_source})` : ""}${ti?.global_fees_sol != null ? `, global_fees=${ti.global_fees_sol}SOL` : ""}${launchpad ? `, launchpad=${launchpad}` : ""}`,
         okxParts ? `  okx: ${okxParts}` : null,
         okxTags  ? `  tags: ${okxTags}` : null,
         pool.price_vs_ath_pct != null ? `  ath: price_vs_ath=${pool.price_vs_ath_pct}%${pool.top_cluster_trend ? `, top_cluster=${pool.top_cluster_trend}` : ""}` : null,
@@ -622,7 +622,7 @@ STEPS:
    pool: <name> | <pool address>
    amount: <deploy amount> SOL | strategy=<strategy> | active_bin=<bin>
    metrics: bin_step=X | fee=X% | fee_tvl=X% | volume=$X | tvl=$X | volatility=X | organic=X | mcap=$X
-   holder_audit: top10=X% | bots=X% | fees=XSOL | token_age=Xh
+   holder_audit: top10=X% | bots=X% | pool_fees=XSOL | token_age=Xh
    okx: risk=X | bundle=X% | sniper=X% | suspicious=X% | ath=X% | rugpull=Y/N | wash=Y/N
    smart_wallets: <names or none>
    range: minPrice→maxPrice (downside=(minPrice/maxPrice-1)*100%)

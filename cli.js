@@ -330,6 +330,8 @@ switch (subcommand) {
         bin_step: pool.bin_step,
         fee_pct: pool.fee_pct,
         fee_active_tvl_ratio: pool.fee_active_tvl_ratio,
+        pool_fees_sol: pool.pool_fees_sol,
+        pool_fees_source: pool.pool_fees_source,
         volume: pool.volume_window,
         tvl: pool.active_tvl,
         volatility: pool.volatility,
@@ -346,6 +348,8 @@ switch (subcommand) {
           mcap: ti?.mcap,
           launchpad: ti?.launchpad,
           global_fees_sol: ti?.global_fees_sol,
+          pool_fees_sol: pool.pool_fees_sol,
+          pool_fees_source: pool.pool_fees_source,
           price_change_1h: ti?.stats_1h?.price_change,
           net_buyers_1h: ti?.stats_1h?.net_buyers,
           audit: {
