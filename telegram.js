@@ -43,6 +43,21 @@ export function isEnabled() {
   return !!TOKEN;
 }
 
+export function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function htmlToPlainText(html) {
+  return String(html ?? "")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
 export async function sendMessage(text) {
   if (!TOKEN || !chatId) return;
   try {
@@ -122,21 +137,24 @@ export async function answerCallback(callbackQueryId, text = "") {
 export async function sendHTML(html) {
   if (!TOKEN || !chatId) return;
   try {
+    const htmlText = String(html).slice(0, 4096);
     const res = await fetch(`${BASE}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
-        text: html.slice(0, 4096),
+        text: htmlText,
         parse_mode: "HTML",
       }),
     });
     if (!res.ok) {
       const err = await res.text();
       log("telegram_error", `sendHTML ${res.status}: ${err.slice(0, 100)}`);
+      await sendMessage(htmlToPlainText(htmlText));
     }
   } catch (e) {
     log("telegram_error", `sendHTML failed: ${e.message}`);
+    await sendMessage(htmlToPlainText(html));
   }
 }
 
@@ -213,19 +231,23 @@ export function stopPolling() {
 
 // ─── Notification helpers ────────────────────────────────────────
 export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, binStep, baseFee }) {
+  const safePair = escapeHtml(pair);
+  const safeAmount = escapeHtml(amountSol);
+  const safePosition = escapeHtml(position?.slice(0, 8));
+  const safeTx = escapeHtml(tx?.slice(0, 16));
   const priceStr = priceRange
     ? `Price range: ${priceRange.min < 0.0001 ? priceRange.min.toExponential(3) : priceRange.min.toFixed(6)} – ${priceRange.max < 0.0001 ? priceRange.max.toExponential(3) : priceRange.max.toFixed(6)}\n`
     : "";
   const poolStr = (binStep || baseFee)
-    ? `Bin step: ${binStep ?? "?"}  |  Base fee: ${baseFee != null ? baseFee + "%" : "?"}\n`
+    ? `Bin step: ${escapeHtml(binStep ?? "?")}  |  Base fee: ${escapeHtml(baseFee != null ? baseFee + "%" : "?")}\n`
     : "";
   await sendHTML(
-    `✅ <b>Deployed</b> ${pair}\n` +
-    `Amount: ${amountSol} SOL\n` +
+    `✅ <b>Deployed</b> ${safePair}\n` +
+    `Amount: ${safeAmount} SOL\n` +
     priceStr +
     poolStr +
-    `Position: <code>${position?.slice(0, 8)}...</code>\n` +
-    `Tx: <code>${tx?.slice(0, 16)}...</code>`
+    `Position: <code>${safePosition}...</code>\n` +
+    `Tx: <code>${safeTx}...</code>`
   );
 }
 
@@ -258,6 +280,10 @@ export async function notifyClose({
   holdMinutes,
   reason,
 }) {
+  const safePair = escapeHtml(pair);
+  const safeStrategy = escapeHtml(strategy || "?");
+  const safeReason = escapeHtml(reason || "agent decision");
+  const safeDeployedSol = escapeHtml(deployedSol ?? "?");
   const displayPnlSol = pnlSol ?? (
     deployedSol != null && pnlPct != null ? Number(deployedSol) * (Number(pnlPct) / 100) : null
   );
@@ -269,41 +295,46 @@ export async function notifyClose({
 
   if (config.management.solMode) {
     await sendHTML(
-      `${icon} <b>Position Closed — ${pair}</b>\n\n` +
+      `${icon} <b>Position Closed — ${safePair}</b>\n\n` +
       `💵 PnL: ${sign}◎${fmtSol(displayPnlSol == null ? null : Math.abs(displayPnlSol))} (${pct})\n` +
       `💰 Fees earned: ◎${fmtSol(feesEarnedSol ?? 0)} ($${fmtUsd(feesEarnedUsd ?? 0)})\n` +
-      `🏦 Deployed: ${deployedSol ?? "?"} SOL\n` +
-      `📐 Strategy: ${strategy || "?"}\n` +
+      `🏦 Deployed: ${safeDeployedSol} SOL\n` +
+      `📐 Strategy: ${safeStrategy}\n` +
       `⏱️ Hold time: ${fmtMinutes(holdMinutes)}\n` +
-      `📋 Reason: ${reason || "agent decision"}`
+      `📋 Reason: ${safeReason}`
     );
     return;
   }
 
   await sendHTML(
-    `${icon} <b>Position Closed — ${pair}</b>\n\n` +
+    `${icon} <b>Position Closed — ${safePair}</b>\n\n` +
     `💵 PnL: ${sign}$${fmtUsd(Math.abs(pnlUsd ?? 0))} (${pct})\n` +
     `💰 Fees earned: $${fmtUsd(feesEarnedUsd ?? 0)}\n` +
-    `🏦 Deployed: ${deployedSol ?? "?"} SOL\n` +
-    `📐 Strategy: ${strategy || "?"}\n` +
+    `🏦 Deployed: ${safeDeployedSol} SOL\n` +
+    `📐 Strategy: ${safeStrategy}\n` +
     `⏱️ Hold time: ${fmtMinutes(holdMinutes)}\n` +
-    `📋 Reason: ${reason || "agent decision"}`
+    `📋 Reason: ${safeReason}`
   );
   return;
 }
 
 export async function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOut, tx }) {
+  const safeInput = escapeHtml(inputSymbol);
+  const safeOutput = escapeHtml(outputSymbol);
+  const safeAmountIn = escapeHtml(amountIn ?? "?");
+  const safeAmountOut = escapeHtml(amountOut ?? "?");
+  const safeTx = escapeHtml(tx?.slice(0, 16));
   await sendHTML(
-    `🔄 <b>Swapped</b> ${inputSymbol} → ${outputSymbol}\n` +
-    `In: ${amountIn ?? "?"} | Out: ${amountOut ?? "?"}\n` +
-    `Tx: <code>${tx?.slice(0, 16)}...</code>`
+    `🔄 <b>Swapped</b> ${safeInput} → ${safeOutput}\n` +
+    `In: ${safeAmountIn} | Out: ${safeAmountOut}\n` +
+    `Tx: <code>${safeTx}...</code>`
   );
 }
 
 export async function notifyOutOfRange({ pair, minutesOOR }) {
   await sendHTML(
-    `⚠️ <b>Out of Range</b> ${pair}\n` +
-    `Been OOR for ${minutesOOR} minutes`
+    `⚠️ <b>Out of Range</b> ${escapeHtml(pair)}\n` +
+    `Been OOR for ${escapeHtml(minutesOOR)} minutes`
   );
 }
 
