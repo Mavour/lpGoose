@@ -3,6 +3,7 @@ import { isBlacklisted } from "../token-blacklist.js";
 import { isDevBlocked, getBlockedDevs } from "../dev-blocklist.js";
 import { log } from "../logger.js";
 import { getGmgnPoolFees } from "./gmgn.js";
+import { getPoolMemory, isPoolOnCooldown } from "../pool-memory.js";
 
 const DATAPI_JUP = "https://datapi.jup.ag/v1";
 
@@ -115,17 +116,26 @@ export async function discoverPools({
  */
 export async function getTopCandidates({ limit = 10 } = {}) {
   const { config } = await import("../config.js");
+  const { getTokenInfo } = await import("./token.js");
   const { pools } = await discoverPools({ page_size: 50 });
 
   // Exclude pools where the wallet already has an open position
   const { getMyPositions } = await import("./dlmm.js");
-  const { positions } = await getMyPositions();
+  const { positions } = await getMyPositions({ force: true });
   const occupiedPools = new Set(positions.map((p) => p.pool));
   const occupiedMints = new Set(positions.map((p) => p.base_mint).filter(Boolean));
 
-  const eligible = pools
-    .filter((p) => !occupiedPools.has(p.pool) && !occupiedMints.has(p.base?.mint))
-    .slice(0, limit);
+  const eligible = pools.filter((p) => {
+    if (occupiedPools.has(p.pool)) {
+      log("screening", `Fresh gate: dropped ${p.name} - already have open position in pool`);
+      return false;
+    }
+    if (occupiedMints.has(p.base?.mint)) {
+      log("screening", `Fresh gate: dropped ${p.name} - already holding base token ${p.base?.mint}`);
+      return false;
+    }
+    return true;
+  });
 
   // Pool fee gate/reporting must use pool-specific fees, not Jupiter token/global fees.
   if (eligible.length > 0) {
@@ -136,8 +146,22 @@ export async function getTopCandidates({ limit = 10 } = {}) {
       const r = feeResults[i];
       if (r.status === "fulfilled" && r.value?.pool_fees_sol != null) {
         eligible[i].pool_fees_sol = r.value.pool_fees_sol;
-        eligible[i].pool_fees_source = r.value.source;
+        eligible[i].pool_fees_source = "gmgn";
+      } else if (eligible[i].fee_window != null) {
+        eligible[i].pool_fees_sol = eligible[i].fee_window;
+        eligible[i].pool_fees_source = "meteora_fallback";
       }
+    }
+  }
+
+  // Enrich token audit before final hard gates so JS, not the LLM, enforces config.
+  if (eligible.length > 0) {
+    const tokenResults = await Promise.allSettled(
+      eligible.map((p) => p.base?.mint ? getTokenInfo({ query: p.base.mint }) : Promise.resolve(null))
+    );
+    for (let i = 0; i < eligible.length; i++) {
+      const ti = tokenResults[i].status === "fulfilled" ? tokenResults[i].value?.results?.[0] : null;
+      eligible[i].token_info = ti || null;
     }
   }
 
@@ -215,10 +239,94 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     if (eligible.length < before) log("dev_blocklist", `Filtered ${before - eligible.length} pool(s) via OKX creator check`);
   }
 
+  const gated = [];
+  for (const pool of eligible) {
+    const gate = evaluateScreeningGate(pool, { tokenInfo: pool.token_info });
+    pool.memory_risk = gate.memoryRisk || null;
+    pool.hard_gate_pass = gate.pass;
+    pool.hard_gate_reason = gate.reason || null;
+    if (!gate.pass) {
+      log("screening", `Hard gate: dropped ${pool.name} - ${gate.reason}`);
+      continue;
+    }
+    gated.push(pool);
+  }
+
   return {
-    candidates: eligible,
+    candidates: gated.slice(0, limit),
     total_screened: pools.length,
+    total_eligible: gated.length,
   };
+}
+
+export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
+  const s = config.screening;
+  const fail = (reason, memoryRisk = null) => ({ pass: false, reason, memoryRisk });
+  const memoryRisk = getMemoryRisk(pool.pool);
+
+  if (memoryRisk?.reject) return fail(memoryRisk.reason, memoryRisk.reason);
+  if (pool.active_tvl != null && pool.active_tvl < s.minTvl) return fail(`tvl ${pool.active_tvl} < min ${s.minTvl}`);
+  if (pool.active_tvl != null && pool.active_tvl > s.maxTvl) return fail(`tvl ${pool.active_tvl} > max ${s.maxTvl}`);
+  if (pool.volume_window != null && pool.volume_window < s.minVolume) return fail(`volume ${pool.volume_window} < min ${s.minVolume}`);
+  if (pool.organic_score != null && pool.organic_score < s.minOrganic) return fail(`organic ${pool.organic_score} < min ${s.minOrganic}`);
+  if (pool.mcap != null && pool.mcap < s.minMcap) return fail(`mcap ${pool.mcap} < min ${s.minMcap}`);
+  if (pool.mcap != null && pool.mcap > s.maxMcap) return fail(`mcap ${pool.mcap} > max ${s.maxMcap}`);
+  if (pool.bin_step != null && pool.bin_step < s.minBinStep) return fail(`bin_step ${pool.bin_step} < min ${s.minBinStep}`);
+  if (pool.bin_step != null && pool.bin_step > s.maxBinStep) return fail(`bin_step ${pool.bin_step} > max ${s.maxBinStep}`);
+  if (pool.fee_active_tvl_ratio != null && pool.fee_active_tvl_ratio < s.minFeeActiveTvlRatio) return fail(`fee_tvl ${pool.fee_active_tvl_ratio}% < min ${s.minFeeActiveTvlRatio}%`);
+  if (pool.token_age_hours != null && s.minTokenAgeHours != null && pool.token_age_hours < s.minTokenAgeHours) return fail(`token age ${pool.token_age_hours}h < min ${s.minTokenAgeHours}h`);
+  if (pool.token_age_hours != null && s.maxTokenAgeHours != null && pool.token_age_hours > s.maxTokenAgeHours) return fail(`token age ${pool.token_age_hours}h > max ${s.maxTokenAgeHours}h`);
+  if (pool.pool_fees_sol == null) return fail("pool_fees unavailable");
+  if (pool.pool_fees_sol < s.minTokenFeesSol) return fail(`pool_fees ${pool.pool_fees_sol} SOL < min ${s.minTokenFeesSol} SOL`);
+
+  const launchpad = tokenInfo?.launchpad ?? null;
+  if (launchpad && s.blockedLaunchpads.includes(launchpad)) return fail(`blocked launchpad ${launchpad}`);
+
+  const botPct = numberOrNull(tokenInfo?.audit?.bot_holders_pct);
+  if (botPct != null && s.maxBotHoldersPct != null && botPct > s.maxBotHoldersPct) return fail(`bots ${botPct}% > max ${s.maxBotHoldersPct}%`);
+
+  const top10Pct = numberOrNull(tokenInfo?.audit?.top_holders_pct);
+  if (top10Pct != null && s.maxTop10Pct != null && top10Pct > s.maxTop10Pct) return fail(`top10 ${top10Pct}% > max ${s.maxTop10Pct}%`);
+
+  if (pool.is_wash) return fail("wash trading flagged");
+  if (pool.is_rugpull) return fail("rugpull flagged");
+
+  if (s.athFilterPct != null && pool.price_vs_ath_pct != null) {
+    const threshold = 100 + s.athFilterPct;
+    if (pool.price_vs_ath_pct > threshold) return fail(`price_vs_ath ${pool.price_vs_ath_pct}% > limit ${threshold}%`);
+  }
+
+  return { pass: true, memoryRisk: memoryRisk?.reason || null };
+}
+
+function getMemoryRisk(poolAddress) {
+  if (!poolAddress) return null;
+  if (isPoolOnCooldown(poolAddress)) return { reject: true, reason: "memory_risk: active cooldown" };
+  const mem = getPoolMemory({ pool_address: poolAddress });
+  if (!mem?.known) return null;
+
+  const notes = Array.isArray(mem.notes) ? mem.notes : [];
+  const lastNote = notes[notes.length - 1]?.note || "";
+  if (/low yield|closed:\s*low yield/i.test(lastNote)) return { reject: true, reason: `memory_risk: ${lastNote}` };
+
+  const history = Array.isArray(mem.history) ? mem.history : [];
+  const recent = history.slice(-3);
+  const recentLosses = recent.filter((d) => Number(d.pnl_pct) < 0).length;
+  const snaps = Array.isArray(mem.recent_snapshots) ? mem.recent_snapshots : [];
+  const oorCount = snaps.filter((s) => s.in_range === false).length;
+  if (snaps.length >= 6 && oorCount >= 5) return { reject: true, reason: `memory_risk: OOR in ${oorCount}/${snaps.length} recent cycles` };
+  if ((mem.total_deploys || 0) >= 2 && Number(mem.avg_pnl_pct) < 0 && Number(mem.win_rate) <= 0.5) {
+    return { reject: true, reason: `memory_risk: avg PnL ${mem.avg_pnl_pct}%, win rate ${mem.win_rate}` };
+  }
+  if (recent.length >= 2 && recentLosses >= 2) return { reject: true, reason: "memory_risk: repeated recent losses" };
+  if (mem.last_outcome === "loss") return { reject: false, reason: "memory_risk: last outcome loss" };
+  return null;
+}
+
+function numberOrNull(value) {
+  if (value == null || value === "?") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
 /**

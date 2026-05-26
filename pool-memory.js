@@ -97,7 +97,7 @@ export function recordPoolDeploy(poolAddress, deployData) {
   }
 
   // Set cooldown for low yield closes — pool wasn't profitable enough, don't redeploy soon
-  if (deploy.close_reason === "low yield") {
+  if (/low yield/i.test(deploy.close_reason || "")) {
     const cooldownHours = 4;
     entry.cooldown_until = new Date(Date.now() + cooldownHours * 60 * 60 * 1000).toISOString();
     log("pool-memory", `Cooldown set for ${entry.name} until ${entry.cooldown_until} (low yield close)`);
@@ -146,6 +146,7 @@ export function getPoolMemory({ pool_address }) {
     last_deployed_at: entry.last_deployed_at,
     last_outcome: entry.last_outcome,
     notes: entry.notes,
+    recent_snapshots: (entry.snapshots || []).slice(-6),
     history: entry.deploys.slice(-10), // last 10 deploys
   };
 }

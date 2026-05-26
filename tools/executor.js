@@ -1,4 +1,4 @@
-import { discoverPools, getPoolDetail, getTopCandidates } from "./screening.js";
+import { discoverPools, evaluateScreeningGate, getPoolDetail, getTopCandidates } from "./screening.js";
 import {
   getActiveBin,
   deployPosition,
@@ -20,6 +20,7 @@ import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-bla
 import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
+import { getGmgnPoolFees } from "./gmgn.js";
 import { config, reloadScreeningThresholds } from "../config.js";
 import fs from "fs";
 import path from "path";
@@ -370,6 +371,46 @@ export async function executeTool(name, args) {
 /**
  * Run safety checks before executing write operations.
  */
+async function validateLiveDeployPool(poolAddress) {
+  if (!poolAddress) return { pass: false, reason: "pool_address is required." };
+
+  try {
+    const raw = await getPoolDetail({ pool_address: poolAddress, timeframe: config.screening.timeframe });
+    const baseMint = raw.token_x?.address || raw.mint_x || raw.base_mint || null;
+    const feeResult = await getGmgnPoolFees({ mint: baseMint, pool_address: poolAddress }).catch(() => null);
+    const poolFees = feeResult?.pool_fees_sol ?? (raw.fee != null ? Number(raw.fee) : null);
+    const tokenInfoResult = baseMint ? await getTokenInfo({ query: baseMint }).catch(() => null) : null;
+    const tokenInfo = tokenInfoResult?.results?.[0] || null;
+
+    const pool = {
+      pool: poolAddress,
+      name: raw.name || poolAddress.slice(0, 8),
+      base: { mint: baseMint, symbol: raw.token_x?.symbol },
+      active_tvl: roundNumber(raw.active_tvl),
+      volume_window: roundNumber(raw.volume),
+      organic_score: Math.round(raw.token_x?.organic_score || 0),
+      mcap: roundNumber(raw.token_x?.market_cap),
+      bin_step: raw.dlmm_params?.bin_step || null,
+      fee_active_tvl_ratio: raw.fee_active_tvl_ratio > 0
+        ? Number(raw.fee_active_tvl_ratio.toFixed(4))
+        : (raw.active_tvl > 0 && raw.fee != null ? Number(((raw.fee / raw.active_tvl) * 100).toFixed(4)) : 0),
+      token_age_hours: raw.token_x?.created_at
+        ? Math.floor((Date.now() - raw.token_x.created_at) / 3_600_000)
+        : null,
+      pool_fees_sol: poolFees != null ? Number(Number(poolFees).toFixed(2)) : null,
+      pool_fees_source: feeResult?.pool_fees_sol != null ? "gmgn" : (poolFees != null ? "meteora_fallback" : null),
+    };
+
+    const gate = evaluateScreeningGate(pool, { tokenInfo });
+    if (!gate.pass) {
+      return { pass: false, reason: `Live pool revalidation failed: ${gate.reason}` };
+    }
+    return { pass: true, base_mint: baseMint };
+  } catch (e) {
+    return { pass: false, reason: `Live pool revalidation failed: ${e.message}` };
+  }
+}
+
 async function runSafetyChecks(name, args) {
   switch (name) {
     case "deploy_position": {
@@ -382,6 +423,9 @@ async function runSafetyChecks(name, args) {
           reason: `bin_step ${args.bin_step} is outside the allowed range of [${minStep}-${maxStep}].`,
         };
       }
+
+      const liveGate = await validateLiveDeployPool(args.pool_address);
+      if (!liveGate.pass) return liveGate;
 
       // Check position count limit + duplicate pool guard — force fresh scan to avoid stale cache
       const positions = await getMyPositions({ force: true });
@@ -402,14 +446,15 @@ async function runSafetyChecks(name, args) {
       }
 
       // Block same base token across different pools
-      if (args.base_mint) {
+      const baseMint = args.base_mint || liveGate.base_mint;
+      if (baseMint) {
         const alreadyHasMint = positions.positions.some(
-          (p) => p.base_mint === args.base_mint
+          (p) => p.base_mint === baseMint
         );
         if (alreadyHasMint) {
           return {
             pass: false,
-            reason: `Already holding base token ${args.base_mint} in another pool. One position per token only.`,
+            reason: `Already holding base token ${baseMint} in another pool. One position per token only.`,
           };
         }
       }
@@ -471,4 +516,8 @@ function summarizeResult(result) {
     return str.slice(0, 1000) + "...(truncated)";
   }
   return result;
+}
+
+function roundNumber(n) {
+  return n != null ? Math.round(Number(n)) : null;
 }

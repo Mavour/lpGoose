@@ -8,7 +8,7 @@ import { agentLoop } from "./agent.js";
 import { log } from "./logger.js";
 import { getMyPositions, closePosition, claimFees, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances, swapToken } from "./tools/wallet.js";
-import { getTopCandidates } from "./tools/screening.js";
+import { evaluateScreeningGate, getTopCandidates } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
 import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
@@ -540,43 +540,31 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const [smartWallets, narrative, tokenInfo] = await Promise.allSettled([
         checkSmartWalletsOnPool({ pool_address: pool.pool }),
         mint ? getTokenNarrative({ mint }) : Promise.resolve(null),
-        mint ? getTokenInfo({ query: mint }) : Promise.resolve(null),
+        pool.token_info ? Promise.resolve({ results: [pool.token_info] }) : (mint ? getTokenInfo({ query: mint }) : Promise.resolve(null)),
       ]);
       allCandidates.push({
         pool,
         sw: smartWallets.status === "fulfilled" ? smartWallets.value : null,
         n: narrative.status === "fulfilled" ? narrative.value : null,
         ti: tokenInfo.status === "fulfilled" ? tokenInfo.value?.results?.[0] : null,
-        mem: recallForPool(pool.pool),
+        memoryRisk: pool.memory_risk || null,
       });
       await new Promise(r => setTimeout(r, 150)); // avoid 429s
     }
 
-    // Hard filters after token recon — block launchpads and excessive Jupiter bot holders
+    // Final hard gate after token recon. JS blocks before the LLM sees a candidate.
     const passing = allCandidates.filter(({ pool, ti }) => {
-      const launchpad = ti?.launchpad ?? null;
-      if (launchpad && config.screening.blockedLaunchpads.includes(launchpad)) {
-        log("screening", `Skipping ${pool.name} — blocked launchpad (${launchpad})`);
+      const gate = evaluateScreeningGate(pool, { tokenInfo: ti });
+      if (!gate.pass) {
+        log("screening", `Final hard gate: dropped ${pool.name} - ${gate.reason}`);
         return false;
       }
-      // Min pool fees SOL hard filter: use pool-specific fees, not Jupiter token/global fees.
-      const feesSol = pool.pool_fees_sol ?? null;
-      if (feesSol != null && feesSol < 30) {
-        log("screening", `Skipping ${pool.name} - pool fees ${feesSol} SOL < 30 SOL (hard min)`);
-        return false;
-      }
-
-      const botPct = ti?.audit?.bot_holders_pct;
-      const maxBotHoldersPct = config.screening.maxBotHoldersPct;
-      if (botPct != null && maxBotHoldersPct != null && botPct > maxBotHoldersPct) {
-        log("screening", `Bot-holder filter: dropped ${pool.name} — bots ${botPct}% > ${maxBotHoldersPct}%`);
-        return false;
-      }
+      pool.memory_risk = gate.memoryRisk || pool.memory_risk || null;
       return true;
     });
 
     if (passing.length === 0) {
-      screenReport = `No candidates available (all blocked by launchpad filter).`;
+      screenReport = `No candidates available (all blocked by hard screening gates).`;
       return screenReport;
     }
 
@@ -586,7 +574,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     );
 
     // Build compact candidate blocks
-    const candidateBlocks = passing.map(({ pool, sw, n, ti, mem }, i) => {
+    const candidateBlocks = passing.map(({ pool, sw, n, ti, memoryRisk }, i) => {
       const botPct = ti?.audit?.bot_holders_pct ?? "?";
       const top10Pct = ti?.audit?.top_holders_pct ?? "?";
       const feesSol = pool.pool_fees_sol ?? "?";
@@ -617,7 +605,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const block = [
         `POOL: ${pool.name} (${pool.pool})`,
         `  metrics: bin_step=${pool.bin_step}, fee_pct=${pool.fee_pct}%, fee_tvl=${pool.fee_active_tvl_ratio}, vol=$${pool.volume_window}, tvl=$${pool.active_tvl}, volatility=${pool.volatility}, mcap=$${pool.mcap}, organic=${pool.organic_score}${pool.token_age_hours != null ? `, age=${pool.token_age_hours}h` : ""}`,
-        `  audit: top10=${top10Pct}%, bots=${botPct}%, pool_fees=${feesSol}SOL${pool.pool_fees_source ? ` (${pool.pool_fees_source})` : ""}${ti?.global_fees_sol != null ? `, global_fees=${ti.global_fees_sol}SOL` : ""}${launchpad ? `, launchpad=${launchpad}` : ""}`,
+        `  audit: top10=${top10Pct}%, bots=${botPct}%, pool_fees=${feesSol}SOL${pool.pool_fees_source ? ` (${pool.pool_fees_source})` : ""}${launchpad ? `, launchpad=${launchpad}` : ""}`,
         okxParts ? `  okx: ${okxParts}` : null,
         okxTags  ? `  tags: ${okxTags}` : null,
         pool.price_vs_ath_pct != null ? `  ath: price_vs_ath=${pool.price_vs_ath_pct}%${pool.top_cluster_trend ? `, top_cluster=${pool.top_cluster_trend}` : ""}` : null,
@@ -625,7 +613,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         activeBin != null ? `  active_bin: ${activeBin}` : null,
         priceChange != null ? `  1h: price${priceChange >= 0 ? "+" : ""}${priceChange}%, net_buyers=${netBuyers ?? "?"}` : null,
         n?.narrative ? `  narrative: ${n.narrative.slice(0, 500)}` : `  narrative: none`,
-        mem ? `  memory: ${mem}` : null,
+        (memoryRisk || pool.memory_risk) ? `  memory_risk: ${memoryRisk || pool.memory_risk}` : null,
       ].filter(Boolean).join("\n");
 
       return block;
@@ -640,15 +628,15 @@ PRE-LOADED CANDIDATES (${passing.length} pools):
 ${candidateBlocks.join("\n\n")}
 
 STEPS:
-1. Pick the best candidate based on narrative quality, smart wallets, and pool metrics.
+1. Pick the best candidate from this hard-gated live list based on narrative quality, smart wallets, and pool metrics. Treat memory_risk as negative-only; never use prior wins as a positive reason to deploy.
 2. Call deploy_position (active_bin is pre-fetched above — no need to call get_active_bin).
-   bins_below = round(35 + (volatility/5)*55) clamped to [35,90].
+   bins_below = round(35 + (volatility/5)*55) clamped to [35,90]. Use bin_step only within config range [${config.screening.minBinStep},${config.screening.maxBinStep}].
 3. Report in this exact format (no tables, no extra sections):
    Decision: DEPLOYED PAIR
    pool: <name> | <pool address>
    amount: <deploy amount> SOL | strategy=<strategy> | active_bin=<bin>
    metrics: bin_step=X | fee=X% | fee_tvl=X% | volume=$X | tvl=$X | volatility=X | organic=X | mcap=$X
-   holder_audit: top10=X% | bots=X% | pool_fees=XSOL | token_age=Xh
+   holder_audit: top10=X% | bots=X% | pool_fees=XSOL (gmgn|meteora_fallback) | token_age=Xh
    okx: risk=X | bundle=X% | sniper=X% | suspicious=X% | ath=X% | rugpull=Y/N | wash=Y/N
    smart_wallets: <names or none>
    range: minPrice→maxPrice (downside=(minPrice/maxPrice-1)*100%)

@@ -171,6 +171,13 @@ async function poolFeesCheck(mint, poolAddress) {
     let poolFees = gmgn.pool_fees_sol;
     let source = gmgn.source;
 
+    if (poolFees == null && poolAddress) {
+      const url = `https://pool-discovery-api.datapi.meteora.ag/pools?page_size=1&filter_by=${encodeURIComponent(`pool_address=${poolAddress}`)}&timeframe=5m`;
+      const res = await axios.get(url, { timeout: 8000 });
+      poolFees = res.data?.data?.[0]?.fee != null ? parseFloat(res.data.data[0].fee) : null;
+      source = poolFees != null ? "meteora_fallback" : source;
+    }
+
     if (poolFees == null) {
       console.warn(`  [fees] No pool fee data for ${poolAddress || mint} - passing`);
       return { pass: true, pool_fees_sol: null, pool_fees_source: source };

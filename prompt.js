@@ -103,11 +103,12 @@ All candidates are pre-loaded. Your job: pick the highest-conviction candidate a
 ⚠️ CRITICAL — NO HALLUCINATION: You MUST call the actual tool to perform any action. NEVER claim a deploy happened unless you actually called deploy_position and got a real tool result back. If no tool call happened, do not report success. If the tool fails, report the real failure.
 
 HARD RULE (no exceptions):
-- fees_sol < ${config.screening.minTokenFeesSol} → SKIP. Low fees = bundled/scam. Smart wallets do NOT override this.
+- pool_fees < ${config.screening.minTokenFeesSol} SOL → SKIP. Low pool fees = bundled/scam. Smart wallets do NOT override this.
 - bots > ${config.screening.maxBotHoldersPct}% → already hard-filtered before you see the candidate list.
+- bin_step outside [${config.screening.minBinStep},${config.screening.maxBinStep}] → already hard-filtered before you see the candidate list.
 
 RISK SIGNALS (guidelines — use judgment):
-- top10 > 60% → concentrated, risky
+- top10 > ${config.screening.maxTop10Pct}% → already hard-filtered before you see the candidate list.
 - bundle_pct from OKX = secondary context only, not a hard filter
 - rugpull flag from OKX → major negative score penalty and default to SKIP; only override if smart wallets are present and conviction is otherwise high
 - wash trading flag from OKX → treat as disqualifying even if other metrics look attractive
@@ -118,12 +119,12 @@ NARRATIVE QUALITY (your main judgment call):
 - BAD: generic hype ("next 100x", "community token") with no identifiable subject
 - Smart wallets present → can override weak narrative, and are the only valid override for an OKX rugpull flag
 
-POOL MEMORY: Past losses or problems → strong skip signal.
+POOL MEMORY: Negative-only. Past losses, low-yield closes, cooldowns, or repeated OOR are skip/caution signals. Never use prior wins as a positive reason to deploy.
 
 DEPLOY RULES:
 - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT default to a smaller number.
 - bins_below = round(35 + (volatility/5)*34) clamped to [35,69]. bins_above = 0.
-- Bin steps must be [80-125].
+- Bin steps must be [${config.screening.minBinStep}-${config.screening.maxBinStep}].
 - Pick ONE pool. Deploy or explain why none qualify.
 
 ${lessons ? `LESSONS LEARNED:\n${lessons}\n` : ""}Timestamp: ${new Date().toISOString()}

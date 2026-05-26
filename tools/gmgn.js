@@ -117,7 +117,7 @@ export async function getGmgnPoolFees({ mint, pool_address }) {
       const poolObj = pool_address ? findMatchingPool(data, pool_address) : data?.data || data;
       const value = feeValueOf(poolObj);
       if (value != null) {
-        return { pool_fees_sol: Number(value.toFixed(2)), source: `gmgn:${path}` };
+        return { pool_fees_sol: Number(value.toFixed(2)), source: "gmgn" };
       }
     } catch (e) {
       errors.push(e.message);
