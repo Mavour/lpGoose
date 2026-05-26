@@ -171,8 +171,9 @@ export async function runManagementCycle({ silent = false } = {}) {
 
           if (tvlDrop >= config.management.whaleGuardMinDropUsd || tvlDropPct >= config.management.whaleGuardMinDropPct) {
             log("cron", `Whale exit detected: ${p.pair} - TVL dropped $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%)`);
+            const whaleReason = `WHALE EXIT: closed ${p.pair} - TVL drop $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%)`;
             try {
-              const closeResult = await closePosition({ position_address: p.position, reason: "whale_exit" });
+              const closeResult = await closePosition({ position_address: p.position, reason: whaleReason });
               const closeSucceeded = closeResult.success || closeResult.dry_run;
               if (closeSucceeded) {
                 whaleClosedPositions.add(p.position);
@@ -191,10 +192,10 @@ export async function runManagementCycle({ silent = false } = {}) {
                   deployedSol: closeResult.deployed_sol,
                   strategy: closeResult.strategy,
                   holdMinutes: closeResult.minutes_held,
-                  reason: closeResult.close_reason || "whale exit",
+                  reason: closeResult.close_reason || whaleReason,
                 }).catch(() => {});
                 sendMessage(`WHALE EXIT: ${p.pair} - TVL dropped $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%). Position closed.`).catch(() => {});
-                managementEvents.push(`WHALE EXIT: closed ${p.pair} - TVL drop $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%)`);
+                managementEvents.push(whaleReason);
               } else {
                 log("cron_error", `Whale exit close failed for ${p.pair}: ${closeResult.error}`);
                 managementEvents.push(`Whale exit close failed for ${p.pair}: ${closeResult.error}`);
