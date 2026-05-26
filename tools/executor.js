@@ -179,6 +179,7 @@ const toolMap = {
       screeningModel: ["llm", "screeningModel"],
       generalModel: ["llm", "generalModel"],
       // strategy
+      strategy: ["strategy", "strategy"],
       binsBelow: ["strategy", "binsBelow"],
     };
 

@@ -110,9 +110,15 @@ async function poll(onMessage) {
         }
 
         // Only accept messages from the registered chat
-        if (incomingChatId !== chatId) continue;
+        if (incomingChatId !== chatId) {
+          const from = msg.from?.username || msg.from?.first_name || "unknown";
+          log("telegram", `Ignored message from unauthorized chat ${incomingChatId} (${from}): ${msg.text}`);
+          continue;
+        }
 
-        await onMessage(msg.text);
+        Promise.resolve(onMessage(msg.text)).catch((e) => {
+          log("telegram_error", `Handler failed: ${e.message}`);
+        });
       }
     } catch (e) {
       if (!e.message?.includes("aborted")) {

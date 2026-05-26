@@ -15,7 +15,7 @@ import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyClose, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, updatePoolTvl, getPoolTvl } from "./state.js";
-import { getActiveStrategy } from "./strategy-library.js";
+import { getActiveStrategy, setActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
@@ -869,12 +869,27 @@ if (isTTY) {
   }
 
   async function telegramHandler(text) {
+    log("telegram", `Incoming: ${text}`);
     if (_managementBusy || _screeningBusy || busy) {
       if (_telegramQueue.length < 5) {
         _telegramQueue.push(text);
+        log("telegram", `Queued (${_telegramQueue.length}): ${text}`);
         sendMessage(`⏳ Queued (${_telegramQueue.length} in queue): "${text.slice(0, 60)}"`).catch(() => {});
       } else {
+        log("telegram", `Queue full, dropped: ${text}`);
         sendMessage("Queue is full (5 messages). Wait for the agent to finish.").catch(() => {});
+      }
+      return;
+    }
+
+    if (text === "/screen") {
+      await sendMessage("Starting screening cycle...");
+      try {
+        await runScreeningCycle();
+      } catch (e) {
+        await sendMessage(`Screening failed: ${e.message}`).catch(() => {});
+      } finally {
+        drainTelegramQueue().catch(() => {});
       }
       return;
     }
@@ -1003,6 +1018,10 @@ if (isTTY) {
         }
         if (config.llm && key in config.llm) config.llm[key] = value;
         if (config.strategy && key in config.strategy) config.strategy[key] = value;
+        if (key === "strategy") {
+          if (value === "bid_ask") setActiveStrategy({ id: "single_sided_reseed" });
+          if (value === "spot") setActiveStrategy({ id: "custom_ratio_spot" });
+        }
         if (config.risk && key in config.risk) config.risk[key] = value;
 
         log("config", `Telegram update: ${key} = ${JSON.stringify(value)}`);
@@ -1100,6 +1119,9 @@ Commands:
   1 / 2 / 3 ...  Deploy ${DEPLOY} SOL into that pool
   auto           Let the agent pick and deploy automatically
   /status        Refresh wallet + positions
+  /screen        Run one screening cycle now
+  /menu          Show Telegram config menu
+  /config        Show current user-config values
   /candidates    Refresh top pool list
   /briefing      Show morning briefing (last 24h)
   /learn         Study top LPers from the best current pool and save lessons
