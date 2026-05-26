@@ -153,7 +153,7 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     // Whale exit detection has top priority over regular management rules.
     const whaleClosedPositions = new Set();
-    for (const p of positions) {
+    for (const p of config.management.whaleGuardEnabled ? positions : []) {
       try {
         const poolUrl = `https://pool-discovery-api.datapi.meteora.ag/pools?page_size=1&filter_by=${encodeURIComponent(`pool_address=${p.pool}`)}&timeframe=5m`;
         const poolRes = await fetch(poolUrl);
@@ -169,7 +169,7 @@ export async function runManagementCycle({ silent = false } = {}) {
           const tvlDrop = prev.tvl - currentTvl;
           const tvlDropPct = prev.tvl > 0 ? (tvlDrop / prev.tvl) * 100 : 0;
 
-          if (tvlDrop >= 25000 || tvlDropPct >= 25) {
+          if (tvlDrop >= config.management.whaleGuardMinDropUsd || tvlDropPct >= config.management.whaleGuardMinDropPct) {
             log("cron", `Whale exit detected: ${p.pair} - TVL dropped $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%)`);
             try {
               const closeResult = await closePosition({ position_address: p.position, reason: "whale_exit" });
@@ -917,6 +917,9 @@ if (isTTY) {
         "  /set trailingTakeProfit true",
         "  /set trailingTriggerPct 3",
         "  /set trailingDropPct 1.5",
+        "  /set whaleGuardEnabled true",
+        "  /set whaleGuardMinDropUsd 25000",
+        "  /set whaleGuardMinDropPct 25",
         "  /set solMode false",
         "",
         "SCHEDULE:",
