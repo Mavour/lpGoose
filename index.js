@@ -1,6 +1,9 @@
 import "dotenv/config";
 import cron from "node-cron";
 import readline from "readline";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { agentLoop } from "./agent.js";
 import { log } from "./logger.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
@@ -16,6 +19,9 @@ import { getActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
 
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
@@ -370,6 +376,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
         log("screening", `Skipping ${pool.name} — blocked launchpad (${launchpad})`);
         return false;
       }
+      // Min token fees SOL hard filter: 30 SOL minimum.
+      const feesSol = ti?.global_fees_sol ?? null;
+      if (feesSol != null && feesSol < 30) {
+        log("screening", `Skipping ${pool.name} - total fees ${feesSol} SOL < 30 SOL (hard min)`);
+        return false;
+      }
+
       const botPct = ti?.audit?.bot_holders_pct;
       const maxBotHoldersPct = config.screening.maxBotHoldersPct;
       if (botPct != null && maxBotHoldersPct != null && botPct > maxBotHoldersPct) {
@@ -705,6 +718,137 @@ if (isTTY) {
         sendMessage(`⏳ Queued (${_telegramQueue.length} in queue): "${text.slice(0, 60)}"`).catch(() => {});
       } else {
         sendMessage("Queue is full (5 messages). Wait for the agent to finish.").catch(() => {});
+      }
+      return;
+    }
+
+    if (text === "/menu") {
+      const menu = [
+        "MENU",
+        "",
+        "SCREENING:",
+        "  /set minFeeActiveTvlRatio 0.3",
+        "  /set minTvl 10000",
+        "  /set maxTvl 150000",
+        "  /set minVolume 500",
+        "  /set minOrganic 60",
+        "  /set minHolders 500",
+        "  /set minMcap 150000",
+        "  /set maxMcap 10000000",
+        "  /set minBinStep 80",
+        "  /set maxBinStep 125",
+        "  /set minTokenAgeHours 2",
+        "  /set maxTokenAgeHours null",
+        "  /set athFilterPct null",
+        "  /set timeframe 5m",
+        "  /set category trending",
+        "  /set minTokenFeesSol 30",
+        "  /set maxBundlePct 30",
+        "  /set maxBotHoldersPct 30",
+        "  /set maxTop10Pct 60",
+        "",
+        "MANAGEMENT:",
+        "  /set deployAmountSol 0.5",
+        "  /set positionSizePct 0.35",
+        "  /set gasReserve 0.2",
+        "  /set minSolToOpen 0.55",
+        "  /set stopLossPct -50",
+        "  /set takeProfitFeePct 5",
+        "  /set minFeePerTvl24h 7",
+        "  /set minAgeBeforeYieldCheck 60",
+        "  /set outOfRangeWaitMinutes 30",
+        "  /set trailingTakeProfit true",
+        "  /set trailingTriggerPct 3",
+        "  /set trailingDropPct 1.5",
+        "  /set solMode false",
+        "",
+        "SCHEDULE:",
+        "  /set managementIntervalMin 10",
+        "  /set screeningIntervalMin 30",
+        "",
+        "LLM:",
+        "  /set managementModel openrouter/healer-alpha",
+        "  /set screeningModel openrouter/hunter-alpha",
+        "  /set generalModel openrouter/healer-alpha",
+        "  /set temperature 0.373",
+        "",
+        "STRATEGY:",
+        "  /set strategy bid_ask",
+        "  /set binsBelow 69",
+        "",
+        "Examples:",
+        "  /set minFeeActiveTvlRatio 0.2",
+        "  /set deployAmountSol 1.0",
+        "  /set solMode true",
+        "  /set stopLossPct -30",
+        "",
+        "/set <key> <value> - update config directly",
+        "/config - show current config values",
+      ].join("\n");
+      await sendMessage(menu);
+      return;
+    }
+
+    if (text.startsWith("/config")) {
+      try {
+        if (!fs.existsSync(USER_CONFIG_PATH)) {
+          await sendMessage("No user-config.json found - using defaults.");
+          return;
+        }
+        const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+        const keys = Object.keys(cfg).sort();
+        const lines = keys.map(k => `${k}: ${JSON.stringify(cfg[k])}`);
+        const body = lines.join("\n").slice(0, 3500);
+        await sendMessage(`Config (${keys.length} keys):\n\n${body}`);
+      } catch (e) {
+        await sendMessage(`Error reading config: ${e.message}`);
+      }
+      return;
+    }
+
+    const configSetMatch = text.match(/^\/set\s+(\S+)\s+(.+)$/i);
+    if (configSetMatch && !/^\d+$/.test(configSetMatch[1])) {
+      const key = configSetMatch[1];
+      const rawValue = configSetMatch[2].trim();
+      let value;
+
+      if (rawValue === "null" || rawValue === "undefined") {
+        value = null;
+      } else if (rawValue === "true") {
+        value = true;
+      } else if (rawValue === "false") {
+        value = false;
+      } else if (!Number.isNaN(Number(rawValue)) && rawValue.includes(".")) {
+        value = parseFloat(rawValue);
+      } else if (!Number.isNaN(Number(rawValue))) {
+        value = parseInt(rawValue, 10);
+      } else {
+        value = rawValue;
+      }
+
+      try {
+        const cfg = fs.existsSync(USER_CONFIG_PATH)
+          ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
+          : {};
+        cfg[key] = value;
+        fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+
+        reloadScreeningThresholds();
+        if (config.screening && key in config.screening) config.screening[key] = value;
+        if (config.management && key in config.management) config.management[key] = value;
+        if (config.schedule && key in config.schedule) {
+          config.schedule[key] = value;
+          stopCronJobs();
+          startCronJobs();
+        }
+        if (config.llm && key in config.llm) config.llm[key] = value;
+        if (config.strategy && key in config.strategy) config.strategy[key] = value;
+        if (config.risk && key in config.risk) config.risk[key] = value;
+
+        log("config", `Telegram update: ${key} = ${JSON.stringify(value)}`);
+        await sendMessage(`Updated ${key} = ${JSON.stringify(value)}`);
+      } catch (e) {
+        await sendMessage(`Failed: ${e.message}`);
       }
       return;
     }

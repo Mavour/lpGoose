@@ -38,7 +38,7 @@ export const config = {
     maxBinStep:        u.maxBinStep        ?? 125,
     timeframe:         u.timeframe         ?? "5m",
     category:          u.category          ?? "trending",
-    minTokenFeesSol:   u.minTokenFeesSol   ?? 30,  // global fees paid (priority+jito tips). below = bundled/scam
+    minTokenFeesSol:   u.minTokenFeesSol   ?? 30,  // [30] Hard min - skip pools with total fees < 30 SOL. Rug/scam filter.
     maxBundlePct:      u.maxBundlePct      ?? 30,  // max bundle holding % (OKX advanced-info)
     maxBotHoldersPct:  u.maxBotHoldersPct  ?? 30,  // max bot holder addresses % (Jupiter audit)
     maxTop10Pct:       u.maxTop10Pct       ?? 60,  // max top 10 holders concentration
