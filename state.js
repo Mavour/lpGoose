@@ -14,6 +14,7 @@ import { log } from "./logger.js";
 const STATE_FILE = "./state.json";
 
 const MAX_RECENT_EVENTS = 20;
+const _poolTvl = new Map();
 
 function load() {
   if (!fs.existsSync(STATE_FILE)) {
@@ -34,6 +35,17 @@ function save(state) {
   } catch (err) {
     log("state_error", `Failed to write state.json: ${err.message}`);
   }
+}
+
+/**
+ * Track pool TVL for whale exit detection.
+ */
+export function updatePoolTvl(poolAddress, tvl) {
+  _poolTvl.set(poolAddress, { tvl, checked_at: Date.now() });
+}
+
+export function getPoolTvl(poolAddress) {
+  return _poolTvl.get(poolAddress) || null;
 }
 
 // ─── Position Registry ─────────────────────────────────────────

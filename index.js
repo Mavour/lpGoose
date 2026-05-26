@@ -6,15 +6,15 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { agentLoop } from "./agent.js";
 import { log } from "./logger.js";
-import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
-import { getWalletBalances } from "./tools/wallet.js";
+import { getMyPositions, closePosition, claimFees, getActiveBin } from "./tools/dlmm.js";
+import { getWalletBalances, swapToken } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
 import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
-import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
+import { startPolling, stopPolling, sendMessage, sendHTML, notifyClose, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits } from "./state.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, updatePoolTvl, getPoolTvl } from "./state.js";
 import { getActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
@@ -72,6 +72,27 @@ function stripThink(text) {
   return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
 }
 
+async function autoSwapBaseToSol(baseMint, context = "") {
+  if (!baseMint) return { swapped: false, reason: "no base mint" };
+
+  const balances = await getWalletBalances();
+  const token = balances.tokens?.find(t => t.mint === baseMint);
+  if (!token || token.usd == null || token.usd < 0.10) {
+    return { swapped: false, reason: "dust or no token balance" };
+  }
+
+  const symbol = token.symbol || baseMint.slice(0, 8);
+  log("cron", `Auto-swapping ${symbol} ($${token.usd.toFixed(2)}) back to SOL${context ? ` after ${context}` : ""}`);
+  const swapResult = await swapToken({ input_mint: baseMint, output_mint: "SOL", amount: token.balance });
+  if (swapResult.success || swapResult.dry_run) {
+    log("cron", `Auto-swap success: ${symbol} -> SOL`);
+    return { swapped: true, token, result: swapResult };
+  }
+
+  log("cron_warn", `Auto-swap failed: ${swapResult.error}`);
+  return { swapped: false, token, error: swapResult.error };
+}
+
 async function runBriefing() {
   log("cron", "Starting morning briefing");
   try {
@@ -116,6 +137,7 @@ export async function runManagementCycle({ silent = false } = {}) {
   timers.managementLastRun = Date.now();
   log("cron", "Starting management cycle");
   let mgmtReport = null;
+  const managementEvents = [];
   let positions = [];
   const screeningCooldownMs = 5 * 60 * 1000;
 
@@ -127,6 +149,69 @@ export async function runManagementCycle({ silent = false } = {}) {
       log("cron", "No open positions — triggering screening cycle");
       runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
       return null;
+    }
+
+    // Whale exit detection has top priority over regular management rules.
+    const whaleClosedPositions = new Set();
+    for (const p of positions) {
+      try {
+        const poolUrl = `https://pool-discovery-api.datapi.meteora.ag/pools?page_size=1&filter_by=${encodeURIComponent(`pool_address=${p.pool}`)}&timeframe=5m`;
+        const poolRes = await fetch(poolUrl);
+        if (!poolRes.ok) continue;
+        const poolData = await poolRes.json();
+        const poolDetail = (poolData.data || [])[0];
+        if (!poolDetail) continue;
+
+        const currentTvl = poolDetail.active_tvl ?? poolDetail.tvl ?? 0;
+        const prev = getPoolTvl(p.pool);
+
+        if (prev) {
+          const tvlDrop = prev.tvl - currentTvl;
+          const tvlDropPct = prev.tvl > 0 ? (tvlDrop / prev.tvl) * 100 : 0;
+
+          if (tvlDrop >= 25000 || tvlDropPct >= 25) {
+            log("cron", `Whale exit detected: ${p.pair} - TVL dropped $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%)`);
+            try {
+              const closeResult = await closePosition({ position_address: p.position, reason: "whale_exit" });
+              const closeSucceeded = closeResult.success || closeResult.dry_run;
+              if (closeSucceeded) {
+                whaleClosedPositions.add(p.position);
+                if (closeResult.base_mint && closeResult.success) {
+                  await autoSwapBaseToSol(closeResult.base_mint, "whale exit").catch((e) =>
+                    log("cron_warn", `Whale exit swap failed: ${e.message}`)
+                  );
+                }
+                notifyClose({ pair: p.pair, pnlUsd: closeResult.pnl_usd || 0, pnlPct: closeResult.pnl_pct || 0 }).catch(() => {});
+                sendMessage(`WHALE EXIT: ${p.pair} - TVL dropped $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%). Position closed.`).catch(() => {});
+                managementEvents.push(`WHALE EXIT: closed ${p.pair} - TVL drop $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%)`);
+              } else {
+                log("cron_error", `Whale exit close failed for ${p.pair}: ${closeResult.error}`);
+                managementEvents.push(`Whale exit close failed for ${p.pair}: ${closeResult.error}`);
+              }
+            } catch (e) {
+              log("cron_error", `Whale exit close failed for ${p.pair}: ${e.message}`);
+              managementEvents.push(`Whale exit close error for ${p.pair}: ${e.message}`);
+            }
+            continue;
+          }
+        }
+
+        updatePoolTvl(p.pool, currentTvl);
+      } catch (e) {
+        log("cron_warn", `Whale check failed for ${p.pool.slice(0, 8)}: ${e.message}`);
+      }
+    }
+
+    if (whaleClosedPositions.size > 0) {
+      positions = positions.filter((p) => !whaleClosedPositions.has(p.position));
+      if (positions.length === 0) {
+        mgmtReport = managementEvents.join("\n");
+        if (Date.now() - _screeningLastTriggered > screeningCooldownMs) {
+          log("cron", `Post-whale-exit: 0/${config.risk.maxPositions} positions - triggering screening`);
+          runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
+        }
+        return mgmtReport;
+      }
     }
 
     // Snapshot + load pool memory
@@ -240,9 +325,81 @@ export async function runManagementCycle({ silent = false } = {}) {
       `\n\nSummary: 💼 ${positions.length} positions | ${cur}${totalValue.toFixed(4)} | fees: ${cur}${totalUnclaimed.toFixed(4)} | ${actionSummary}`;
 
     // ── Call LLM only if action needed ──────────────────────────────
+    if (managementEvents.length > 0) {
+      mgmtReport = `${managementEvents.join("\n")}\n\n${mgmtReport}`;
+    }
+
+    const deterministicPositions = positionData.filter((p) => {
+      const a = actionMap.get(p.position);
+      return a.action === "CLOSE" || a.action === "CLAIM";
+    });
+
+    if (deterministicPositions.length > 0) {
+      log("cron", `Management: ${deterministicPositions.length} deterministic action(s) needed`);
+    }
+
+    for (const p of deterministicPositions) {
+      const act = actionMap.get(p.position);
+
+      if (act.action === "CLOSE") {
+        log("cron", `Deterministic close: ${p.pair} - ${act.reason}`);
+        try {
+          const closeResult = await closePosition({ position_address: p.position, reason: act.reason || "management_rule" });
+          const closeSucceeded = closeResult.success || closeResult.dry_run;
+          if (closeSucceeded) {
+            let suffix = "";
+            if (closeResult.base_mint && closeResult.success) {
+              try {
+                const swapResult = await autoSwapBaseToSol(closeResult.base_mint, "deterministic close");
+                if (swapResult.swapped) {
+                  suffix = " - auto-swapped to SOL";
+                } else if (swapResult.error) {
+                  suffix = ` - swap failed: ${swapResult.error}`;
+                }
+              } catch (swapErr) {
+                log("cron_warn", `Auto-swap error: ${swapErr.message}`);
+                suffix = ` - swap error: ${swapErr.message}`;
+              }
+            }
+            notifyClose({ pair: p.pair, pnlUsd: closeResult.pnl_usd || 0, pnlPct: closeResult.pnl_pct || 0 }).catch(() => {});
+            mgmtReport += `\n\nClosed ${p.pair} (${act.reason})${suffix}`;
+          } else {
+            log("cron_error", `Close failed for ${p.pair}: ${closeResult.error}`);
+            mgmtReport += `\n\nClose failed for ${p.pair}: ${closeResult.error}`;
+          }
+        } catch (closeErr) {
+          log("cron_error", `Close error for ${p.pair}: ${closeErr.message}`);
+          mgmtReport += `\n\nClose error for ${p.pair}: ${closeErr.message}`;
+        }
+        continue;
+      }
+
+      if (act.action === "CLAIM") {
+        log("cron", `Deterministic claim: ${p.pair}`);
+        try {
+          const claimResult = await claimFees({ position_address: p.position });
+          if (claimResult.success || claimResult.dry_run) {
+            log("cron", `Claim success: ${p.pair}`);
+            mgmtReport += `\n\nClaimed fees for ${p.pair}`;
+          } else {
+            log("cron_error", `Claim failed for ${p.pair}: ${claimResult.error}`);
+            mgmtReport += `\n\nClaim failed for ${p.pair}: ${claimResult.error}`;
+          }
+        } catch (claimErr) {
+          log("cron_error", `Claim error for ${p.pair}: ${claimErr.message}`);
+          mgmtReport += `\n\nClaim error for ${p.pair}: ${claimErr.message}`;
+        }
+      }
+    }
+
+    if (deterministicPositions.length > 0) {
+      const remainingPositions = (await getMyPositions({ force: true }).catch(() => null))?.positions?.length ?? 0;
+      log("cron", `Deterministic management done. Remaining positions: ${remainingPositions}/${config.risk.maxPositions}`);
+    }
+
     const actionPositions = positionData.filter(p => {
       const a = actionMap.get(p.position);
-      return a.action !== "STAY";
+      return a.action === "INSTRUCTION";
     });
 
     if (actionPositions.length > 0) {
