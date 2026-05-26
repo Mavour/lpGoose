@@ -12,7 +12,7 @@ import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
 import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
-import { startPolling, stopPolling, sendMessage, sendHTML, notifyClose, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
+import { startPolling, stopPolling, sendMessage, sendHTML, sendKeyboard, editKeyboard, answerCallback, notifyClose, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, updatePoolTvl, getPoolTvl } from "./state.js";
 import { getActiveStrategy, setActiveStrategy } from "./strategy-library.js";
@@ -868,8 +868,257 @@ if (isTTY) {
     }
   }
 
+  let pendingMenuEdit = null;
+
+  function parseConfigValue(rawValue) {
+    const raw = String(rawValue).trim();
+    if (raw === "null" || raw === "undefined") return null;
+    if (raw === "true") return true;
+    if (raw === "false") return false;
+    if (!Number.isNaN(Number(raw)) && raw.includes(".")) return parseFloat(raw);
+    if (!Number.isNaN(Number(raw))) return parseInt(raw, 10);
+    return raw;
+  }
+
+  async function applyTelegramConfig(key, value) {
+    const cfg = fs.existsSync(USER_CONFIG_PATH)
+      ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
+      : {};
+    cfg[key] = value;
+    fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+
+    if (key === "dryRun") process.env.DRY_RUN = String(value);
+
+    reloadScreeningThresholds();
+    if (config.screening && key in config.screening) config.screening[key] = value;
+    if (config.management && key in config.management) config.management[key] = value;
+    if (config.schedule && key in config.schedule) {
+      config.schedule[key] = value;
+      stopCronJobs();
+      startCronJobs();
+    }
+    if (config.llm && key in config.llm) config.llm[key] = value;
+    if (config.strategy && key in config.strategy) config.strategy[key] = value;
+    if (key === "strategy") {
+      if (value === "bid_ask") setActiveStrategy({ id: "single_sided_reseed" });
+      if (value === "spot") setActiveStrategy({ id: "custom_ratio_spot" });
+    }
+    if (config.risk && key in config.risk) config.risk[key] = value;
+
+    log("config", `Telegram update: ${key} = ${JSON.stringify(value)}`);
+  }
+
+  async function applyPreset(name) {
+    const presets = {
+      custom: {},
+      degen: {
+        maxPositions: 3,
+        deployAmountSol: 0.2,
+        gasReserve: 0.05,
+        stopLossPct: -60,
+        takeProfitFeePct: 20,
+        minTokenFeesSol: 20,
+        whaleGuardMinDropPct: 35,
+      },
+      moderate: {
+        maxPositions: 2,
+        deployAmountSol: 0.1,
+        gasReserve: 0.05,
+        stopLossPct: -30,
+        takeProfitFeePct: 15,
+        minTokenFeesSol: 30,
+        whaleGuardMinDropPct: 25,
+      },
+      safe: {
+        maxPositions: 1,
+        deployAmountSol: 0.1,
+        gasReserve: 0.08,
+        stopLossPct: -15,
+        takeProfitFeePct: 10,
+        minTokenFeesSol: 50,
+        whaleGuardMinDropPct: 15,
+      },
+    };
+    const changes = presets[name] || {};
+    for (const [key, value] of Object.entries(changes)) {
+      await applyTelegramConfig(key, value);
+    }
+  }
+
+  function settingValue(key) {
+    if (key === "dryRun") return process.env.DRY_RUN === "true" ? "on" : "off";
+    if (key in config.risk) return config.risk[key];
+    if (key in config.screening) return config.screening[key];
+    if (key in config.management) return config.management[key];
+    if (key in config.schedule) return config.schedule[key];
+    if (key in config.llm) return config.llm[key];
+    if (key in config.strategy) return config.strategy[key];
+    return "?";
+  }
+
+  const menuSections = {
+    quick: [
+      ["maxPositions", "Max positions"],
+      ["deployAmountSol", "Deploy SOL"],
+      ["minSolToOpen", "Min SOL open"],
+      ["maxDeployAmount", "Max deploy SOL"],
+      ["gasReserve", "Gas reserve"],
+      ["solMode", "SOL mode"],
+      ["dryRun", "Dry run"],
+      ["strategy", "Strategy"],
+      ["binsBelow", "Bins below"],
+    ],
+    screen: [
+      ["minFeeActiveTvlRatio", "Min fee/TVL"],
+      ["minTvl", "Min TVL"],
+      ["maxTvl", "Max TVL"],
+      ["minVolume", "Min volume"],
+      ["minOrganic", "Min organic"],
+      ["minTokenFeesSol", "Min fee SOL"],
+      ["maxBotHoldersPct", "Max bots %"],
+      ["maxTop10Pct", "Max top10 %"],
+      ["timeframe", "Timeframe"],
+    ],
+    risk: [
+      ["maxBundlePct", "Max bundle %"],
+      ["whaleGuardEnabled", "Whale guard"],
+      ["whaleGuardMinDropUsd", "Whale drop USD"],
+      ["whaleGuardMinDropPct", "Whale drop %"],
+      ["stopLossPct", "Stop loss %"],
+      ["maxPositions", "Max positions"],
+    ],
+    manage: [
+      ["minClaimAmount", "Min claim $"],
+      ["minFeePerTvl24h", "Min fee/TVL 24h"],
+      ["minAgeBeforeYieldCheck", "Min age yield"],
+      ["outOfRangeWaitMinutes", "OOR wait min"],
+      ["outOfRangeBinsToClose", "OOR bins close"],
+    ],
+    exits: [
+      ["takeProfitFeePct", "Take profit %"],
+      ["stopLossPct", "Stop loss %"],
+      ["trailingTakeProfit", "Trailing"],
+      ["trailingTriggerPct", "Trail trigger %"],
+      ["trailingDropPct", "Trail drop %"],
+    ],
+    schedule: [
+      ["managementIntervalMin", "Manage interval"],
+      ["screeningIntervalMin", "Screen interval"],
+    ],
+    llm: [
+      ["managementModel", "Manage model"],
+      ["screeningModel", "Screen model"],
+      ["generalModel", "General model"],
+      ["temperature", "Temperature"],
+    ],
+    strategy: [
+      ["strategy", "Strategy"],
+      ["binsBelow", "Bins below"],
+    ],
+  };
+
+  function buildSettingsMenu(section = "quick", preset = "custom") {
+    const activeStrategy = getActiveStrategy();
+    const strategyName = activeStrategy?.lp_strategy || config.strategy.strategy;
+    const trailing = config.management.trailingTakeProfit ? "ON" : "OFF";
+    const solMode = config.management.solMode ? "SOL" : "USD";
+    const dryRun = process.env.DRY_RUN === "true" ? "on" : "off";
+    const settings = menuSections[section] || menuSections.quick;
+
+    const text = [
+      `Settings: ${section[0].toUpperCase()}${section.slice(1)}`,
+      "",
+      `Mode: ${solMode} | Source: meteora | Strat: ${strategyName}`,
+      `Deploy: ${config.management.deployAmountSol} SOL | MaxPos: ${config.risk.maxPositions} | Gas: ${config.management.gasReserve}`,
+      `TP/SL: ${config.management.takeProfitFeePct}% / ${config.management.stopLossPct}% | Trailing: ${trailing}`,
+      `Bins: [${config.strategy.binsBelow}-0] | Dry run: ${dryRun}`,
+      "",
+      `${settings.length} editable settings. Tap a value to edit.`,
+    ].join("\n");
+
+    const sectionRows = [
+      ["quick", "screen", "risk"],
+      ["strategy", "manage", "exits"],
+      ["schedule", "llm"],
+    ].map((row) => row.map((id) => ({
+      text: `${id === section ? "✓ " : ""}${id[0].toUpperCase()}${id.slice(1)}`,
+      callback_data: `menu:${id}:${preset}`,
+    })));
+
+    const presetRow = ["custom", "degen", "moderate", "safe"].map((id) => ({
+      text: `${id === preset ? "✓ " : ""}${id[0].toUpperCase()}${id.slice(1)}`,
+      callback_data: `preset:${id}:${section}`,
+    }));
+
+    const settingRows = settings.map(([key, label]) => ([{
+      text: `${label}: ${settingValue(key)} ✎`,
+      callback_data: `edit:${key}:${section}:${preset}`,
+    }]));
+
+    return { text, keyboard: [...sectionRows, presetRow, ...settingRows] };
+  }
+
+  async function sendSettingsMenu(section = "quick", preset = "custom") {
+    const menu = buildSettingsMenu(section, preset);
+    await sendKeyboard(menu.text, menu.keyboard);
+  }
+
+  async function telegramCallbackHandler(query) {
+    const data = query.data || "";
+    log("telegram", `Callback: ${data}`);
+    const [type, a, b, c] = data.split(":");
+    const chatId = query.message?.chat?.id;
+    const messageId = query.message?.message_id;
+
+    if (type === "menu") {
+      const section = a || "quick";
+      const preset = b || "custom";
+      const menu = buildSettingsMenu(section, preset);
+      await editKeyboard(chatId, messageId, menu.text, menu.keyboard);
+      await answerCallback(query.id);
+      return;
+    }
+
+    if (type === "preset") {
+      const preset = a || "custom";
+      const section = b || "quick";
+      await applyPreset(preset);
+      const menu = buildSettingsMenu(section, preset);
+      await editKeyboard(chatId, messageId, menu.text, menu.keyboard);
+      await answerCallback(query.id, preset === "custom" ? "Custom selected" : `${preset} preset applied`);
+      return;
+    }
+
+    if (type === "edit") {
+      const key = a;
+      const section = b || "quick";
+      const preset = c || "custom";
+      pendingMenuEdit = { key, section, preset };
+      await answerCallback(query.id, `Send new value for ${key}`);
+      await sendMessage(`Send new value for ${key}. Current: ${JSON.stringify(settingValue(key))}`);
+      return;
+    }
+
+    await answerCallback(query.id);
+  }
+
   async function telegramHandler(text) {
     log("telegram", `Incoming: ${text}`);
+
+    if (pendingMenuEdit && !text.startsWith("/")) {
+      const { key, section, preset } = pendingMenuEdit;
+      pendingMenuEdit = null;
+      const value = parseConfigValue(text);
+      try {
+        await applyTelegramConfig(key, value);
+        await sendMessage(`Updated ${key} = ${JSON.stringify(value)}`);
+        await sendSettingsMenu(section, preset);
+      } catch (e) {
+        await sendMessage(`Failed: ${e.message}`);
+      }
+      return;
+    }
+
     if (_managementBusy || _screeningBusy || busy) {
       if (_telegramQueue.length < 5) {
         _telegramQueue.push(text);
@@ -895,72 +1144,7 @@ if (isTTY) {
     }
 
     if (text === "/menu") {
-      const menu = [
-        "MENU",
-        "",
-        "SCREENING:",
-        "  /set minFeeActiveTvlRatio 0.3",
-        "  /set minTvl 10000",
-        "  /set maxTvl 150000",
-        "  /set minVolume 500",
-        "  /set minOrganic 60",
-        "  /set minHolders 500",
-        "  /set minMcap 150000",
-        "  /set maxMcap 10000000",
-        "  /set minBinStep 80",
-        "  /set maxBinStep 125",
-        "  /set minTokenAgeHours 2",
-        "  /set maxTokenAgeHours null",
-        "  /set athFilterPct null",
-        "  /set timeframe 5m",
-        "  /set category trending",
-        "  /set minTokenFeesSol 30",
-        "  /set maxBundlePct 30",
-        "  /set maxBotHoldersPct 30",
-        "  /set maxTop10Pct 60",
-        "",
-        "MANAGEMENT:",
-        "  /set deployAmountSol 0.5",
-        "  /set positionSizePct 0.35",
-        "  /set gasReserve 0.2",
-        "  /set minSolToOpen 0.55",
-        "  /set stopLossPct -50",
-        "  /set takeProfitFeePct 5",
-        "  /set minFeePerTvl24h 7",
-        "  /set minAgeBeforeYieldCheck 60",
-        "  /set outOfRangeWaitMinutes 30",
-        "  /set trailingTakeProfit true",
-        "  /set trailingTriggerPct 3",
-        "  /set trailingDropPct 1.5",
-        "  /set whaleGuardEnabled true",
-        "  /set whaleGuardMinDropUsd 25000",
-        "  /set whaleGuardMinDropPct 25",
-        "  /set solMode false",
-        "",
-        "SCHEDULE:",
-        "  /set managementIntervalMin 10",
-        "  /set screeningIntervalMin 30",
-        "",
-        "LLM:",
-        "  /set managementModel openrouter/healer-alpha",
-        "  /set screeningModel openrouter/hunter-alpha",
-        "  /set generalModel openrouter/healer-alpha",
-        "  /set temperature 0.373",
-        "",
-        "STRATEGY:",
-        "  /set strategy bid_ask",
-        "  /set binsBelow 69",
-        "",
-        "Examples:",
-        "  /set minFeeActiveTvlRatio 0.2",
-        "  /set deployAmountSol 1.0",
-        "  /set solMode true",
-        "  /set stopLossPct -30",
-        "",
-        "/set <key> <value> - update config directly",
-        "/config - show current config values",
-      ].join("\n");
-      await sendMessage(menu);
+      await sendSettingsMenu("quick", "custom");
       return;
     }
 
@@ -985,46 +1169,10 @@ if (isTTY) {
     if (configSetMatch && !/^\d+$/.test(configSetMatch[1])) {
       const key = configSetMatch[1];
       const rawValue = configSetMatch[2].trim();
-      let value;
-
-      if (rawValue === "null" || rawValue === "undefined") {
-        value = null;
-      } else if (rawValue === "true") {
-        value = true;
-      } else if (rawValue === "false") {
-        value = false;
-      } else if (!Number.isNaN(Number(rawValue)) && rawValue.includes(".")) {
-        value = parseFloat(rawValue);
-      } else if (!Number.isNaN(Number(rawValue))) {
-        value = parseInt(rawValue, 10);
-      } else {
-        value = rawValue;
-      }
+      const value = parseConfigValue(rawValue);
 
       try {
-        const cfg = fs.existsSync(USER_CONFIG_PATH)
-          ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
-          : {};
-        cfg[key] = value;
-        fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
-
-        reloadScreeningThresholds();
-        if (config.screening && key in config.screening) config.screening[key] = value;
-        if (config.management && key in config.management) config.management[key] = value;
-        if (config.schedule && key in config.schedule) {
-          config.schedule[key] = value;
-          stopCronJobs();
-          startCronJobs();
-        }
-        if (config.llm && key in config.llm) config.llm[key] = value;
-        if (config.strategy && key in config.strategy) config.strategy[key] = value;
-        if (key === "strategy") {
-          if (value === "bid_ask") setActiveStrategy({ id: "single_sided_reseed" });
-          if (value === "spot") setActiveStrategy({ id: "custom_ratio_spot" });
-        }
-        if (config.risk && key in config.risk) config.risk[key] = value;
-
-        log("config", `Telegram update: ${key} = ${JSON.stringify(value)}`);
+        await applyTelegramConfig(key, value);
         await sendMessage(`Updated ${key} = ${JSON.stringify(value)}`);
       } catch (e) {
         await sendMessage(`Failed: ${e.message}`);
@@ -1112,7 +1260,7 @@ if (isTTY) {
     }
   }
 
-  startPolling(telegramHandler);
+  startPolling(telegramHandler, telegramCallbackHandler);
 
   console.log(`
 Commands:

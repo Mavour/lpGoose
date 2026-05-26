@@ -62,6 +62,62 @@ export async function sendMessage(text) {
   }
 }
 
+export async function sendKeyboard(text, inlineKeyboard) {
+  if (!TOKEN || !chatId) return;
+  try {
+    const res = await fetch(`${BASE}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: String(text).slice(0, 4096),
+        reply_markup: { inline_keyboard: inlineKeyboard },
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      log("telegram_error", `sendKeyboard ${res.status}: ${err.slice(0, 100)}`);
+    }
+  } catch (e) {
+    log("telegram_error", `sendKeyboard failed: ${e.message}`);
+  }
+}
+
+export async function editKeyboard(chat_id, message_id, text, inlineKeyboard) {
+  if (!TOKEN) return;
+  try {
+    const res = await fetch(`${BASE}/editMessageText`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id,
+        message_id,
+        text: String(text).slice(0, 4096),
+        reply_markup: { inline_keyboard: inlineKeyboard },
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      log("telegram_error", `editKeyboard ${res.status}: ${err.slice(0, 100)}`);
+    }
+  } catch (e) {
+    log("telegram_error", `editKeyboard failed: ${e.message}`);
+  }
+}
+
+export async function answerCallback(callbackQueryId, text = "") {
+  if (!TOKEN) return;
+  try {
+    await fetch(`${BASE}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callback_query_id: callbackQueryId, text: String(text).slice(0, 200) }),
+    });
+  } catch (e) {
+    log("telegram_error", `answerCallback failed: ${e.message}`);
+  }
+}
+
 export async function sendHTML(html) {
   if (!TOKEN || !chatId) return;
   try {
@@ -85,7 +141,7 @@ export async function sendHTML(html) {
 
 
 // ─── Long polling ────────────────────────────────────────────────
-async function poll(onMessage) {
+async function poll(onMessage, onCallback) {
   while (_polling) {
     try {
       const res = await fetch(
@@ -96,6 +152,20 @@ async function poll(onMessage) {
       const data = await res.json();
       for (const update of data.result || []) {
         _offset = update.update_id + 1;
+        const callback = update.callback_query;
+        if (callback) {
+          const callbackChatId = String(callback.message?.chat?.id || "");
+          if (callbackChatId !== chatId) {
+            const from = callback.from?.username || callback.from?.first_name || "unknown";
+            log("telegram", `Ignored callback from unauthorized chat ${callbackChatId} (${from}): ${callback.data}`);
+            continue;
+          }
+          Promise.resolve(onCallback?.(callback)).catch((e) => {
+            log("telegram_error", `Callback handler failed: ${e.message}`);
+          });
+          continue;
+        }
+
         const msg = update.message;
         if (!msg?.text) continue;
 
@@ -129,10 +199,10 @@ async function poll(onMessage) {
   }
 }
 
-export function startPolling(onMessage) {
+export function startPolling(onMessage, onCallback = null) {
   if (!TOKEN) return;
   _polling = true;
-  poll(onMessage); // fire-and-forget
+  poll(onMessage, onCallback); // fire-and-forget
   log("telegram", "Bot polling started");
 }
 
