@@ -713,6 +713,8 @@ export async function closePosition({ position_address, reason }) {
       let finalValueUsd = 0;
       let initialUsd = 0;
       let feesUsd = tracked.total_fees_claimed_usd || 0;
+      let pnlSol = null;
+      let feesSol = null;
       try {
         const closedUrl = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${wallet.publicKey.toString()}&status=closed&pageSize=50&page=1`;
         const res = await fetch(closedUrl);
@@ -753,6 +755,14 @@ export async function closePosition({ position_address, reason }) {
         }
       }
 
+      const solPrice = tracked.amount_sol && initialUsd > 0 ? initialUsd / tracked.amount_sol : null;
+      if (solPrice && solPrice > 0) {
+        pnlSol = pnlUsd / solPrice;
+        feesSol = feesUsd / solPrice;
+      } else if (tracked.amount_sol && pnlPct != null) {
+        pnlSol = tracked.amount_sol * (pnlPct / 100);
+      }
+
       await recordPerformance({
         position: position_address,
         pool: poolAddress,
@@ -782,6 +792,13 @@ export async function closePosition({ position_address, reason }) {
         txs: txHashes,
         pnl_usd: pnlUsd,
         pnl_pct: pnlPct,
+        pnl_sol: pnlSol,
+        fees_earned_usd: feesUsd,
+        fees_earned_sol: feesSol,
+        deployed_sol: tracked.amount_sol,
+        strategy: tracked.strategy,
+        minutes_held: minutesHeld,
+        close_reason: reason || "agent decision",
         base_mint: pool.lbPair.tokenXMint.toString(),
       };
     }

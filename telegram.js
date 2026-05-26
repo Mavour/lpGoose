@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
+import { config } from "./config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -228,12 +229,67 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlPct }) {
-  const sign = pnlUsd >= 0 ? "+" : "";
-  await sendHTML(
-    `🔒 <b>Closed</b> ${pair}\n` +
-    `PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${sign}${(pnlPct ?? 0).toFixed(2)}%)`
+function fmtSol(n, decimals = 4) {
+  return n == null || !Number.isFinite(Number(n)) ? "?" : Number(n).toFixed(decimals);
+}
+
+function fmtUsd(n) {
+  return n == null || !Number.isFinite(Number(n)) ? "?" : Number(n).toFixed(2);
+}
+
+function fmtMinutes(minutes) {
+  if (minutes == null || !Number.isFinite(Number(minutes))) return "?";
+  const m = Math.max(0, Math.round(Number(minutes)));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem ? `${h}h ${rem}m` : `${h}h`;
+}
+
+export async function notifyClose({
+  pair,
+  pnlUsd,
+  pnlPct,
+  pnlSol,
+  feesEarnedUsd,
+  feesEarnedSol,
+  deployedSol,
+  strategy,
+  holdMinutes,
+  reason,
+}) {
+  const displayPnlSol = pnlSol ?? (
+    deployedSol != null && pnlPct != null ? Number(deployedSol) * (Number(pnlPct) / 100) : null
   );
+  const pnlBasis = displayPnlSol ?? pnlUsd ?? 0;
+  const isProfit = pnlBasis >= 0;
+  const icon = isProfit ? "🟢" : "🔴";
+  const sign = isProfit ? "+" : "-";
+  const pct = `${sign}${fmtUsd(Math.abs(pnlPct ?? 0))}%`;
+
+  if (config.management.solMode) {
+    await sendHTML(
+      `${icon} <b>Position Closed — ${pair}</b>\n\n` +
+      `💵 PnL: ${sign}◎${fmtSol(displayPnlSol == null ? null : Math.abs(displayPnlSol))} (${pct})\n` +
+      `💰 Fees earned: ◎${fmtSol(feesEarnedSol ?? 0)} ($${fmtUsd(feesEarnedUsd ?? 0)})\n` +
+      `🏦 Deployed: ${deployedSol ?? "?"} SOL\n` +
+      `📐 Strategy: ${strategy || "?"}\n` +
+      `⏱️ Hold time: ${fmtMinutes(holdMinutes)}\n` +
+      `📋 Reason: ${reason || "agent decision"}`
+    );
+    return;
+  }
+
+  await sendHTML(
+    `${icon} <b>Position Closed — ${pair}</b>\n\n` +
+    `💵 PnL: ${sign}$${fmtUsd(Math.abs(pnlUsd ?? 0))} (${pct})\n` +
+    `💰 Fees earned: $${fmtUsd(feesEarnedUsd ?? 0)}\n` +
+    `🏦 Deployed: ${deployedSol ?? "?"} SOL\n` +
+    `📐 Strategy: ${strategy || "?"}\n` +
+    `⏱️ Hold time: ${fmtMinutes(holdMinutes)}\n` +
+    `📋 Reason: ${reason || "agent decision"}`
+  );
+  return;
 }
 
 export async function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOut, tx }) {

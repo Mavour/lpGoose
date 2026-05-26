@@ -181,7 +181,18 @@ export async function runManagementCycle({ silent = false } = {}) {
                     log("cron_warn", `Whale exit swap failed: ${e.message}`)
                   );
                 }
-                notifyClose({ pair: p.pair, pnlUsd: closeResult.pnl_usd || 0, pnlPct: closeResult.pnl_pct || 0 }).catch(() => {});
+                notifyClose({
+                  pair: p.pair,
+                  pnlUsd: closeResult.pnl_usd || 0,
+                  pnlPct: closeResult.pnl_pct || 0,
+                  pnlSol: closeResult.pnl_sol,
+                  feesEarnedUsd: closeResult.fees_earned_usd,
+                  feesEarnedSol: closeResult.fees_earned_sol,
+                  deployedSol: closeResult.deployed_sol,
+                  strategy: closeResult.strategy,
+                  holdMinutes: closeResult.minutes_held,
+                  reason: closeResult.close_reason || "whale exit",
+                }).catch(() => {});
                 sendMessage(`WHALE EXIT: ${p.pair} - TVL dropped $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%). Position closed.`).catch(() => {});
                 managementEvents.push(`WHALE EXIT: closed ${p.pair} - TVL drop $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%)`);
               } else {
@@ -286,7 +297,11 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (p.fee_per_tvl_24h != null &&
           p.fee_per_tvl_24h < config.management.minFeePerTvl24h &&
           (p.age_minutes ?? 0) >= 60) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 5, reason: "low yield" });
+        actionMap.set(p.position, {
+          action: "CLOSE",
+          rule: 5,
+          reason: `Low yield: fee/TVL ${p.fee_per_tvl_24h}% < min ${config.management.minFeePerTvl24h}% (age: ${p.age_minutes ?? "?"}m)`,
+        });
         continue;
       }
       // Claim rule
@@ -361,7 +376,18 @@ export async function runManagementCycle({ silent = false } = {}) {
                 suffix = ` - swap error: ${swapErr.message}`;
               }
             }
-            notifyClose({ pair: p.pair, pnlUsd: closeResult.pnl_usd || 0, pnlPct: closeResult.pnl_pct || 0 }).catch(() => {});
+            notifyClose({
+              pair: p.pair,
+              pnlUsd: closeResult.pnl_usd || 0,
+              pnlPct: closeResult.pnl_pct || 0,
+              pnlSol: closeResult.pnl_sol,
+              feesEarnedUsd: closeResult.fees_earned_usd,
+              feesEarnedSol: closeResult.fees_earned_sol,
+              deployedSol: closeResult.deployed_sol,
+              strategy: closeResult.strategy,
+              holdMinutes: closeResult.minutes_held,
+              reason: closeResult.close_reason || act.reason,
+            }).catch(() => {});
             mgmtReport += `\n\nClosed ${p.pair} (${act.reason})${suffix}`;
           } else {
             log("cron_error", `Close failed for ${p.pair}: ${closeResult.error}`);
@@ -1217,6 +1243,20 @@ if (isTTY) {
         const result = await closePosition({ position_address: pos.position });
         if (result.success) {
           const closeTxs = result.close_txs?.length ? result.close_txs : result.txs;
+          await notifyClose({
+            pair: pos.pair,
+            pnlUsd: result.pnl_usd ?? 0,
+            pnlPct: result.pnl_pct ?? 0,
+            pnlSol: result.pnl_sol,
+            feesEarnedUsd: result.fees_earned_usd,
+            feesEarnedSol: result.fees_earned_sol,
+            deployedSol: result.deployed_sol,
+            strategy: result.strategy,
+            holdMinutes: result.minutes_held,
+            reason: result.close_reason,
+          });
+          await sendMessage(`Close txs: ${closeTxs?.join(", ") || "n/a"}`);
+          return;
           const claimNote = result.claim_txs?.length ? `\nClaim txs: ${result.claim_txs.join(", ")}` : "";
           await sendMessage(`✅ Closed ${pos.pair}\nPnL: ${config.management.solMode ? "◎" : "$"}${result.pnl_usd ?? "?"} | close txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}`);
         } else {
