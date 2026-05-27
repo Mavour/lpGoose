@@ -776,11 +776,17 @@ function scrollLog() {
   el.scrollTop = el.scrollHeight;
 }
 
+function toWITA(iso) {
+  const d = new Date(iso);
+  d.setTime(d.getTime() + 8 * 3600000);
+  return d.toISOString().replace('Z','');
+}
 function colorizeLog(text) {
   let h = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   h = h.replace(/\[(\d{4}-\d{2}-\d{2}T[^\]]+)\]\s*\[(\w+)\]/g, (m, ts, cat) => {
     const c = cat.toLowerCase();
-    return `<span class="log-ts">[${ts}]</span> <span class="log-cat log-cat-${c}">[${cat}]</span>`;
+    const wita = toWITA(ts);
+    return `<span class="log-ts">[${wita}]</span> <span class="log-cat log-cat-${c}">[${cat}]</span>`;
   });
   return h;
 }
