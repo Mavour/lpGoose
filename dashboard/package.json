@@ -1,0 +1,9 @@
+{
+  "name": "bravonoid-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bravonoid DLMM LP Dashboard",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
