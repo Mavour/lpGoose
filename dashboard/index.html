@@ -367,7 +367,7 @@ a{color:var(--accent);text-decoration:none}
     <div class="card-body">
       <table class="data-table" id="positionsTable">
         <thead><tr>
-          <th>Pool</th><th>Strategy</th><th>Amount</th><th>Range</th><th>Bins</th><th>Fees</th><th>Status</th><th>Age</th>
+          <th>Pool</th><th>Strategy</th><th>Amount</th><th>PnL</th><th>Range</th><th>Bins</th><th>Fees</th><th>Status</th><th>Age</th>
         </tr></thead>
         <tbody id="positionsBody"></tbody>
       </table>
@@ -590,6 +590,7 @@ function renderPositions(list) {
     <td><strong>${p.pool_name||shortAddr(p.pool)}</strong></td>
     <td>${stratBadge(p.strategy)}</td>
     <td class="text-mono">${(p.amount_sol||0).toFixed(2)} SOL</td>
+    <td class="text-mono text-xs">${p.pnl_usd != null ? (p.pnl_usd >= 0 ? '<span class="pnl-pos">+$'+p.pnl_usd.toFixed(2)+'</span>' : '<span class="pnl-neg">-$'+Math.abs(p.pnl_usd).toFixed(2)+'</span>') : '-'}${p.pnl_pct != null ? ' ' + (p.pnl_pct >= 0 ? '<span class="pnl-pos">+'+p.pnl_pct.toFixed(2)+'%</span>' : '<span class="pnl-neg">'+p.pnl_pct.toFixed(2)+'%</span>') : ''}</td>
     <td class="text-mono text-xs">${p.bin_range ? p.bin_range.min+'-'+p.bin_range.max : '-'}</td>
     <td class="text-mono text-xs">${bins != null ? bins : '-'}</td>
     <td class="text-mono text-xs">${p.total_fees_claimed_usd != null ? '$'+p.total_fees_claimed_usd.toFixed(2) : '-'}</td>
@@ -603,6 +604,7 @@ function renderPositions(list) {
     <div class="row"><span class="pool-name">${p.pool_name||shortAddr(p.pool)}</span>${stratBadge(p.strategy)}</div>
     <div class="divider"></div>
     <div class="row"><span class="label">Amount</span><span class="value">${(p.amount_sol||0).toFixed(2)} SOL</span></div>
+    <div class="row"><span class="label">PnL</span><span class="value text-xs">${p.pnl_usd != null ? (p.pnl_usd >= 0 ? '<span class="pnl-pos">+$'+p.pnl_usd.toFixed(2)+'</span>' : '<span class="pnl-neg">-$'+Math.abs(p.pnl_usd).toFixed(2)+'</span>') : '-'}${p.pnl_pct != null ? ' ' + (p.pnl_pct >= 0 ? '<span class="pnl-pos">+'+p.pnl_pct.toFixed(2)+'%</span>' : '<span class="pnl-neg">'+p.pnl_pct.toFixed(2)+'%</span>') : ''}</span></div>
     <div class="row"><span class="label">Range</span><span class="value text-xs">${p.bin_range ? p.bin_range.min+'-'+p.bin_range.max : '-'}</span></div>
     <div class="row"><span class="label">Bins</span><span class="value text-xs">${bins != null ? bins : '-'}</span></div>
     <div class="row"><span class="label">Fees</span><span class="value">${p.total_fees_claimed_usd != null ? '$'+p.total_fees_claimed_usd.toFixed(2) : '-'}</span></div>

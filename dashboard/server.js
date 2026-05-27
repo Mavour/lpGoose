@@ -1,4 +1,5 @@
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
@@ -63,6 +64,27 @@ function serveFile(res, fp) {
   });
 }
 
+// ─── helpers ──────────────────────────────────────────────
+function httpGetJson(url, cb) {
+  const mod = url.startsWith('https') ? https : http;
+  mod.get(url, { timeout: 8000 }, (r) => {
+    let d = '';
+    r.on('data', c => d += c);
+    r.on('end', () => {
+      try { cb(null, JSON.parse(d)); } catch (e) { cb(e); }
+    });
+  }).on('error', cb);
+}
+
+function getWalletPubkey() {
+  try {
+    const pk = process.env.WALLET_PRIVATE_KEY;
+    if (!pk) return null;
+    const bs58 = require(path.join(ROOT, 'node_modules', 'bs58'));
+    return bs58.encode(bs58.decode(pk).slice(32, 64));
+  } catch { return null; }
+}
+
 // ─── API: positions ───────────────────────────────────────
 function apiPositions(req, res) {
   const sp = path.join(ROOT, 'state.json');
@@ -70,7 +92,10 @@ function apiPositions(req, res) {
     if (e) return json(res, []);
     try {
       const state = JSON.parse(d);
-      const list = Object.values(state.positions || {}).filter(p => !p.closed).map(p => ({
+      const positions = Object.values(state.positions || {}).filter(p => !p.closed);
+      if (!positions.length) return json(res, []);
+
+      const baseList = positions.map(p => ({
         position:      p.position,
         pool:          p.pool,
         pool_name:     p.pool_name,
@@ -89,7 +114,39 @@ function apiPositions(req, res) {
         rebalance_count: p.rebalance_count,
         notes:         p.notes,
       }));
-      json(res, list);
+
+      const wallet = getWalletPubkey();
+      if (!wallet) return json(res, baseList);
+
+      const pools = [...new Set(positions.map(p => p.pool))];
+      let pending = pools.length;
+      const pnlByPos = {};
+
+      for (const pool of pools) {
+        const url = `https://dlmm.datapi.meteora.ag/positions/${pool}/pnl?user=${wallet}&status=open&pageSize=100&page=1`;
+        httpGetJson(url, (err, data) => {
+          if (!err && data) {
+            const items = data.positions || data.data || [];
+            for (const item of items) {
+              const addr = item.positionAddress || item.address || item.position;
+              if (addr) pnlByPos[addr] = item;
+            }
+          }
+          pending--;
+          if (pending === 0) respond();
+        });
+      }
+
+      function respond() {
+        const list = baseList.map(p => ({
+          ...p,
+          pnl_usd: pnlByPos[p.position]?.pnlUsd ?? pnlByPos[p.position]?.pnlSol ?? null,
+          pnl_pct: pnlByPos[p.position]?.pnlPctChange ?? pnlByPos[p.position]?.pnlSolPctChange ?? null,
+        }));
+        json(res, list);
+      }
+
+      if (!pools.length) respond();
     } catch { json(res, []); }
   });
 }
