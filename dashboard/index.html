@@ -367,7 +367,7 @@ a{color:var(--accent);text-decoration:none}
     <div class="card-body">
       <table class="data-table" id="positionsTable">
         <thead><tr>
-          <th>Pool</th><th>Strategy</th><th>Amount</th><th>Range</th><th>Fees</th><th>Status</th><th>Age</th>
+          <th>Pool</th><th>Strategy</th><th>Amount</th><th>Range</th><th>Bins</th><th>Fees</th><th>Status</th><th>Age</th>
         </tr></thead>
         <tbody id="positionsBody"></tbody>
       </table>
@@ -584,25 +584,31 @@ function renderPositions(list) {
   }
   empty.classList.remove('show');
 
-  document.getElementById('positionsBody').innerHTML = list.map(p => `<tr>
+  document.getElementById('positionsBody').innerHTML = list.map(p => {
+    const bins = p.bin_range ? Math.abs(p.bin_range.max - p.bin_range.min) : null;
+    return `<tr>
     <td><strong>${p.pool_name||shortAddr(p.pool)}</strong></td>
     <td>${stratBadge(p.strategy)}</td>
     <td class="text-mono">${(p.amount_sol||0).toFixed(2)} SOL</td>
     <td class="text-mono text-xs">${p.bin_range ? p.bin_range.min+'-'+p.bin_range.max : '-'}</td>
+    <td class="text-mono text-xs">${bins != null ? bins : '-'}</td>
     <td class="text-mono text-xs">${p.total_fees_claimed_usd != null ? '$'+p.total_fees_claimed_usd.toFixed(2) : '-'}</td>
     <td>${statusBadge(p)}</td>
     <td class="text-mono text-xs">${fmtAge(p.deployed_at)}</td>
-  </tr>`).join('');
+  </tr>`}).join('');
 
-  document.getElementById('positionsCards').innerHTML = list.map(p => `<div class="pos-card">
+  document.getElementById('positionsCards').innerHTML = list.map(p => {
+    const bins = p.bin_range ? Math.abs(p.bin_range.max - p.bin_range.min) : null;
+    return `<div class="pos-card">
     <div class="row"><span class="pool-name">${p.pool_name||shortAddr(p.pool)}</span>${stratBadge(p.strategy)}</div>
     <div class="divider"></div>
     <div class="row"><span class="label">Amount</span><span class="value">${(p.amount_sol||0).toFixed(2)} SOL</span></div>
     <div class="row"><span class="label">Range</span><span class="value text-xs">${p.bin_range ? p.bin_range.min+'-'+p.bin_range.max : '-'}</span></div>
+    <div class="row"><span class="label">Bins</span><span class="value text-xs">${bins != null ? bins : '-'}</span></div>
     <div class="row"><span class="label">Fees</span><span class="value">${p.total_fees_claimed_usd != null ? '$'+p.total_fees_claimed_usd.toFixed(2) : '-'}</span></div>
     <div class="row"><span class="label">Status</span><span>${statusBadge(p)}</span></div>
     <div class="row"><span class="label">Age</span><span class="value text-xs">${fmtAge(p.deployed_at)}</span></div>
-  </div>`).join('');
+  </div>`}).join('');
 }
 
 // ─── render history ───
