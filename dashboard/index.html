@@ -602,6 +602,8 @@ function renderPositions(list) {
 
   document.getElementById('positionsCards').innerHTML = list.map(p => {
     const bins = p.bin_range ? Math.abs(p.bin_range.max - p.bin_range.min) : null;
+    const pnlUsd = p.pnl_usd != null ? Number(p.pnl_usd) : null;
+    const pnlPct = p.pnl_pct != null ? Number(p.pnl_pct) : null;
     return `<div class="pos-card">
     <div class="row"><span class="pool-name">${p.pool_name||shortAddr(p.pool)}</span>${stratBadge(p.strategy)}</div>
     <div class="divider"></div>
