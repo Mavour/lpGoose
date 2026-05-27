@@ -1246,8 +1246,6 @@ if (isTTY) {
           });
           await sendMessage(`Close txs: ${closeTxs?.join(", ") || "n/a"}`);
           return;
-          const claimNote = result.claim_txs?.length ? `\nClaim txs: ${result.claim_txs.join(", ")}` : "";
-          await sendMessage(`✅ Closed ${pos.pair}\nPnL: ${config.management.solMode ? "◎" : "$"}${result.pnl_usd ?? "?"} | close txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}`);
         } else {
           await sendMessage(`❌ Close failed: ${JSON.stringify(result)}`);
         }

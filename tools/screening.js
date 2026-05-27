@@ -296,6 +296,8 @@ export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
   const top10Pct = numberOrNull(tokenInfo?.audit?.top_holders_pct);
   if (top10Pct != null && s.maxTop10Pct != null && top10Pct > s.maxTop10Pct) return fail(`top10 ${top10Pct}% > max ${s.maxTop10Pct}%`);
 
+  if (pool.bundle_pct != null && s.maxBundlePct != null && pool.bundle_pct > s.maxBundlePct) return fail(`bundle ${pool.bundle_pct}% > max ${s.maxBundlePct}%`);
+
   if (pool.is_wash) return fail("wash trading flagged");
   if (pool.is_rugpull) return fail("rugpull flagged");
 
