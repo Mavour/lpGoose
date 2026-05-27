@@ -7,8 +7,10 @@
 
 import fs from "fs";
 import { log } from "./logger.js";
+import { config } from "./config.js";
 
 const POOL_MEMORY_FILE = "./pool-memory.json";
+const TOKEN_CLOSE_COOLDOWNS_KEY = "__token_close_cooldowns";
 
 function load() {
   if (!fs.existsSync(POOL_MEMORY_FILE)) return {};
@@ -113,6 +115,55 @@ export function isPoolOnCooldown(poolAddress) {
   const entry = db[poolAddress];
   if (!entry?.cooldown_until) return false;
   return new Date(entry.cooldown_until) > new Date();
+}
+
+export function setTokenCloseCooldown({
+  base_mint,
+  pool_name = null,
+  position = null,
+  reason = null,
+  duration_minutes = null,
+} = {}) {
+  if (!base_mint) return { saved: false, reason: "base_mint required" };
+
+  const duration = Number.isFinite(Number(duration_minutes))
+    ? Number(duration_minutes)
+    : Math.max(1, Number(config.schedule.managementIntervalMin) || 1);
+  const now = Date.now();
+  const cooldownUntil = new Date(now + duration * 60_000).toISOString();
+  const db = load();
+  if (!db[TOKEN_CLOSE_COOLDOWNS_KEY]) db[TOKEN_CLOSE_COOLDOWNS_KEY] = {};
+
+  db[TOKEN_CLOSE_COOLDOWNS_KEY][base_mint] = {
+    base_mint,
+    pool_name,
+    position,
+    reason,
+    started_at: new Date(now).toISOString(),
+    cooldown_until: cooldownUntil,
+    duration_minutes: duration,
+  };
+
+  save(db);
+  log("pool-memory", `Close cooldown set for ${pool_name || base_mint.slice(0, 8)} token ${base_mint.slice(0, 8)} until ${cooldownUntil}`);
+  return {
+    saved: true,
+    base_mint,
+    pool_name,
+    position,
+    reason,
+    cooldown_until: cooldownUntil,
+    duration_minutes: duration,
+  };
+}
+
+export function getTokenCloseCooldown(baseMint) {
+  if (!baseMint) return null;
+  const db = load();
+  const entry = db[TOKEN_CLOSE_COOLDOWNS_KEY]?.[baseMint];
+  if (!entry?.cooldown_until) return null;
+  if (new Date(entry.cooldown_until) <= new Date()) return null;
+  return entry;
 }
 
 // ─── Read ──────────────────────────────────────────────────────

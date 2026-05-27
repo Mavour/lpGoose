@@ -19,7 +19,7 @@ import {
   syncOpenPositions,
 } from "../state.js";
 import { recordPerformance } from "../lessons.js";
-import { isPoolOnCooldown } from "../pool-memory.js";
+import { isPoolOnCooldown, setTokenCloseCooldown } from "../pool-memory.js";
 import { normalizeMint } from "./wallet.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
@@ -782,6 +782,14 @@ export async function closePosition({ position_address, reason }) {
         close_reason: reason || "agent decision",
       });
 
+      const baseMint = pool.lbPair.tokenXMint.toString();
+      const closeCooldown = setTokenCloseCooldown({
+        base_mint: baseMint,
+        pool_name: tracked.pool_name || poolAddress.slice(0, 8),
+        position: position_address,
+        reason: reason || "agent decision",
+      });
+
       return {
         success: true,
         position: position_address,
@@ -799,9 +807,18 @@ export async function closePosition({ position_address, reason }) {
         strategy: tracked.strategy,
         minutes_held: minutesHeld,
         close_reason: reason || "agent decision",
-        base_mint: pool.lbPair.tokenXMint.toString(),
+        base_mint: baseMint,
+        close_cooldown: closeCooldown,
       };
     }
+
+    const baseMint = pool.lbPair.tokenXMint.toString();
+    const closeCooldown = setTokenCloseCooldown({
+      base_mint: baseMint,
+      pool_name: poolAddress.slice(0, 8),
+      position: position_address,
+      reason: reason || "agent decision",
+    });
 
     return {
       success: true,
@@ -811,7 +828,8 @@ export async function closePosition({ position_address, reason }) {
       claim_txs: claimTxHashes,
       close_txs: closeTxHashes,
       txs: txHashes,
-      base_mint: pool.lbPair.tokenXMint.toString(),
+      base_mint: baseMint,
+      close_cooldown: closeCooldown,
     };
   } catch (error) {
     log("close_error", error.message);

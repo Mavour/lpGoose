@@ -3,7 +3,7 @@ import { isBlacklisted } from "../token-blacklist.js";
 import { isDevBlocked, getBlockedDevs } from "../dev-blocklist.js";
 import { log } from "../logger.js";
 import { getGmgnPoolFees } from "./gmgn.js";
-import { getPoolMemory, isPoolOnCooldown } from "../pool-memory.js";
+import { getPoolMemory, getTokenCloseCooldown, isPoolOnCooldown } from "../pool-memory.js";
 
 const DATAPI_JUP = "https://datapi.jup.ag/v1";
 
@@ -262,6 +262,14 @@ export async function getTopCandidates({ limit = 10 } = {}) {
 export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
   const s = config.screening;
   const fail = (reason, memoryRisk = null) => ({ pass: false, reason, memoryRisk });
+  const closeCooldown = getTokenCloseCooldown(pool.base?.mint);
+  if (closeCooldown) {
+    return fail(
+      `close_cooldown: token ${pool.base.mint.slice(0, 8)} blocked until ${closeCooldown.cooldown_until}`,
+      `close_cooldown: ${closeCooldown.pool_name || pool.base.mint.slice(0, 8)} until ${closeCooldown.cooldown_until}`
+    );
+  }
+
   const memoryRisk = getMemoryRisk(pool.pool);
 
   if (memoryRisk?.reject) return fail(memoryRisk.reason, memoryRisk.reason);
