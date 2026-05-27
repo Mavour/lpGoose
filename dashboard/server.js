@@ -138,8 +138,8 @@ function apiBalance(req, res) {
       .filter(f => /^agent-\d{4}-\d{2}-\d{2}\.log$/.test(f)).sort().reverse();
     if (logs.length) {
       const txt = fs.readFileSync(path.join(LOGS_DIR, logs[0]), 'utf-8');
-      const m = txt.match(/[Ss][Oo][Ll]\s*[Bb]alance[:\s]+([\d.]+)/);
-      if (m) return json(res, { balance: +Number(m[1]).toFixed(2) });
+      const m = txt.match(/(?:wallet|balance)\s*[:\s]\s*([\d.]+)\s*SOL|SOL\s*Balance\s*[|\s]\s*([\d.]+)\s*SOL/i);
+      if (m) return json(res, { balance: +Number(m[1]||m[2]).toFixed(2) });
     }
   } catch {}
 
