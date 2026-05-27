@@ -6,6 +6,20 @@ const PORT = process.env.PORT || 3456;
 const ROOT = path.resolve(__dirname, '..');
 const LOGS_DIR = path.join(ROOT, 'logs');
 
+// load .env
+try {
+  const envText = fs.readFileSync(path.join(ROOT, '.env'), 'utf-8');
+  for (const line of envText.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith('#') || !t.includes('=')) continue;
+    const eq = t.indexOf('=');
+    const k = t.slice(0, eq).trim();
+    let v = t.slice(eq + 1).trim();
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+    if (!process.env[k]) process.env[k] = v;
+  }
+} catch {}
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js':   'application/javascript; charset=utf-8',
@@ -114,60 +128,64 @@ function apiConfig(req, res) {
   });
 }
 
+// ─── RPC balance helper ──────────────────────────────────
+function fetchRpcBalance(cb) {
+  try {
+    const rpcUrl = process.env.RPC_URL;
+    const privB58 = process.env.WALLET_PRIVATE_KEY;
+    if (!rpcUrl || !privB58) return cb(null);
+
+    const bs58 = require(path.join(ROOT, 'node_modules', 'bs58'));
+    const keyBytes = bs58.decode(privB58);
+    // 64-byte Solana secret key: last 32 = pubkey
+    const pubkey = bs58.encode(keyBytes.slice(32, 64));
+
+    const u = new URL(rpcUrl);
+    const mod = u.protocol === 'https:' ? require('https') : require('http');
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [pubkey] });
+
+    const opts = {
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      timeout: 5000,
+    };
+
+    const cl = mod.request(opts, (r) => {
+      let d = '';
+      r.on('data', c => d += c);
+      r.on('end', () => {
+        try {
+          const j = JSON.parse(d);
+          if (j?.result?.value != null) return cb(j.result.value / 1e9);
+        } catch {}
+        cb(null);
+      });
+    });
+    cl.on('error', () => cb(null));
+    cl.write(body);
+    cl.end();
+  } catch { cb(null); }
+}
+
 // ─── API: balance ─────────────────────────────────────────
 function apiBalance(req, res) {
-  try {
-    // read all agent log files in chronological order
-    const files = fs.readdirSync(LOGS_DIR)
-      .filter(f => /^agent-\d{4}-\d{2}-\d{2}\.log$/.test(f)).sort();
-    if (!files.length) return json(res, { balance: 0 });
-
-    let balance = 0;
-    let hasWalletLine = false;
-
-    for (const file of files) {
-      const lines = fs.readFileSync(path.join(LOGS_DIR, file), 'utf-8').trim().split('\n');
-      for (const line of lines) {
-        // precise wallet balance → reset tracker
-        const wm = line.match(/(?:wallet|balance)\s*[:\s]\s*([\d.]+)\s*SOL/i);
-        if (wm) {
-          balance = +wm[1];
-          hasWalletLine = true;
-          continue;
-        }
-        // SOL Balance | X.XX SOL format
-        const bm = line.match(/SOL\s*Balance\s*[|\s]\s*([\d.]+)\s*SOL/i);
-        if (bm) {
-          balance = +bm[1];
-          hasWalletLine = true;
-          continue;
-        }
-        // deploy → subtract SOL (amount after comma = Y side = SOL)
-        const dm = line.match(/\[DEPLOY\]\s*Amount:\s*[\d.]+\s*\w+,\s*([\d.]+)\s*Y/i);
-        if (dm && hasWalletLine) {
-          balance -= +dm[1];
-          continue;
-        }
-        // close → add back withdrawn SOL (only if we have a known balance)
-        const cm = line.match(/withdrawn=([\d.]+)/i);
-        if (cm && hasWalletLine) {
-          // withdrawn may be in USD; only use if units match — skip for now
-        }
+  fetchRpcBalance((sol) => {
+    if (sol !== null) return json(res, { balance: +sol.toFixed(2) });
+    // fallback: last wallet line from agent log
+    try {
+      const files = fs.readdirSync(LOGS_DIR)
+        .filter(f => /^agent-\d{4}-\d{2}-\d{2}\.log$/.test(f)).sort().reverse();
+      for (const f of files) {
+        const txt = fs.readFileSync(path.join(LOGS_DIR, f), 'utf-8');
+        const m = txt.match(/(?:wallet)\s*[:\s]\s*([\d.]+)\s*SOL/i);
+        if (m) return json(res, { balance: +Number(m[1]).toFixed(2) });
       }
-    }
-
-    if (hasWalletLine) {
-      return json(res, { balance: +Math.max(balance, 0).toFixed(2) });
-    }
-
-    // last wallet line value if no deploy deductions needed
-    const lastLog = files[files.length - 1];
-    const allLines = fs.readFileSync(path.join(LOGS_DIR, lastLog), 'utf-8');
-    const m = allLines.match(/(?:wallet|balance)\s*[:\s]\s*([\d.]+)\s*SOL/i);
-    if (m) return json(res, { balance: +Number(m[1]).toFixed(2) });
-  } catch {}
-
-  json(res, { balance: 0 });
+    } catch {}
+    json(res, { balance: 0 });
+  });
 }
 
 // ─── API: log list ────────────────────────────────────────
