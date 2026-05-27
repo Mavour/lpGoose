@@ -286,6 +286,21 @@ a{color:var(--accent);text-decoration:none}
 .log-cat-screening{color:#818cf8}
 .log-cat-pnl{color:#f472b6}
 
+/* ─── pagination ─── */
+.pagination{
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  padding:10px 16px;border-top:1px solid var(--border);
+  font-size:.75rem;color:var(--text3);
+}
+.pagination .page-btn{
+  padding:4px 12px;border-radius:var(--radius-sm);border:1px solid var(--border);
+  background:var(--bg2);color:var(--text2);cursor:pointer;font-size:.72rem;
+  transition:all .15s;font-family:var(--mono);user-select:none;
+}
+.pagination .page-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-dim)}
+.pagination .page-btn:disabled{opacity:.3;cursor:default;border-color:var(--border);color:var(--text3);background:var(--bg2)}
+.pagination .page-info{font-family:var(--mono);font-size:.7rem;color:var(--text3);min-width:80px;text-align:center}
+
 /* ─── config page ─── */
 .config-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px}
 .config-section{
@@ -376,6 +391,11 @@ a{color:var(--accent);text-decoration:none}
         <tbody id="historyBody"></tbody>
       </table>
       <div class="card-list" id="historyCards"></div>
+      <div class="pagination" id="historyPagination" style="display:none">
+        <button class="page-btn" id="historyPrev">← Prev</button>
+        <span class="page-info" id="historyPageInfo"></span>
+        <button class="page-btn" id="historyNext">Next →</button>
+      </div>
       <div class="empty-state" id="historyEmpty">
         <div class="icon">○</div>
         <p>No position history yet</p>
@@ -411,6 +431,9 @@ let currentSSE = null;
 let selectedLogFile = '';
 let appConfig = { solMode: false, maxPositions: 3 };
 let lastStats = null;
+let fullHistoryData = [];
+let historyPage = 0;
+const HISTORY_PER_PAGE = 10;
 
 const CONFIG_GROUPS = {
   'Preset':     ['preset','strategy','binsBelow','solMode','dryRun'],
@@ -583,17 +606,29 @@ function renderPositions(list) {
 
 // ─── render history ───
 function renderHistory(list) {
-  document.getElementById('historyCount').textContent = list.length;
+  fullHistoryData = list;
+  const total = list.length;
+  document.getElementById('historyCount').textContent = total;
   const empty = document.getElementById('historyEmpty');
-  if (!list.length) {
+  const pag = document.getElementById('historyPagination');
+
+  if (!total) {
     empty.classList.add('show');
     document.getElementById('historyBody').innerHTML = '';
     document.getElementById('historyCards').innerHTML = '';
+    pag.style.display = 'none';
     return;
   }
   empty.classList.remove('show');
 
-  document.getElementById('historyBody').innerHTML = list.map(p => `<tr>
+  const maxPage = Math.max(0, Math.ceil(total / HISTORY_PER_PAGE) - 1);
+  if (historyPage > maxPage) historyPage = maxPage;
+
+  const start = historyPage * HISTORY_PER_PAGE;
+  const end = Math.min(start + HISTORY_PER_PAGE, total);
+  const pageItems = list.slice(start, end);
+
+  document.getElementById('historyBody').innerHTML = pageItems.map(p => `<tr>
     <td><strong>${p.pool_name||'-'}</strong></td>
     <td>${stratBadge(p.strategy)}</td>
     <td class="text-mono">${fmtPnL(p.pnl_usd)}</td>
@@ -604,7 +639,7 @@ function renderHistory(list) {
     <td class="text-xs" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.close_reason||'-'}</td>
   </tr>`).join('');
 
-  document.getElementById('historyCards').innerHTML = list.map(p => `<div class="pos-card">
+  document.getElementById('historyCards').innerHTML = pageItems.map(p => `<div class="pos-card">
     <div class="row"><span class="pool-name">${p.pool_name||'-'}</span>${stratBadge(p.strategy)}</div>
     <div class="divider"></div>
     <div class="row"><span class="label">PnL</span><span class="value">${fmtPnL(p.pnl_usd)} (${fmtPnLPct(p.pnl_pct)})</span></div>
@@ -613,6 +648,23 @@ function renderHistory(list) {
     <div class="row"><span class="label">R.Eff</span><span>${rangeEffBadge(p.range_efficiency)}</span></div>
     <div class="row"><span class="label">Reason</span><span class="value text-xs" style="max-width:200px">${p.close_reason||'-'}</span></div>
   </div>`).join('');
+
+  if (total > HISTORY_PER_PAGE) {
+    pag.style.display = 'flex';
+    document.getElementById('historyPrev').disabled = historyPage === 0;
+    document.getElementById('historyNext').disabled = historyPage >= maxPage;
+    document.getElementById('historyPageInfo').textContent = (historyPage + 1) + '/' + (maxPage + 1) + ' (' + start + '-' + end + '/' + total + ')';
+  } else {
+    pag.style.display = 'none';
+  }
+}
+
+function historyPrevPage() {
+  if (historyPage > 0) { historyPage--; renderHistory(fullHistoryData); }
+}
+function historyNextPage() {
+  const maxPage = Math.max(0, Math.ceil(fullHistoryData.length / HISTORY_PER_PAGE) - 1);
+  if (historyPage < maxPage) { historyPage++; renderHistory(fullHistoryData); }
 }
 
 // ─── config ───
@@ -742,6 +794,8 @@ async function initAppConfig() {
 }
 
 // ─── events ───
+document.getElementById('historyPrev').addEventListener('click', historyPrevPage);
+document.getElementById('historyNext').addEventListener('click', historyNextPage);
 document.getElementById('logFileSelect').addEventListener('change', e => {
   if (e.target.value && e.target.value !== selectedLogFile) {
     selectedLogFile = e.target.value;
