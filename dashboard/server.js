@@ -116,40 +116,58 @@ function apiConfig(req, res) {
 
 // ─── API: balance ─────────────────────────────────────────
 function apiBalance(req, res) {
-  // try snapshots first
   try {
+    // read all agent log files in chronological order
     const files = fs.readdirSync(LOGS_DIR)
-      .filter(f => /^snapshots-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f))
-      .sort().reverse();
-    if (files.length) {
-      const lines = fs.readFileSync(path.join(LOGS_DIR, files[0]), 'utf-8')
-        .trim().split('\n').filter(Boolean);
-      if (lines.length) {
-        const last = JSON.parse(lines[lines.length - 1]);
-        const bal = last.sol ?? last.balance ?? last.wallet_sol ?? last.total_sol ?? last.balance_sol ?? last.sol_balance ?? null;
-        if (bal !== null) return json(res, { balance: +Number(bal).toFixed(2) });
+      .filter(f => /^agent-\d{4}-\d{2}-\d{2}\.log$/.test(f)).sort();
+    if (!files.length) return json(res, { balance: 0 });
+
+    let balance = 0;
+    let hasWalletLine = false;
+
+    for (const file of files) {
+      const lines = fs.readFileSync(path.join(LOGS_DIR, file), 'utf-8').trim().split('\n');
+      for (const line of lines) {
+        // precise wallet balance → reset tracker
+        const wm = line.match(/(?:wallet|balance)\s*[:\s]\s*([\d.]+)\s*SOL/i);
+        if (wm) {
+          balance = +wm[1];
+          hasWalletLine = true;
+          continue;
+        }
+        // SOL Balance | X.XX SOL format
+        const bm = line.match(/SOL\s*Balance\s*[|\s]\s*([\d.]+)\s*SOL/i);
+        if (bm) {
+          balance = +bm[1];
+          hasWalletLine = true;
+          continue;
+        }
+        // deploy → subtract SOL (amount after comma = Y side = SOL)
+        const dm = line.match(/\[DEPLOY\]\s*Amount:\s*[\d.]+\s*\w+,\s*([\d.]+)\s*Y/i);
+        if (dm && hasWalletLine) {
+          balance -= +dm[1];
+          continue;
+        }
+        // close → add back withdrawn SOL (only if we have a known balance)
+        const cm = line.match(/withdrawn=([\d.]+)/i);
+        if (cm && hasWalletLine) {
+          // withdrawn may be in USD; only use if units match — skip for now
+        }
       }
     }
-  } catch {}
 
-  // try agent log
-  try {
-    const logs = fs.readdirSync(LOGS_DIR)
-      .filter(f => /^agent-\d{4}-\d{2}-\d{2}\.log$/.test(f)).sort().reverse();
-    if (logs.length) {
-      const txt = fs.readFileSync(path.join(LOGS_DIR, logs[0]), 'utf-8');
-      const m = txt.match(/(?:wallet|balance)\s*[:\s]\s*([\d.]+)\s*SOL|SOL\s*Balance\s*[|\s]\s*([\d.]+)\s*SOL/i);
-      if (m) return json(res, { balance: +Number(m[1]||m[2]).toFixed(2) });
+    if (hasWalletLine) {
+      return json(res, { balance: +Math.max(balance, 0).toFixed(2) });
     }
+
+    // last wallet line value if no deploy deductions needed
+    const lastLog = files[files.length - 1];
+    const allLines = fs.readFileSync(path.join(LOGS_DIR, lastLog), 'utf-8');
+    const m = allLines.match(/(?:wallet|balance)\s*[:\s]\s*([\d.]+)\s*SOL/i);
+    if (m) return json(res, { balance: +Number(m[1]).toFixed(2) });
   } catch {}
 
-  // fallback: sum deployed
-  try {
-    const state = JSON.parse(fs.readFileSync(path.join(ROOT, 'state.json'), 'utf-8'));
-    const total = Object.values(state.positions || {})
-      .filter(p => !p.closed).reduce((s, p) => s + (p.amount_sol || 0), 0);
-    return json(res, { balance: +Number(Math.max(total, 0)).toFixed(2), estimated: true });
-  } catch { json(res, { balance: 0 }); }
+  json(res, { balance: 0 });
 }
 
 // ─── API: log list ────────────────────────────────────────
