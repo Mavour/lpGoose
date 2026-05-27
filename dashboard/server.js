@@ -140,8 +140,8 @@ function apiPositions(req, res) {
       function respond() {
         const list = baseList.map(p => ({
           ...p,
-          pnl_usd: pnlByPos[p.position]?.pnlUsd ?? pnlByPos[p.position]?.pnlSol ?? null,
-          pnl_pct: pnlByPos[p.position]?.pnlPctChange ?? pnlByPos[p.position]?.pnlSolPctChange ?? null,
+          pnl_usd: +(pnlByPos[p.position]?.pnlUsd ?? pnlByPos[p.position]?.pnlSol ?? NaN) || null,
+          pnl_pct: +(pnlByPos[p.position]?.pnlPctChange ?? pnlByPos[p.position]?.pnlSolPctChange ?? NaN) || null,
         }));
         json(res, list);
       }
