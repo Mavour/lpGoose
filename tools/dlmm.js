@@ -115,8 +115,8 @@ export async function deployPosition({
   const activeBinsAbove = bins_above ?? 0;
 
   if (isPoolOnCooldown(pool_address)) {
-    log("deploy", `Pool ${pool_address.slice(0, 8)} is on cooldown (closed for low yield) — skipping`);
-    return { success: false, error: "Pool on cooldown — was recently closed for low yield. Try a different pool." };
+    log("deploy", `Pool ${pool_address.slice(0, 8)} is on cooldown — skipping`);
+    return { success: false, error: "Pool is on cooldown (recently closed). Try again later." };
   }
 
   if (process.env.DRY_RUN === "true") {

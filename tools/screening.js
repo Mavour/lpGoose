@@ -311,25 +311,7 @@ export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
 
 function getMemoryRisk(poolAddress) {
   if (!poolAddress) return null;
-  if (isPoolOnCooldown(poolAddress)) return { reject: true, reason: "memory_risk: active cooldown" };
-  const mem = getPoolMemory({ pool_address: poolAddress });
-  if (!mem?.known) return null;
-
-  const notes = Array.isArray(mem.notes) ? mem.notes : [];
-  const lastNote = notes[notes.length - 1]?.note || "";
-  if (/low yield|closed:\s*low yield/i.test(lastNote)) return { reject: true, reason: `memory_risk: ${lastNote}` };
-
-  const history = Array.isArray(mem.history) ? mem.history : [];
-  const recent = history.slice(-3);
-  const recentLosses = recent.filter((d) => Number(d.pnl_pct) < 0).length;
-  const snaps = Array.isArray(mem.recent_snapshots) ? mem.recent_snapshots : [];
-  const oorCount = snaps.filter((s) => s.in_range === false).length;
-  if (snaps.length >= 6 && oorCount >= 5) return { reject: true, reason: `memory_risk: OOR in ${oorCount}/${snaps.length} recent cycles` };
-  if ((mem.total_deploys || 0) >= 2 && Number(mem.avg_pnl_pct) < 0 && Number(mem.win_rate) <= 0.5) {
-    return { reject: true, reason: `memory_risk: avg PnL ${mem.avg_pnl_pct}%, win rate ${mem.win_rate}` };
-  }
-  if (recent.length >= 2 && recentLosses >= 2) return { reject: true, reason: "memory_risk: repeated recent losses" };
-  if (mem.last_outcome === "loss") return { reject: false, reason: "memory_risk: last outcome loss" };
+  if (isPoolOnCooldown(poolAddress)) return { reject: true, reason: "pool on cooldown (whale exit)" };
   return null;
 }
 

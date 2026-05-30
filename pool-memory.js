@@ -98,11 +98,12 @@ export function recordPoolDeploy(poolAddress, deployData) {
     entry.base_mint = deployData.base_mint;
   }
 
-  // Set cooldown for low yield closes — pool wasn't profitable enough, don't redeploy soon
-  if (/low yield/i.test(deploy.close_reason || "")) {
-    const cooldownHours = 4;
-    entry.cooldown_until = new Date(Date.now() + cooldownHours * 60 * 60 * 1000).toISOString();
-    log("pool-memory", `Cooldown set for ${entry.name} until ${entry.cooldown_until} (low yield close)`);
+  // Set cooldown for whale exit — pool experienced sudden TVL drop
+  if (/whale exit/i.test(deploy.close_reason || "")) {
+    const cooldownMin = config.management.whaleGuardCooldownMin ?? 60;
+    entry.cooldown_until = new Date(Date.now() + cooldownMin * 60 * 1000).toISOString();
+    entry._pendingReset = true;
+    log("pool-memory", `Cooldown set for ${entry.name} until ${entry.cooldown_until} (whale exit)`);
   }
 
   save(db);
@@ -166,6 +167,32 @@ export function getTokenCloseCooldown(baseMint) {
   return entry;
 }
 
+/**
+ * Clean expired cooldowns: if a pool's cooldown has expired and it has
+ * a pending reset flag, clear its deploy history so it's treated as fresh.
+ */
+function cleanExpiredCooldowns() {
+  const db = load();
+  let changed = false;
+  for (const [addr, entry] of Object.entries(db)) {
+    if (addr.startsWith("__")) continue;
+    if (entry._pendingReset && entry.cooldown_until && new Date(entry.cooldown_until) <= new Date()) {
+      entry.deploys = [];
+      entry.total_deploys = 0;
+      entry.avg_pnl_pct = 0;
+      entry.win_rate = 0;
+      entry.last_deployed_at = null;
+      entry.last_outcome = null;
+      entry.snapshots = [];
+      delete entry.cooldown_until;
+      delete entry._pendingReset;
+      log("pool-memory", `Cleared history for ${entry.name} (${addr.slice(0, 8)}) after whale exit cooldown`);
+      changed = true;
+    }
+  }
+  if (changed) save(db);
+}
+
 // ─── Read ──────────────────────────────────────────────────────
 
 /**
@@ -174,6 +201,8 @@ export function getTokenCloseCooldown(baseMint) {
  */
 export function getPoolMemory({ pool_address }) {
   if (!pool_address) return { error: "pool_address required" };
+
+  cleanExpiredCooldowns();
 
   const db = load();
   const entry = db[pool_address];
@@ -198,7 +227,7 @@ export function getPoolMemory({ pool_address }) {
     last_outcome: entry.last_outcome,
     notes: entry.notes,
     recent_snapshots: (entry.snapshots || []).slice(-6),
-    history: entry.deploys.slice(-10), // last 10 deploys
+    history: entry.deploys.slice(-10),
   };
 }
 

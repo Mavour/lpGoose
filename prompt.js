@@ -119,7 +119,7 @@ NARRATIVE QUALITY (your main judgment call):
 - BAD: generic hype ("next 100x", "community token") with no identifiable subject
 - Smart wallets present → can override weak narrative, and are the only valid override for an OKX rugpull flag
 
-POOL MEMORY: Negative-only. Past losses, low-yield closes, cooldowns, or repeated OOR are skip/caution signals. Never use prior wins as a positive reason to deploy.
+POOL MEMORY: Informational only. Past performance is NOT used to filter or bias deploy decisions. Every pool is evaluated fresh based on current metrics.
 
 DEPLOY RULES:
 - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT default to a smaller number.

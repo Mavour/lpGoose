@@ -223,17 +223,8 @@ function derivLesson(perf) {
  * @returns {{ changes: Object, rationale: Object } | null}
  */
 export function evolveThresholds(perfData, config) {
-  if (!perfData || perfData.length < MIN_EVOLVE_POSITIONS) return null;
-
-  const winners = perfData.filter((p) => p.pnl_pct > 0);
-  const losers  = perfData.filter((p) => p.pnl_pct < -5);
-
-  // Need at least some signal in both directions before adjusting
-  const hasSignal = winners.length >= 2 || losers.length >= 2;
-  if (!hasSignal) return null;
-
-  const changes   = {};
-  const rationale = {};
+  // Disabled: all screening is fully deterministic with no historical bias
+  return null;
 
   // ── 1. maxVolatility ─────────────────────────────────────────
   // If losers tend to cluster at higher volatility → tighten the ceiling.
