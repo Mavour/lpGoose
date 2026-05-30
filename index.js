@@ -992,6 +992,15 @@ if (isTTY) {
       ["minTokenFeesSol", "Min fee SOL"],
       ["maxBotHoldersPct", "Max bots %"],
       ["maxTop10Pct", "Max top10 %"],
+      ["minHolders", "Min holders"],
+      ["minMcap", "Min mcap"],
+      ["maxMcap", "Max mcap"],
+      ["minBinStep", "Min bin step"],
+      ["maxBinStep", "Max bin step"],
+      ["category", "Category"],
+      ["minTokenAgeHours", "Min token age"],
+      ["maxTokenAgeHours", "Max token age"],
+      ["athFilterPct", "ATH filter %"],
       ["timeframe", "Timeframe"],
     ],
     risk: [
@@ -1008,6 +1017,9 @@ if (isTTY) {
       ["minAgeBeforeYieldCheck", "Min age yield"],
       ["outOfRangeWaitMinutes", "OOR wait min"],
       ["outOfRangeBinsToClose", "OOR bins close"],
+      ["positionSizePct", "Position size %"],
+      ["autoSwapAfterClaim", "Auto swap"],
+      ["minVolumeToRebalance", "Min vol rebalance"],
     ],
     exits: [
       ["takeProfitFeePct", "Take profit %"],
@@ -1019,12 +1031,15 @@ if (isTTY) {
     schedule: [
       ["managementIntervalMin", "Manage interval"],
       ["screeningIntervalMin", "Screen interval"],
+      ["healthCheckIntervalMin", "Health interval"],
     ],
     llm: [
       ["managementModel", "Manage model"],
       ["screeningModel", "Screen model"],
       ["generalModel", "General model"],
       ["temperature", "Temperature"],
+      ["maxTokens", "Max tokens"],
+      ["maxSteps", "Max steps"],
     ],
     strategy: [
       ["strategy", "Strategy"],
