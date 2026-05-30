@@ -271,8 +271,6 @@ export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
   }
 
   const memoryRisk = getMemoryRisk(pool.pool);
-
-  if (memoryRisk?.reject) return fail(memoryRisk.reason, memoryRisk.reason);
   if (pool.active_tvl != null && pool.active_tvl < s.minTvl) return fail(`tvl ${pool.active_tvl} < min ${s.minTvl}`);
   if (pool.active_tvl != null && pool.active_tvl > s.maxTvl) return fail(`tvl ${pool.active_tvl} > max ${s.maxTvl}`);
   if (pool.volume_window != null && pool.volume_window < s.minVolume) return fail(`volume ${pool.volume_window} < min ${s.minVolume}`);
