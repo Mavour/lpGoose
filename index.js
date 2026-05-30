@@ -614,7 +614,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         activeBin != null ? `  active_bin: ${activeBin}` : null,
         priceChange != null ? `  1h: price${priceChange >= 0 ? "+" : ""}${priceChange}%, net_buyers=${netBuyers ?? "?"}` : null,
         n?.narrative ? `  narrative: ${n.narrative.slice(0, 500)}` : `  narrative: none`,
-        (memoryRisk || pool.memory_risk) ? `  memory_risk: ${memoryRisk || pool.memory_risk}` : null,
+
       ].filter(Boolean).join("\n");
 
       return block;
@@ -629,7 +629,7 @@ PRE-LOADED CANDIDATES (${passing.length} pools):
 ${candidateBlocks.join("\n\n")}
 
 STEPS:
-1. Pick the best candidate from this hard-gated live list based on narrative quality, smart wallets, and pool metrics. Treat memory_risk as negative-only; never use prior wins as a positive reason to deploy.
+1. Pick the best candidate from this hard-gated live list based on narrative quality, smart wallets, and pool metrics.
 2. Call deploy_position (active_bin is pre-fetched above — no need to call get_active_bin).
    bins_below = round(35 + (volatility/5)*55) clamped to [35,90]. Use bin_step only within config range [${config.screening.minBinStep},${config.screening.maxBinStep}].
 3. Report in this exact format (no tables, no extra sections):
