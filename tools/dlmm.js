@@ -715,25 +715,29 @@ export async function closePosition({ position_address, reason }) {
       let feesUsd = tracked.total_fees_claimed_usd || 0;
       let pnlSol = null;
       let feesSol = null;
-      try {
-        const closedUrl = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${wallet.publicKey.toString()}&status=closed&pageSize=50&page=1`;
-        const res = await fetch(closedUrl);
-        if (res.ok) {
-          const data = await res.json();
-          const posEntry = (data.positions || []).find(p => p.positionAddress === position_address);
-          if (posEntry) {
-            pnlUsd        = parseFloat(posEntry.pnlUsd || 0);
-            pnlPct        = parseFloat(posEntry.pnlPctChange || 0);
-            finalValueUsd = parseFloat(posEntry.allTimeWithdrawals?.total?.usd || 0);
-            initialUsd    = parseFloat(posEntry.allTimeDeposits?.total?.usd || 0);
-            feesUsd       = parseFloat(posEntry.allTimeFees?.total?.usd || 0) || feesUsd;
-            log("close", `Closed PnL from API: pnl=${pnlUsd.toFixed(2)} USD (${pnlPct.toFixed(2)}%), withdrawn=${finalValueUsd.toFixed(2)}, deposited=${initialUsd.toFixed(2)}`);
-          } else {
-            log("close_warn", `Position not found in status=closed response — may still be settling`);
+      let posEntry = null;
+      for (let retry = 0; retry < 3; retry++) {
+        try {
+          const closedUrl = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${wallet.publicKey.toString()}&status=closed&pageSize=50&page=1`;
+          const res = await fetch(closedUrl);
+          if (res.ok) {
+            const data = await res.json();
+            posEntry = (data.positions || []).find(p => p.positionAddress === position_address);
+            if (posEntry) {
+              pnlUsd        = parseFloat(posEntry.pnlUsd || 0);
+              pnlPct        = parseFloat(posEntry.pnlPctChange || 0);
+              finalValueUsd = parseFloat(posEntry.allTimeWithdrawals?.total?.usd || 0);
+              initialUsd    = parseFloat(posEntry.allTimeDeposits?.total?.usd || 0);
+              feesUsd       = parseFloat(posEntry.allTimeFees?.total?.usd || 0) || feesUsd;
+              log("close", `Closed PnL from API: pnl=${pnlUsd.toFixed(2)} USD (${pnlPct.toFixed(2)}%), withdrawn=${finalValueUsd.toFixed(2)}, deposited=${initialUsd.toFixed(2)}`);
+              break;
+            }
+            log("close_warn", `Closed PnL retry ${retry + 1}/3: position not settled yet`);
           }
+        } catch (e) {
+          log("close_warn", `Closed PnL retry ${retry + 1}/3 failed: ${e.message}`);
         }
-      } catch (e) {
-        log("close_warn", `Closed PnL fetch failed: ${e.message}`);
+        if (retry < 2) await new Promise(r => setTimeout(r, 10000));
       }
       // Fallback to pre-close cache snapshot if closed API had no data
       if (finalValueUsd === 0) {
@@ -763,7 +767,7 @@ export async function closePosition({ position_address, reason }) {
         pnlSol = tracked.amount_sol * (pnlPct / 100);
       }
 
-      await recordPerformance({
+      recordPerformance({
         position: position_address,
         pool: poolAddress,
         pool_name: tracked.pool_name || poolAddress.slice(0, 8),
@@ -780,7 +784,7 @@ export async function closePosition({ position_address, reason }) {
         minutes_in_range: minutesHeld - minutesOOR,
         minutes_held: minutesHeld,
         close_reason: reason || "agent decision",
-      });
+      }).catch(e => log("close_warn", `Async PnL record failed: ${e.message}`));
 
       const baseMint = pool.lbPair.tokenXMint.toString();
       const closeCooldown = setTokenCloseCooldown({

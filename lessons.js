@@ -84,6 +84,12 @@ export async function recordPerformance(perf) {
     ? (perf.minutes_in_range / perf.minutes_held) * 100
     : 0;
 
+  // Guard against API settle errors: extreme loss + high in-range efficiency is contradictory
+  if (pnl_pct <= -90 && range_efficiency >= 80 && (!perf.close_reason || !perf.close_reason.includes("stop loss"))) {
+    log("lessons_warn", `Skipped suspicious PnL for ${perf.pool_name || perf.pool}: pnl=${pnl_pct.toFixed(1)}%, range_eff=${range_efficiency.toFixed(0)}%, reason=${perf.close_reason} — likely API settle error`);
+    return;
+  }
+
   const entry = {
     ...perf,
     pnl_usd: Math.round(pnl_usd * 100) / 100,
