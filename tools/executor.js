@@ -394,6 +394,10 @@ async function runSafetyChecks(name, args) {
         return { pass: false, reason: `fee_tvl ${liveFeeTvl}% < hard minimum 0.15%` };
       }
       const liveBaseMint = livePool.token_x?.address || livePool.mint_x || livePool.base_mint || null;
+      const SOL_MINT = "So11111111111111111111111111111111111111112";
+      if (livePool.token_y?.address && livePool.token_y.address !== SOL_MINT) {
+        return { pass: false, reason: `quote token ${livePool.token_y.symbol} is not SOL` };
+      }
 
       // Check position count limit + duplicate pool guard — force fresh scan to avoid stale cache
       const positions = await getMyPositions({ force: true });

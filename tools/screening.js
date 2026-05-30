@@ -262,6 +262,8 @@ export async function getTopCandidates({ limit = 10 } = {}) {
 export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
   const s = config.screening;
   const fail = (reason, memoryRisk = null) => ({ pass: false, reason, memoryRisk });
+  const SOL_MINT = "So11111111111111111111111111111111111111112";
+  if (pool.quote?.mint && pool.quote.mint !== SOL_MINT) return fail(`quote ${pool.quote.symbol} is not SOL`);
   const closeCooldown = getTokenCloseCooldown(pool.base?.mint);
   if (closeCooldown) {
     return fail(
