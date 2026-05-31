@@ -383,15 +383,16 @@ async function runSafetyChecks(name, args) {
         };
       }
 
-      // Hard gate: reject pools with fee_tvl below hard minimum 0.15 (literal, can't be overridden)
+      // Hard gate: reject pools with fee_tvl below config's minFeeActiveTvlRatio
+      const { minFeeActiveTvlRatio } = config.screening;
       const livePool = await getPoolDetail({ pool_address: args.pool_address, timeframe: config.screening.timeframe });
       const liveFeeTvl = livePool.fee_active_tvl_ratio > 0
         ? Number(livePool.fee_active_tvl_ratio.toFixed(4))
         : (livePool.active_tvl > 0 && livePool.fee != null
           ? Number(((livePool.fee / livePool.active_tvl) * 100).toFixed(4))
           : 0);
-      if (liveFeeTvl < 0.15) {
-        return { pass: false, reason: `fee_tvl ${liveFeeTvl}% < hard minimum 0.15%` };
+      if (liveFeeTvl < minFeeActiveTvlRatio) {
+        return { pass: false, reason: `fee_tvl ${liveFeeTvl}% < hard minimum ${minFeeActiveTvlRatio}%` };
       }
       const liveBaseMint = livePool.token_x?.address || livePool.mint_x || livePool.base_mint || null;
       const SOL_MINT = "So11111111111111111111111111111111111111112";
