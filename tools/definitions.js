@@ -367,39 +367,6 @@ WARNING: This executes a real on-chain transaction.`,
   {
     type: "function",
     function: {
-      name: "update_config",
-      description: `Update any of your operating parameters at runtime.
-Changes persist to user-config.json and take effect immediately — no restart needed.
-
-VALID KEYS (use EXACTLY these key names, nothing else):
-Screening: minFeeActiveTvlRatio, minTvl, maxTvl, minVolume, minOrganic, minHolders, minMcap, maxMcap, minBinStep, maxBinStep, timeframe, category, minTokenFeesSol
-Management: minClaimAmount, outOfRangeBinsToClose, outOfRangeWaitMinutes, minVolumeToRebalance, stopLossPct, takeProfitFeePct, minSolToOpen, deployAmountSol, gasReserve, positionSizePct
-Risk: maxPositions, maxDeployAmount
-Schedule: managementIntervalMin, screeningIntervalMin
-Models: managementModel, screeningModel, generalModel
-Strategy: binsBelow
-
-Reason is optional but helpful — logged as a lesson when provided.`,
-      parameters: {
-        type: "object",
-        properties: {
-          changes: {
-            type: "object",
-            description: "Key-value pairs of settings to update. e.g. { \"takeProfitFeePct\": 8 }"
-          },
-          reason: {
-            type: "string",
-            description: "Why you are making this change — what you observed that justified it"
-          }
-        },
-        required: ["changes"]
-      }
-    }
-  },
-
-  {
-    type: "function",
-    function: {
       name: "self_update",
       description: `Pull the latest code from git and restart the agent.
 Use when the user says "update", "pull latest", "update yourself", etc.

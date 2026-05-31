@@ -248,6 +248,7 @@ const WRITE_TOOLS = new Set([
   "claim_fees",
   "close_position",
   "swap_token",
+  "update_config",
 ]);
 
 /**
