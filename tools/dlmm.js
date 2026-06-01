@@ -121,17 +121,26 @@ export async function deployPosition({
 
   if (process.env.DRY_RUN === "true") {
     const totalBins = activeBinsBelow + activeBinsAbove;
+    const result = {
+      pool_address,
+      strategy: activeStrategy,
+      bins_below: activeBinsBelow,
+      bins_above: activeBinsAbove,
+      amount_x: amount_x || 0,
+      amount_y: amount_y || amount_sol || 0,
+      wide_range: totalBins > 69,
+    };
+    if (activeStrategy === "mixed") {
+      const ratio = config.strategy.mixedRatio || { bidask: 70, spot: 30 };
+      result.mixed_ratio = ratio;
+      result.layers = [
+        { strategy: "bid_ask", pct: ratio.bidask },
+        { strategy: "spot", pct: ratio.spot },
+      ];
+    }
     return {
       dry_run: true,
-      would_deploy: {
-        pool_address,
-        strategy: activeStrategy,
-        bins_below: activeBinsBelow,
-        bins_above: activeBinsAbove,
-        amount_x: amount_x || 0,
-        amount_y: amount_y || amount_sol || 0,
-        wide_range: totalBins > 69,
-      },
+      would_deploy: result,
       message: "DRY RUN — no transaction sent",
     };
   }
@@ -151,9 +160,10 @@ export async function deployPosition({
     bid_ask: StrategyType.BidAsk,
   };
 
+  const isMixed = activeStrategy === "mixed";
   const strategyType = strategyMap[activeStrategy];
-  if (strategyType === undefined) {
-    throw new Error(`Invalid strategy: ${activeStrategy}. Use spot, curve, or bid_ask.`);
+  if (!isMixed && strategyType === undefined) {
+    throw new Error(`Invalid strategy: ${activeStrategy}. Use spot, curve, bid_ask, or mixed.`);
   }
 
   // Calculate amounts
@@ -182,13 +192,21 @@ export async function deployPosition({
 
   try {
     const txHashes = [];
+    let mixedPartial = false;
+
+    // Pre-calculate mixed ratio split
+    let mixedBidaskX, mixedBidaskY, mixedSpotX, mixedSpotY;
+    if (isMixed) {
+      const ratio = config.strategy.mixedRatio || { bidask: 70, spot: 30 };
+      const total = ratio.bidask + ratio.spot;
+      mixedBidaskX = new BN(Math.floor((ratio.bidask / total) * Number(totalXLamports)));
+      mixedBidaskY = new BN(Math.floor((ratio.bidask / total) * Number(totalYLamports)));
+      mixedSpotX = new BN(Math.floor((ratio.spot / total) * Number(totalXLamports)));
+      mixedSpotY = new BN(Math.floor((ratio.spot / total) * Number(totalYLamports)));
+    }
 
     if (isWideRange) {
       // ── Wide Range Path (>69 bins) ─────────────────────────────────
-      // Solana limits inner instruction realloc to 10240 bytes, so we can't create
-      // a large position in a single initializePosition ix.
-      // Solution: createExtendedEmptyPosition (returns Transaction | Transaction[]),
-      //           then addLiquidityByStrategyChunkable (returns Transaction[]).
 
       // Phase 1: Create empty position (may be multiple txs)
       const createTxs = await pool.createExtendedEmptyPosition(
@@ -205,20 +223,91 @@ export async function deployPosition({
         log("deploy", `Create tx ${i + 1}/${createTxArray.length}: ${txHash}`);
       }
 
-      // Phase 2: Add liquidity (may be multiple txs)
-      const addTxs = await pool.addLiquidityByStrategyChunkable({
+      if (isMixed) {
+        // Phase 2: Add BidAsk layer (70%)
+        const bidaskTxs = await pool.addLiquidityByStrategyChunkable({
+          positionPubKey: newPosition.publicKey,
+          user: wallet.publicKey,
+          totalXAmount: mixedBidaskX,
+          totalYAmount: mixedBidaskY,
+          strategy: { minBinId, maxBinId, strategyType: StrategyType.BidAsk },
+          slippage: 10,
+        });
+        const bidaskTxArray = Array.isArray(bidaskTxs) ? bidaskTxs : [bidaskTxs];
+        for (let i = 0; i < bidaskTxArray.length; i++) {
+          const txHash = await sendAndConfirmTransaction(getConnection(), bidaskTxArray[i], [wallet]);
+          txHashes.push(txHash);
+          log("deploy", `Mixed BidAsk tx ${i + 1}/${bidaskTxArray.length}: ${txHash}`);
+        }
+
+        // Phase 3: Add Spot layer (30%) to same position
+        try {
+          const spotTxs = await pool.addLiquidityByStrategyChunkable({
+            positionPubKey: newPosition.publicKey,
+            user: wallet.publicKey,
+            totalXAmount: mixedSpotX,
+            totalYAmount: mixedSpotY,
+            strategy: { minBinId, maxBinId, strategyType: StrategyType.Spot },
+            slippage: 10,
+          });
+          const spotTxArray = Array.isArray(spotTxs) ? spotTxs : [spotTxs];
+          for (let i = 0; i < spotTxArray.length; i++) {
+            const txHash = await sendAndConfirmTransaction(getConnection(), spotTxArray[i], [wallet]);
+            txHashes.push(txHash);
+            log("deploy", `Mixed Spot tx ${i + 1}/${spotTxArray.length}: ${txHash}`);
+          }
+        } catch (spotError) {
+          log("deploy_error", `Mixed Spot layer failed (BidAsk succeeded): ${spotError.message}`);
+          mixedPartial = true;
+        }
+      } else {
+        // Phase 2: Add liquidity (may be multiple txs)
+        const addTxs = await pool.addLiquidityByStrategyChunkable({
+          positionPubKey: newPosition.publicKey,
+          user: wallet.publicKey,
+          totalXAmount: totalXLamports,
+          totalYAmount: totalYLamports,
+          strategy: { minBinId, maxBinId, strategyType },
+          slippage: 10,
+        });
+        const addTxArray = Array.isArray(addTxs) ? addTxs : [addTxs];
+        for (let i = 0; i < addTxArray.length; i++) {
+          const txHash = await sendAndConfirmTransaction(getConnection(), addTxArray[i], [wallet]);
+          txHashes.push(txHash);
+          log("deploy", `Add liquidity tx ${i + 1}/${addTxArray.length}: ${txHash}`);
+        }
+      }
+    } else if (isMixed) {
+      // ── Mixed Standard Path (≤69 bins) ──────────────────────────
+      // Phase 1: Initialize position + add BidAsk layer (70%)
+      const bidaskTx = await pool.initializePositionAndAddLiquidityByStrategy({
         positionPubKey: newPosition.publicKey,
         user: wallet.publicKey,
-        totalXAmount: totalXLamports,
-        totalYAmount: totalYLamports,
-        strategy: { minBinId, maxBinId, strategyType },
-        slippage: 10, // 10%
+        totalXAmount: mixedBidaskX,
+        totalYAmount: mixedBidaskY,
+        strategy: { maxBinId, minBinId, strategyType: StrategyType.BidAsk },
+        slippage: 1000,
       });
-      const addTxArray = Array.isArray(addTxs) ? addTxs : [addTxs];
-      for (let i = 0; i < addTxArray.length; i++) {
-        const txHash = await sendAndConfirmTransaction(getConnection(), addTxArray[i], [wallet]);
-        txHashes.push(txHash);
-        log("deploy", `Add liquidity tx ${i + 1}/${addTxArray.length}: ${txHash}`);
+      const hash1 = await sendAndConfirmTransaction(getConnection(), bidaskTx, [wallet, newPosition]);
+      txHashes.push(hash1);
+      log("deploy", `Mixed BidAsk layer tx: ${hash1}`);
+
+      // Phase 2: Add Spot layer (30%) to same position
+      try {
+        const spotTx = await pool.addLiquidityByStrategy({
+          positionPubKey: newPosition.publicKey,
+          user: wallet.publicKey,
+          totalXAmount: mixedSpotX,
+          totalYAmount: mixedSpotY,
+          strategy: { maxBinId, minBinId, strategyType: StrategyType.Spot },
+          slippage: 100,
+        });
+        const hash2 = await sendAndConfirmTransaction(getConnection(), spotTx, [wallet]);
+        txHashes.push(hash2);
+        log("deploy", `Mixed Spot layer tx: ${hash2}`);
+      } catch (spotError) {
+        log("deploy_error", `Mixed Spot layer failed (BidAsk succeeded): ${spotError.message}`);
+        mixedPartial = true;
       }
     } else {
       // ── Standard Path (≤69 bins) ─────────────────────────────────
@@ -228,13 +317,14 @@ export async function deployPosition({
         totalXAmount: totalXLamports,
         totalYAmount: totalYLamports,
         strategy: { maxBinId, minBinId, strategyType },
-        slippage: 1000, // 10% in bps
+        slippage: 1000,
       });
       const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet, newPosition]);
       txHashes.push(txHash);
     }
 
-    log("deploy", `SUCCESS — ${txHashes.length} tx(s): ${txHashes[0]}`);
+    const layerCount = isMixed ? (mixedPartial ? 1 : 2) : 1;
+    log("deploy", `SUCCESS — ${txHashes.length} tx(s): ${txHashes[0]}${isMixed ? ` (${layerCount}/${isMixed ? 2 : 1} layers)` : ""}`);
 
     _positionsCacheAt = 0;
     trackPosition({
@@ -262,7 +352,7 @@ export async function deployPosition({
     const baseFactor = pool.lbPair.parameters?.baseFactor ?? 0;
     const actualBaseFee = base_fee ?? (baseFactor > 0 ? parseFloat((baseFactor * actualBinStep / 1e6 * 100).toFixed(4)) : null);
 
-    return {
+    const result = {
       success: true,
       position: newPosition.publicKey.toString(),
       pool: pool_address,
@@ -277,6 +367,16 @@ export async function deployPosition({
       amount_y: finalAmountY,
       txs: txHashes,
     };
+
+    if (isMixed) {
+      result.mixed_ratio = config.strategy.mixedRatio || { bidask: 70, spot: 30 };
+      if (mixedPartial) {
+        result.mixed_partial = true;
+        result.mixed_warning = "Spot layer failed — position has only BidAsk liquidity";
+      }
+    }
+
+    return result;
   } catch (error) {
     log("deploy_error", error.message);
     return { success: false, error: error.message };

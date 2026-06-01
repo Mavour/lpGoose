@@ -182,6 +182,7 @@ const toolMap = {
       strategy: ["strategy", "strategy"],
       minBinsBelow: ["strategy", "minBinsBelow"],
       maxBinsBelow: ["strategy", "maxBinsBelow"],
+      mixedRatio: ["strategy", "mixedRatio"],
     };
 
     const applied = {};

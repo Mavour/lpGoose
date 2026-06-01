@@ -80,6 +80,7 @@ export const config = {
     strategy:  u.strategy  ?? "bid_ask",
     minBinsBelow: u.minBinsBelow ?? 30,
     maxBinsBelow: u.maxBinsBelow ?? 55,
+    mixedRatio: u.mixedRatio ?? { bidask: 70, spot: 30 },
   },
 
   // ─── Scheduling ─────────────────────────
