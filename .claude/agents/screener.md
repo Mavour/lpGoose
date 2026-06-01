@@ -128,11 +128,11 @@ Example: 0.25 SOL total, 70% token / 30% SOL → swap 0.175 SOL to token, keep 0
 
 Research on 3,214 top LPer positions shows: **tighter ranges outperform in every strategy.** 31-69 bins beats 70+, but 20-40 bins is the sweet spot. Default to fewer bins, not more.
 
-**Total bins by volatility** (bias toward tighter):
-- Low volatility (0-1): total_bins = 25-35 (concentrated, max fee capture)
-- Medium volatility (1-3): total_bins = 35-50 (balance of range + efficiency)
-- High volatility (3-5): total_bins = 50-60 (need room but don't max out)
-- Extreme volatility (5+): total_bins = 60-69 (only go max when truly needed)
+**Total bins by volatility** (bias toward tighter, config-driven via minBinsBelow/maxBinsBelow):
+- Low volatility (0-1): total_bins = 30-35 (concentrated, max fee capture)
+- Medium volatility (1-3): total_bins = 35-45 (balance of range + efficiency)
+- High volatility (3-5): total_bins = 45-50 (need room but don't max out)
+- Extreme volatility (5+): total_bins = 50-55 (only go max when truly needed)
 
 **Directional split based on price_trend:**
 - Downtrend → `bins_below = round(total_bins × 0.75)`, `bins_above = total_bins - bins_below`

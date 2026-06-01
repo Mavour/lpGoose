@@ -631,7 +631,7 @@ ${candidateBlocks.join("\n\n")}
 STEPS:
 1. Pick the best candidate from this hard-gated live list based on narrative quality, smart wallets, and pool metrics.
 2. Call deploy_position (active_bin is pre-fetched above — no need to call get_active_bin).
-   bins_below = round(35 + (volatility/5)*55) clamped to [35,90]. Use bin_step only within config range [${config.screening.minBinStep},${config.screening.maxBinStep}].
+    bins_below = round(${config.strategy.minBinsBelow} + (volatility/5)*(${config.strategy.maxBinsBelow - config.strategy.minBinsBelow})) clamped to [${config.strategy.minBinsBelow},${config.strategy.maxBinsBelow}]. Use bin_step only within config range [${config.screening.minBinStep},${config.screening.maxBinStep}].
 3. Report in this exact format (no tables, no extra sections):
    Decision: DEPLOYED PAIR
    pool: <name> | <pool address>
@@ -994,7 +994,8 @@ if (isTTY) {
       ["solMode", "SOL mode"],
       ["dryRun", "Dry run"],
       ["strategy", "Strategy"],
-      ["binsBelow", "Bins below"],
+      ["minBinsBelow", "Min bins"],
+      ["maxBinsBelow", "Max bins"],
     ],
     screen: [
       ["minFeeActiveTvlRatio", "Min fee/TVL"],
@@ -1056,7 +1057,8 @@ if (isTTY) {
     ],
     strategy: [
       ["strategy", "Strategy"],
-      ["binsBelow", "Bins below"],
+      ["minBinsBelow", "Min bins"],
+      ["maxBinsBelow", "Max bins"],
     ],
   };
 
@@ -1074,7 +1076,7 @@ if (isTTY) {
       `Mode: ${solMode} | Source: meteora | Strat: ${strategyName}`,
       `Deploy: ${config.management.deployAmountSol} SOL | MaxPos: ${config.risk.maxPositions} | Gas: ${config.management.gasReserve}`,
       `TP/SL: ${config.management.takeProfitFeePct}% / ${config.management.stopLossPct}% | Trailing: ${trailing}`,
-      `Bins: [${config.strategy.binsBelow}-0] | Dry run: ${dryRun}`,
+      `Bins range: [${config.strategy.minBinsBelow}–${config.strategy.maxBinsBelow}] | Dry run: ${dryRun}`,
       "",
       `${settings.length} editable settings. Tap a value to edit.`,
     ].join("\n");

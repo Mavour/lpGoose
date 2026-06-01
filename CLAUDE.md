@@ -120,15 +120,13 @@ Before `deploy_position` executes:
 
 ## bins_below Calculation (SCREENER)
 
-Linear formula based on pool volatility (set in screener prompt, `index.js`):
+Dynamic formula based on pool volatility, driven by config `minBinsBelow` / `maxBinsBelow`:
 
 ```
-bins_below = round(35 + (volatility / 5) * 34), clamped to [35, 69]
+bins_below = round(minBinsBelow + (volatility / 5) * (maxBinsBelow - minBinsBelow)), clamped to [minBinsBelow, maxBinsBelow]
 ```
 
-- Low volatility (0) → 35 bins
-- High volatility (5+) → 69 bins
-- Any value in between is valid (continuous, not tiered)
+Defaults: minBinsBelow=30, maxBinsBelow=55. Both are configurable in `user-config.json` and via `/menu` Telegram.
 
 ---
 

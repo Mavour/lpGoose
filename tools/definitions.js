@@ -166,7 +166,7 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           },
           bins_below: {
             type: "number",
-            description: "Number of bins below active bin. If the user specifies a value, use it exactly. If they specify a % range (e.g. '-60% range'), convert using: bins = ceil(log(1 - pct) / log(1 + bin_step/10000)). Example: -60% range at bin_step 100 → ceil(log(0.40)/log(1.01)) = 92 bins. Otherwise choose based on volatility: 35–69 standard, 100–350 for wide-range strategies. Max 1400 total."
+            description: "Number of bins below active bin. If the user specifies a value, use it exactly. If they specify a % range (e.g. '-60% range'), convert using: bins = ceil(log(1 - pct) / log(1 + bin_step/10000)). Example: -60% range at bin_step 100 → ceil(log(0.40)/log(1.01)) = 92 bins. Otherwise use the volatility-based formula from the system prompt which draws from config minBinsBelow/maxBinsBelow. Max 1400 total."
           },
           bins_above: {
             type: "number",

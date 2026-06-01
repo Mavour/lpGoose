@@ -180,7 +180,8 @@ const toolMap = {
       generalModel: ["llm", "generalModel"],
       // strategy
       strategy: ["strategy", "strategy"],
-      binsBelow: ["strategy", "binsBelow"],
+      minBinsBelow: ["strategy", "minBinsBelow"],
+      maxBinsBelow: ["strategy", "maxBinsBelow"],
     };
 
     const applied = {};

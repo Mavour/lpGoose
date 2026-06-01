@@ -107,7 +107,7 @@ POOL MEMORY: Informational only. Past performance is NOT used to filter or bias 
 
 DEPLOY RULES:
 - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT default to a smaller number.
-- bins_below = round(35 + (volatility/5)*34) clamped to [35,69]. bins_above = 0.
+- bins_below = round(${config.strategy.minBinsBelow} + (volatility/5)*(${config.strategy.maxBinsBelow - config.strategy.minBinsBelow})) clamped to [${config.strategy.minBinsBelow},${config.strategy.maxBinsBelow}]. bins_above = 0.
 - Bin steps must be [${config.screening.minBinStep}-${config.screening.maxBinStep}].
 - Pick ONE pool. Deploy or explain why none qualify.
 
