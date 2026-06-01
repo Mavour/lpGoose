@@ -1118,7 +1118,7 @@ if (isTTY) {
   async function telegramCallbackHandler(query) {
     const data = query.data || "";
     log("telegram", `Callback: ${data}`);
-    const [type, a, b, c] = data.split(":");
+    const [type, a, b, c, d] = data.split(":");
     const chatId = query.message?.chat?.id;
     const messageId = query.message?.message_id;
 
@@ -1157,6 +1157,24 @@ if (isTTY) {
         return;
       }
 
+      if (key === "mixedRatio") {
+        const current = config.strategy.mixedRatio || { bidask: 70, spot: 30 };
+        const is = (b, s) => current.bidask === b && current.spot === s;
+        const keyboard = [
+          [
+            { text: `70/30${is(70,30) ? " ✓" : ""}`, callback_data: `set_mixed:70:30:${section}:${preset}` },
+            { text: `60/40${is(60,40) ? " ✓" : ""}`, callback_data: `set_mixed:60:40:${section}:${preset}` },
+          ],
+          [
+            { text: `80/20${is(80,20) ? " ✓" : ""}`, callback_data: `set_mixed:80:20:${section}:${preset}` },
+            { text: `50/50${is(50,50) ? " ✓" : ""}`, callback_data: `set_mixed:50:50:${section}:${preset}` },
+          ],
+        ];
+        await editKeyboard(chatId, messageId, "Choose BidAsk/Spot split:", keyboard);
+        await answerCallback(query.id);
+        return;
+      }
+
       pendingMenuEdit = { key, section, preset };
       await answerCallback(query.id, `Send new value for ${key}`);
       await sendMessage(`Send new value for ${key}. Current: ${JSON.stringify(settingValue(key))}`);
@@ -1171,6 +1189,18 @@ if (isTTY) {
       const menu = buildSettingsMenu(section, preset);
       await editKeyboard(chatId, messageId, menu.text, menu.keyboard);
       await answerCallback(query.id, `Strategy → ${value}`);
+      return;
+    }
+
+    if (type === "set_mixed") {
+      const bidask = parseInt(a);
+      const spot = parseInt(b);
+      const section = c || "quick";
+      const preset = d || "custom";
+      await applyTelegramConfig("mixedRatio", { bidask, spot });
+      const menu = buildSettingsMenu(section, preset);
+      await editKeyboard(chatId, messageId, menu.text, menu.keyboard);
+      await answerCallback(query.id, `Mixed ratio → ${bidask}/${spot}`);
       return;
     }
 
