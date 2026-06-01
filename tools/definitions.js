@@ -161,8 +161,7 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           },
           strategy: {
             type: "string",
-            enum: ["bid_ask", "spot", "mixed"],
-            description: "DLMM strategy type. If user specifies, use exactly what they said. Otherwise use the active strategy's lp_strategy field. 'mixed' = 70% BidAsk + 30% Spot in one position (auto-split by backend)."
+            description: "OBSOLETE — ignored. Strategy is controlled by user-config.json only."
           },
           bins_below: {
             type: "number",

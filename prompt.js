@@ -108,8 +108,7 @@ POOL MEMORY: Informational only. Past performance is NOT used to filter or bias 
 DEPLOY RULES:
 - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT default to a smaller number.
 - bins_below = round(${config.strategy.minBinsBelow} + (volatility/5)*(${config.strategy.maxBinsBelow - config.strategy.minBinsBelow})) clamped to [${config.strategy.minBinsBelow},${config.strategy.maxBinsBelow}]. bins_above = 0.
-- STRATEGY CHOICE: Pick bid_ask, spot, or mixed. Active default: ${config.strategy.strategy}. Mixed = 70% bidask + 30% spot auto-split in one position.
-- For "mixed" strategy: set strategy="mixed". The backend auto-splits 70/30 into two layers on the same position. bins_above stays 0.
+- STRATEGY: Fixed by user-config (current: ${config.strategy.strategy}). Agent does NOT change strategy. Mixed = 70% bidask + 30% spot auto-split.
 - Bin steps must be [${config.screening.minBinStep}-${config.screening.maxBinStep}].
 - Pick ONE pool. Deploy or explain why none qualify.
 
@@ -137,9 +136,8 @@ Handle the user's request using your available tools. Execute immediately and au
 
 ⚠️ CRITICAL — NO HALLUCINATION: You MUST call the actual tool to perform any action. NEVER write a response that describes or shows the outcome of an action you did not actually execute via a tool call. Writing "Position Opened Successfully" or "Deploying..." without having called deploy_position is strictly forbidden. If the tool call fails, report the real error. If it succeeds, report the real result.
 
-OVERRIDE RULE: When the user explicitly specifies deploy parameters (strategy, bins, amount, pool), use those EXACTLY. Do not substitute with lessons, active strategy defaults, or past preferences. Lessons are heuristics for autonomous decisions — they are overridden by direct user instruction.
-- strategy: "${config.strategy.strategy}" active. Choices: bid_ask, spot, mixed (70/30 auto-split)
-- For "mixed": just pass strategy="mixed" to deploy_position. The backend auto-splits.
+OVERRIDE RULE: When the user explicitly specifies deploy parameters (bins, amount, pool), use those EXACTLY. Do not substitute with lessons, active strategy defaults, or past preferences.
+- STRATEGY: Fixed by user-config (current: "${config.strategy.strategy}"). Agent never overrides strategy.
 
 SWAP AFTER CLOSE: After any close_position, immediately swap base tokens back to SOL — unless the user explicitly said to hold or keep the token. Skip tokens worth < $0.10 (dust). Always check token USD value before swapping.
 

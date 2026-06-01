@@ -109,7 +109,7 @@ export async function deployPosition({
   initial_value_usd,
 }) {
   pool_address = normalizeMint(pool_address);
-  const activeStrategy = strategy || config.strategy.strategy;
+  const activeStrategy = config.strategy.strategy;
 
   const activeBinsBelow = bins_below ?? config.strategy.minBinsBelow;
   const activeBinsAbove = bins_above ?? 0;

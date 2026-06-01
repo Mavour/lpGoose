@@ -525,11 +525,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const deployAmount = computeDeployAmount(currentBalance.sol);
     log("cron", `Computed deploy amount: ${deployAmount} SOL (wallet: ${currentBalance.sol} SOL)`);
 
-    // Load active strategy
-    const activeStrategy = getActiveStrategy();
-    const strategyBlock = activeStrategy
-      ? `ACTIVE STRATEGY: ${activeStrategy.name} — LP: ${activeStrategy.lp_strategy} | bins_above: ${activeStrategy.range?.bins_above ?? 0} (FIXED — never change) | deposit: ${activeStrategy.entry?.single_side === "sol" ? "SOL only (amount_y, amount_x=0)" : "dual-sided"} | best for: ${activeStrategy.best_for}`
-      : `No active strategy — use default bid_ask, bins_above: 0, SOL only.`;
+    const strategyBlock = `STRATEGY (config): ${config.strategy.strategy} — Fixed by user-config. Agent does not change.`;
 
     // Fetch top candidates, then recon each sequentially with a small delay to avoid 429s
     const topCandidates = await getTopCandidates({ limit: 10 }).catch(() => null);
