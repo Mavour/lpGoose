@@ -725,7 +725,9 @@ export async function closePosition({ position_address, reason }) {
             posEntry = (data.positions || []).find(p => p.positionAddress === position_address);
             if (posEntry) {
               pnlUsd        = parseFloat(posEntry.pnlUsd || 0);
-              pnlPct        = parseFloat(posEntry.pnlPctChange || 0);
+              pnlPct        = config.management.solMode
+                ? parseFloat(posEntry.pnlSolPctChange ?? posEntry.pnlPctChange ?? 0)
+                : parseFloat(posEntry.pnlPctChange ?? 0);
               finalValueUsd = parseFloat(posEntry.allTimeWithdrawals?.total?.usd || 0);
               initialUsd    = parseFloat(posEntry.allTimeDeposits?.total?.usd || 0);
               feesUsd       = parseFloat(posEntry.allTimeFees?.total?.usd || 0) || feesUsd;
