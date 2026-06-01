@@ -711,15 +711,20 @@ Summarize the current portfolio health, total fees earned, and performance of al
       if (!result?.positions?.length) return;
       for (const p of result.positions) {
         const exit = updatePnlAndCheckExits(p.position, p, config.management);
+        const tp = getTrackedPosition(p.position);
+        const trail = tp?.trailing_active ? "ON" : "OFF";
+        const peak = tp?.peak_pnl_pct != null ? tp.peak_pnl_pct.toFixed(2) : "?";
+        const range = p.in_range ? "IN" : `OOR ${p.minutes_out_of_range ?? 0}m`;
+        log("pnl", `${p.pair} | PnL: ${p.pnl_pct != null ? (p.pnl_pct >= 0 ? "+" : "") + p.pnl_pct.toFixed(2) : "?"}% | Peak: ${peak}% | Trail: ${trail} | ${range} | Yield: ${p.fee_per_tvl_24h ?? "?"}%${exit ? ` | ⚡ ${exit.reason}` : ""}`);
         if (exit) {
           const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
           const sinceLastTrigger = Date.now() - _pollTriggeredAt;
           if (sinceLastTrigger >= cooldownMs) {
             _pollTriggeredAt = Date.now();
-            log("state", `[PnL poll] Exit alert: ${p.pair} — ${exit.reason} — triggering management`);
+            log("pnl", `⚡ ${p.pair} → TRAILING TRIGGERED: ${exit.reason} — triggering management`);
             runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
           } else {
-            log("state", `[PnL poll] Exit alert: ${p.pair} — ${exit.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);
+            log("pnl", `⚡ ${p.pair} → ${exit.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);
           }
           break;
         }

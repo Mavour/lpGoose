@@ -273,8 +273,22 @@ export function getStateSummary() {
 export function updatePnlAndCheckExits(position_address, positionData, mgmtConfig) {
   const { pnl_pct: currentPnlPct, in_range, fee_per_tvl_24h } = positionData;
   const state = load();
-  const pos = state.positions[position_address];
-  if (!pos || pos.closed) return null;
+  let pos = state.positions[position_address];
+  if (!pos) {
+    state.positions[position_address] = {
+      position: position_address,
+      pool: positionData.pool || null,
+      pool_name: positionData.pair || null,
+      deployed_at: null,
+      out_of_range_since: null,
+      peak_pnl_pct: 0,
+      trailing_active: false,
+      closed: false,
+    };
+    pos = state.positions[position_address];
+    log("state", `Auto-registered untracked position: ${position_address} (${positionData.pair || "?"})`);
+  }
+  if (pos.closed) return null;
 
   let changed = false;
 
