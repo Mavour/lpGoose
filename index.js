@@ -900,6 +900,10 @@ if (isTTY) {
       ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
       : {};
     cfg[key] = value;
+    if (key === "deployAmountSol") {
+      cfg.minSolToOpen = value;
+      cfg.maxDeployAmount = value;
+    }
     fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
 
     if (key === "dryRun") process.env.DRY_RUN = String(value);
@@ -919,6 +923,10 @@ if (isTTY) {
       if (value === "spot") setActiveStrategy({ id: "custom_ratio_spot" });
     }
     if (config.risk && key in config.risk) config.risk[key] = value;
+    if (key === "deployAmountSol") {
+      config.management.minSolToOpen = value;
+      config.risk.maxDeployAmount = value;
+    }
 
     log("config", `Telegram update: ${key} = ${JSON.stringify(value)}`);
   }
