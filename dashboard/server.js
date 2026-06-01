@@ -95,6 +95,12 @@ function apiPositions(req, res) {
       const positions = Object.values(state.positions || {}).filter(p => !p.closed);
       if (!positions.length) return json(res, []);
 
+      let solMode = false;
+      try {
+        const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'user-config.json'), 'utf-8'));
+        solMode = !!cfg.solMode;
+      } catch {}
+
       const baseList = positions.map(p => ({
         position:      p.position,
         pool:          p.pool,
@@ -140,8 +146,12 @@ function apiPositions(req, res) {
       function respond() {
         const list = baseList.map(p => ({
           ...p,
-          pnl_usd: +(pnlByPos[p.position]?.pnlUsd ?? pnlByPos[p.position]?.pnlSol ?? NaN) || null,
-          pnl_pct: +(pnlByPos[p.position]?.pnlPctChange ?? pnlByPos[p.position]?.pnlSolPctChange ?? NaN) || null,
+          pnl_usd: solMode
+            ? +(pnlByPos[p.position]?.pnlSol ?? pnlByPos[p.position]?.pnlUsd ?? NaN) || null
+            : +(pnlByPos[p.position]?.pnlUsd ?? pnlByPos[p.position]?.pnlSol ?? NaN) || null,
+          pnl_pct: solMode
+            ? +(pnlByPos[p.position]?.pnlSolPctChange ?? pnlByPos[p.position]?.pnlPctChange ?? NaN) || null
+            : +(pnlByPos[p.position]?.pnlPctChange ?? pnlByPos[p.position]?.pnlSolPctChange ?? NaN) || null,
         }));
         json(res, list);
       }

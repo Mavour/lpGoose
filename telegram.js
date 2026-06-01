@@ -291,7 +291,9 @@ export async function notifyClose({
   const isProfit = pnlBasis >= 0;
   const icon = isProfit ? "🟢" : "🔴";
   const sign = isProfit ? "+" : "-";
-  const pct = `${sign}${fmtUsd(Math.abs(pnlPct ?? 0))}%`;
+  const pct = config.management.solMode && displayPnlSol != null && deployedSol != null
+    ? `${sign}${fmtUsd(Math.abs(displayPnlSol / Number(deployedSol) * 100))}%`
+    : `${sign}${fmtUsd(Math.abs(pnlPct ?? 0))}%`;
 
   if (config.management.solMode) {
     await sendHTML(
