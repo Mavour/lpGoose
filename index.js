@@ -897,6 +897,9 @@ if (isTTY) {
     if (raw === "false") return false;
     if (!Number.isNaN(Number(raw)) && raw.includes(".")) return parseFloat(raw);
     if (!Number.isNaN(Number(raw))) return parseInt(raw, 10);
+    if ((raw.startsWith("{") && raw.endsWith("}")) || (raw.startsWith("[") && raw.endsWith("]"))) {
+      try { return JSON.parse(raw); } catch { /* fall through */ }
+    }
     return raw;
   }
 
@@ -980,7 +983,10 @@ if (isTTY) {
     if (key in config.management) return config.management[key];
     if (key in config.schedule) return config.schedule[key];
     if (key in config.llm) return config.llm[key];
-    if (key in config.strategy) return config.strategy[key];
+    if (key in config.strategy) {
+      const v = config.strategy[key];
+      return typeof v === "object" ? JSON.stringify(v) : v;
+    }
     return "?";
   }
 
@@ -1057,6 +1063,7 @@ if (isTTY) {
     ],
     strategy: [
       ["strategy", "Strategy"],
+      ["mixedRatio", "Mixed ratio"],
       ["minBinsBelow", "Min bins"],
       ["maxBinsBelow", "Max bins"],
     ],
