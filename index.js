@@ -929,6 +929,7 @@ if (isTTY) {
     if (key === "strategy") {
       if (value === "bid_ask") setActiveStrategy({ id: "single_sided_reseed" });
       if (value === "spot") setActiveStrategy({ id: "custom_ratio_spot" });
+      if (value === "mixed") setActiveStrategy({ id: "multi_layer" });
     }
     if (config.risk && key in config.risk) config.risk[key] = value;
     if (key === "deployAmountSol") {
