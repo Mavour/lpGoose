@@ -1145,9 +1145,32 @@ if (isTTY) {
       const key = a;
       const section = b || "quick";
       const preset = c || "custom";
+
+      if (key === "strategy") {
+        const keyboard = [
+          [{ text: `bid_ask${config.strategy.strategy === "bid_ask" ? " ✓" : ""}`, callback_data: `set_strategy:bid_ask:${section}:${preset}` }],
+          [{ text: `spot${config.strategy.strategy === "spot" ? " ✓" : ""}`, callback_data: `set_strategy:spot:${section}:${preset}` }],
+          [{ text: `mixed${config.strategy.strategy === "mixed" ? " ✓" : ""}`, callback_data: `set_strategy:mixed:${section}:${preset}` }],
+        ];
+        await editKeyboard(chatId, messageId, "Choose strategy:", keyboard);
+        await answerCallback(query.id);
+        return;
+      }
+
       pendingMenuEdit = { key, section, preset };
       await answerCallback(query.id, `Send new value for ${key}`);
       await sendMessage(`Send new value for ${key}. Current: ${JSON.stringify(settingValue(key))}`);
+      return;
+    }
+
+    if (type === "set_strategy") {
+      const value = a;
+      const section = b || "quick";
+      const preset = c || "custom";
+      await applyTelegramConfig("strategy", value);
+      const menu = buildSettingsMenu(section, preset);
+      await editKeyboard(chatId, messageId, menu.text, menu.keyboard);
+      await answerCallback(query.id, `Strategy → ${value}`);
       return;
     }
 
