@@ -1020,6 +1020,8 @@ if (isTTY) {
       ["maxTokenAgeHours", "Max token age"],
       ["athFilterPct", "ATH filter %"],
       ["timeframe", "Timeframe"],
+      ["avoidPvpSymbols", "PvP detect"],
+      ["blockPvpSymbols", "PvP block"],
     ],
     risk: [
       ["maxBundlePct", "Max bundle %"],
@@ -1082,6 +1084,7 @@ if (isTTY) {
       `Deploy: ${config.management.deployAmountSol} SOL | MaxPos: ${config.risk.maxPositions} | Gas: ${config.management.gasReserve}`,
       `TP/SL: ${config.management.takeProfitFeePct}% / ${config.management.stopLossPct}% | Trailing: ${trailing}`,
       `Bins range: [${config.strategy.minBinsBelow}–${config.strategy.maxBinsBelow}] | Dry run: ${dryRun}`,
+      `PvP: ${config.screening.avoidPvpSymbols ? "detect" : "OFF"}${config.screening.blockPvpSymbols ? " + block" : ""}`,
       "",
       `${settings.length} editable settings. Tap a value to edit.`,
     ].join("\n");
