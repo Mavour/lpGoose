@@ -37,6 +37,8 @@
   "minTokenAgeHours": null,
   "maxTokenAgeHours": null,
   "athFilterPct": null,
+  "avoidPvpSymbols": true,
+  "blockPvpSymbols": false,
 
   "minClaimAmount": 5,
   "autoSwapAfterClaim": false,
