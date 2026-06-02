@@ -44,8 +44,8 @@ export async function generateBriefing() {
     `📤 Positions Closed: ${closedLast24h.length}`,
     "",
     `<b>Performance:</b>`,
-    `💰 Net PnL: ${totalPnLSol >= 0 ? "+" : ""}◎${totalPnLSol}`,
-    `💎 Fees Earned: ◎${totalFeesSol}`,
+    `💰 Net PnL: ${totalPnLSol >= 0 ? "+" : ""}◎${Number(totalPnLSol).toFixed(6).replace(/\.?0+$/, '')}`,
+    `💎 Fees Earned: ◎${Number(totalFeesSol).toFixed(6).replace(/\.?0+$/, '')}`,
     perfLast24h.length > 0
       ? `📈 Win Rate (24h): ${Math.round((perfLast24h.filter(p => (p.pnl_sol || 0) > 0).length / perfLast24h.length) * 100)}%`
       : "📈 Win Rate (24h): N/A",
@@ -58,7 +58,7 @@ export async function generateBriefing() {
     `<b>Current Portfolio:</b>`,
     `📂 Open Positions: ${openPositions.length}`,
     perfSummary
-      ? `📊 All-time PnL: ◎${perfSummary.total_pnl_sol} (${perfSummary.win_rate_pct}% win)`
+      ? `📊 All-time PnL: ◎${Number(perfSummary.total_pnl_sol).toFixed(6).replace(/\.?0+$/, '')} (${perfSummary.win_rate_pct}% win)`
       : "",
     "────────────────"
   ];

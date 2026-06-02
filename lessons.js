@@ -507,7 +507,7 @@ export function getPerformanceSummary() {
   return {
     total_positions_closed: records.length,
     total_pnl_sol: totalPnlSol,
-    avg_pnl_pct,
+    avg_pnl_pct: avgPnlPct,
     avg_range_efficiency_pct: avgRangeEfficiency,
     win_rate_pct: records.length > 0 ? Math.round((wins / records.length) * 100) : 0,
     total_lessons: data.lessons.length,
