@@ -476,7 +476,8 @@ function fmtPnL(val) {
   if (val == null || isNaN(val)) return '<span class="pnl-zero">-</span>';
   const n = Number(val);
   const cls = n > 0 ? 'pnl-pos' : n < 0 ? 'pnl-neg' : 'pnl-zero';
-  return `<span class="${cls}">${n > 0 ? '+' : ''}${n}</span>`;
+  const formatted = n.toFixed(8).replace(/\.?0+$/, '');
+  return `<span class="${cls}">${n > 0 ? '+' : ''}${formatted}</span>`;
 }
 function fmtPnLPct(val) {
   if (val == null || isNaN(val)) return '<span class="pnl-zero">-</span>';
@@ -551,11 +552,11 @@ function renderStats(stats) {
       <div class="stat-label">Win Rate</div>
     </div>
     <div class="stat-card">
-      <div class="stat-value ${pnlCls}"><span class="stat-icon stat-icon-pnl">${pnlIcon}</span>${stats.totalPnl >= 0 ? '+' : ''}◎${stats.totalPnl}</div>
+      <div class="stat-value ${pnlCls}"><span class="stat-icon stat-icon-pnl">${pnlIcon}</span>${stats.totalPnl >= 0 ? '+' : ''}◎${fmtPnL(stats.totalPnl).replace(/<\/?span[^>]*>/g,'')}</div>
       <div class="stat-label">Total PnL</div>
     </div>
     <div class="stat-card">
-      <div class="stat-value"><span class="stat-icon stat-icon-fees">⚡</span>◎${stats.totalFees}</div>
+      <div class="stat-value"><span class="stat-icon stat-icon-fees">⚡</span>◎${fmtPnL(stats.totalFees).replace(/<\/?span[^>]*>/g,'')}</div>
       <div class="stat-label">Fees Earned</div>
     </div>
     <div class="stat-card">
@@ -592,7 +593,7 @@ function renderPositions(list) {
     <td><strong>${p.pool_name||shortAddr(p.pool)}</strong></td>
     <td>${stratBadge(p.strategy)}</td>
     <td class="text-mono">${(p.amount_sol||0).toFixed(2)} SOL</td>
-    <td class="text-mono text-xs">${pnlSol != null ? (pnlSol >= 0 ? '<span class="pnl-pos">+◎'+pnlSol+'</span>' : '<span class="pnl-neg">-◎'+Math.abs(pnlSol)+'</span>') : '-'}${pnlPct != null ? ' ' + (pnlPct >= 0 ? '<span class="pnl-pos">+'+pnlPct+'%</span>' : '<span class="pnl-neg">'+pnlPct+'%</span>') : ''}</td>
+    <td class="text-mono text-xs">${pnlSol != null ? fmtPnL(pnlSol).replace('</span>',' ◎</span>') : '-'}${pnlPct != null ? ' ' + (pnlPct >= 0 ? '<span class="pnl-pos">+'+pnlPct+'%</span>' : '<span class="pnl-neg">'+pnlPct+'%</span>') : ''}</td>
     <td class="text-mono text-xs">${p.bin_range ? p.bin_range.min+'-'+p.bin_range.max : '-'}</td>
     <td class="text-mono text-xs">${bins != null ? bins : '-'}</td>
     <td class="text-mono text-xs">${p.total_fees_claimed_usd != null ? '◎'+p.total_fees_claimed_usd : '-'}</td>
@@ -608,7 +609,7 @@ function renderPositions(list) {
     <div class="row"><span class="pool-name">${p.pool_name||shortAddr(p.pool)}</span>${stratBadge(p.strategy)}</div>
     <div class="divider"></div>
     <div class="row"><span class="label">Amount</span><span class="value">${(p.amount_sol||0).toFixed(2)} SOL</span></div>
-    <div class="row"><span class="label">PnL</span><span class="value text-xs">${pnlSol != null ? (pnlSol >= 0 ? '<span class="pnl-pos">+◎'+pnlSol+'</span>' : '<span class="pnl-neg">-◎'+Math.abs(pnlSol)+'</span>') : '-'}${pnlPct != null ? ' ' + (pnlPct >= 0 ? '<span class="pnl-pos">+'+pnlPct+'%</span>' : '<span class="pnl-neg">'+pnlPct+'%</span>') : ''}</span></div>
+    <div class="row"><span class="label">PnL</span><span class="value text-xs">${pnlSol != null ? fmtPnL(pnlSol).replace('</span>',' ◎</span>') : '-'}${pnlPct != null ? ' ' + (pnlPct >= 0 ? '<span class="pnl-pos">+'+pnlPct+'%</span>' : '<span class="pnl-neg">'+pnlPct+'%</span>') : ''}</span></div>
     <div class="row"><span class="label">Range</span><span class="value text-xs">${p.bin_range ? p.bin_range.min+'-'+p.bin_range.max : '-'}</span></div>
     <div class="row"><span class="label">Bins</span><span class="value text-xs">${bins != null ? bins : '-'}</span></div>
     <div class="row"><span class="label">Fees</span><span class="value">${p.total_fees_claimed_usd != null ? '◎'+p.total_fees_claimed_usd : '-'}</span></div>
