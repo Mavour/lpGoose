@@ -824,6 +824,8 @@ export async function closePosition({ position_address, reason }) {
             const data = await res.json();
             posEntry = (data.positions || []).find(p => p.positionAddress === position_address);
             if (posEntry) {
+              pnlSol        = parseFloat(posEntry.pnlSol ?? 0);
+              feesSol       = parseFloat(posEntry.allTimeFees?.total?.sol ?? 0);
               pnlUsd        = parseFloat(posEntry.pnlUsd || 0);
               pnlPct        = config.management.solMode
                 ? parseFloat(posEntry.pnlSolPctChange ?? posEntry.pnlPctChange ?? 0)
@@ -849,8 +851,9 @@ export async function closePosition({ position_address, reason }) {
           pnlPct        = cachedPos.pnl_pct   ?? 0;
           feesUsd       = (cachedPos.collected_fees_true_usd || 0) + (cachedPos.unclaimed_fees_true_usd || 0);
           initialUsd    = tracked.initial_value_usd || 0;
+          pnlSol        = cachedPos.pnl_sol ?? (tracked.amount_sol ? tracked.amount_sol * (pnlPct / 100) : 0);
+          feesSol       = cachedPos.fees_earned_sol ?? 0;
           if (initialUsd > 0) {
-            // Keep fallback internally consistent using USD-only cached metrics.
             finalValueUsd = Math.max(0, initialUsd + pnlUsd - feesUsd);
             pnlPct = (pnlUsd / initialUsd) * 100;
           } else {
@@ -859,14 +862,6 @@ export async function closePosition({ position_address, reason }) {
           }
           log("close_warn", `Using cached pnl fallback because closed API has not settled yet`);
         }
-      }
-
-      const solPrice = tracked.amount_sol && initialUsd > 0 ? initialUsd / tracked.amount_sol : null;
-      if (solPrice && solPrice > 0) {
-        pnlSol = pnlUsd / solPrice;
-        feesSol = feesUsd / solPrice;
-      } else if (tracked.amount_sol && pnlPct != null) {
-        pnlSol = tracked.amount_sol * (pnlPct / 100);
       }
 
       recordPerformance({
@@ -880,6 +875,8 @@ export async function closePosition({ position_address, reason }) {
         fee_tvl_ratio: tracked.fee_tvl_ratio || null,
         organic_score: tracked.organic_score || null,
         amount_sol: tracked.amount_sol,
+        pnl_sol: pnlSol,
+        fees_earned_sol: feesSol,
         fees_earned_usd: feesUsd,
         final_value_usd: finalValueUsd,
         initial_value_usd: initialUsd,

@@ -18,9 +18,15 @@ export async function generateBriefing() {
   const closedLast24h = allPositions.filter(p => p.closed && new Date(p.closed_at) > last24h);
 
   // 2. Performance Activity (from performance log)
-  const perfLast24h = (lessonsData.performance || []).filter(p => new Date(p.recorded_at) > last24h);
-  const totalPnLUsd = perfLast24h.reduce((sum, p) => sum + (p.pnl_usd || 0), 0);
-  const totalFeesUsd = perfLast24h.reduce((sum, p) => sum + (p.fees_earned_usd || 0), 0);
+  const perfLast24h = (lessonsData.performance || []).filter(p => new Date(p.recorded_at) > last24h).map(p => {
+    const pnlSol = p.pnl_sol ?? (p.amount_sol > 0 && p.initial_value_usd > 0
+      ? (((p.final_value_usd ?? 0) + (p.fees_earned_usd ?? 0)) - (p.initial_value_usd ?? 0)) / (p.initial_value_usd / p.amount_sol)
+      : 0);
+    const feesSol = p.fees_earned_sol ?? (p.amount_sol > 0 && p.initial_value_usd > 0 ? (p.fees_earned_usd ?? 0) / (p.initial_value_usd / p.amount_sol) : 0);
+    return { ...p, pnl_sol: pnlSol, fees_earned_sol: feesSol };
+  });
+  const totalPnLSol = perfLast24h.reduce((sum, p) => sum + (p.pnl_sol || 0), 0);
+  const totalFeesSol = perfLast24h.reduce((sum, p) => sum + (p.fees_earned_sol || 0), 0);
 
   // 3. Lessons Learned
   const lessonsLast24h = (lessonsData.lessons || []).filter(l => new Date(l.created_at) > last24h);
@@ -38,10 +44,10 @@ export async function generateBriefing() {
     `📤 Positions Closed: ${closedLast24h.length}`,
     "",
     `<b>Performance:</b>`,
-    `💰 Net PnL: ${totalPnLUsd >= 0 ? "+" : ""}$${totalPnLUsd.toFixed(2)}`,
-    `💎 Fees Earned: $${totalFeesUsd.toFixed(2)}`,
+    `💰 Net PnL: ${totalPnLSol >= 0 ? "+" : ""}◎${totalPnLSol}`,
+    `💎 Fees Earned: ◎${totalFeesSol}`,
     perfLast24h.length > 0
-      ? `📈 Win Rate (24h): ${Math.round((perfLast24h.filter(p => p.pnl_usd > 0).length / perfLast24h.length) * 100)}%`
+      ? `📈 Win Rate (24h): ${Math.round((perfLast24h.filter(p => (p.pnl_sol || 0) > 0).length / perfLast24h.length) * 100)}%`
       : "📈 Win Rate (24h): N/A",
     "",
     `<b>Lessons Learned:</b>`,
@@ -52,7 +58,7 @@ export async function generateBriefing() {
     `<b>Current Portfolio:</b>`,
     `📂 Open Positions: ${openPositions.length}`,
     perfSummary
-      ? `📊 All-time PnL: $${perfSummary.total_pnl_usd.toFixed(2)} (${perfSummary.win_rate_pct}% win)`
+      ? `📊 All-time PnL: ◎${perfSummary.total_pnl_sol} (${perfSummary.win_rate_pct}% win)`
       : "",
     "────────────────"
   ];

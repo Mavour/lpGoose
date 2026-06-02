@@ -168,18 +168,28 @@ function apiHistory(req, res) {
     if (e) return json(res, []);
     try {
       const lessons = JSON.parse(d);
-      const perf = (lessons.performance || []).map(p => ({
-        pool_name:        p.pool_name,
-        strategy:         p.strategy,
-        pnl_usd:          p.pnl_usd ?? 0,
-        pnl_pct:          p.pnl_pct ?? 0,
-        minutes_held:     p.minutes_held ?? 0,
-        fees_earned_usd:  p.fees_earned_usd ?? 0,
-        close_reason:     p.close_reason || '-',
-        range_efficiency: p.range_efficiency ?? 0,
-        amount_sol:       p.amount_sol ?? 0,
-        recorded_at:      p.recorded_at,
-      })).reverse();
+      const perf = (lessons.performance || []).map(p => {
+        const pnlSol = p.pnl_sol ?? (
+          p.amount_sol > 0 && p.initial_value_usd > 0
+            ? (((p.final_value_usd ?? 0) + (p.fees_earned_usd ?? 0)) - (p.initial_value_usd ?? 0)) / (p.initial_value_usd / p.amount_sol)
+            : 0
+        );
+        const feesSol = p.fees_earned_sol ?? (p.amount_sol > 0 && p.initial_value_usd > 0 ? (p.fees_earned_usd ?? 0) / (p.initial_value_usd / p.amount_sol) : 0);
+        return {
+          pool_name:        p.pool_name,
+          strategy:         p.strategy,
+          pnl_sol:          pnlSol,
+          pnl_pct:          p.amount_sol > 0 ? (pnlSol / p.amount_sol) * 100 : 0,
+          pnl_usd:          p.pnl_usd ?? 0,
+          minutes_held:     p.minutes_held ?? 0,
+          fees_earned_sol:  feesSol,
+          fees_earned_usd:  p.fees_earned_usd ?? 0,
+          close_reason:     p.close_reason || '-',
+          range_efficiency: p.range_efficiency ?? 0,
+          amount_sol:       p.amount_sol ?? 0,
+          recorded_at:      p.recorded_at,
+        };
+      }).reverse();
       json(res, perf);
     } catch { json(res, []); }
   });

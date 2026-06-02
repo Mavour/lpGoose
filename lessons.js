@@ -59,25 +59,17 @@ function save(data) {
 export async function recordPerformance(perf) {
   const data = load();
 
-  // Guard against unit-mixed records where a SOL-sized final value is
-  // accidentally written into a USD field (e.g. final_value_usd = 2 for a 2 SOL close).
-  const suspiciousUnitMix =
-    Number.isFinite(perf.initial_value_usd) &&
-    Number.isFinite(perf.final_value_usd) &&
-    Number.isFinite(perf.amount_sol) &&
-    perf.initial_value_usd >= 20 &&
-    perf.amount_sol >= 0.25 &&
-    perf.final_value_usd > 0 &&
-    perf.final_value_usd <= perf.amount_sol * 2;
-
-  if (suspiciousUnitMix) {
-    log("lessons_warn", `Skipped suspicious performance record for ${perf.pool_name || perf.pool}: initial=${perf.initial_value_usd}, final=${perf.final_value_usd}, amount_sol=${perf.amount_sol}`);
-    return;
+  // Migration: derive pnl_sol from USD data for old records that don't have it yet
+  if (perf.pnl_sol == null && perf.amount_sol > 0 && perf.initial_value_usd > 0) {
+    const solPrice = perf.initial_value_usd / perf.amount_sol;
+    const pnlUsd = (perf.final_value_usd + perf.fees_earned_usd) - perf.initial_value_usd;
+    perf.pnl_sol = pnlUsd / solPrice;
+    perf.fees_earned_sol = perf.fees_earned_sol ?? (perf.fees_earned_usd / solPrice);
   }
 
-  const pnl_usd = (perf.final_value_usd + perf.fees_earned_usd) - perf.initial_value_usd;
-  const pnl_pct = perf.initial_value_usd > 0
-    ? (pnl_usd / perf.initial_value_usd) * 100
+  const pnl_sol = perf.pnl_sol ?? 0;
+  const pnl_pct = perf.amount_sol > 0
+    ? (pnl_sol / perf.amount_sol) * 100
     : 0;
   const range_efficiency = perf.minutes_held > 0
     ? (perf.minutes_in_range / perf.minutes_held) * 100
@@ -91,9 +83,9 @@ export async function recordPerformance(perf) {
 
   const entry = {
     ...perf,
-    pnl_usd: Math.round(pnl_usd * 100) / 100,
-    pnl_pct: Math.round(pnl_pct * 100) / 100,
-    range_efficiency: Math.round(range_efficiency * 10) / 10,
+    pnl_sol,
+    pnl_pct,
+    range_efficiency,
     recorded_at: new Date().toISOString(),
   };
 
@@ -457,26 +449,33 @@ export function getPerformanceHistory({ hours = 24, limit = 50 } = {}) {
   const filtered = p
     .filter((r) => r.recorded_at >= cutoff)
     .slice(-limit)
-    .map((r) => ({
-      pool_name: r.pool_name,
-      pool: r.pool,
-      strategy: r.strategy,
-      pnl_usd: r.pnl_usd,
-      pnl_pct: r.pnl_pct,
-      fees_earned_usd: r.fees_earned_usd,
-      range_efficiency: r.range_efficiency,
-      minutes_held: r.minutes_held,
-      close_reason: r.close_reason,
-      closed_at: r.recorded_at,
-    }));
+    .map((r) => {
+      const pnlSol = r.pnl_sol ?? (
+        r.amount_sol > 0 && r.initial_value_usd > 0
+          ? (((r.final_value_usd ?? 0) + (r.fees_earned_usd ?? 0)) - (r.initial_value_usd ?? 0)) / (r.initial_value_usd / r.amount_sol)
+          : 0
+      );
+      return {
+        pool_name: r.pool_name,
+        pool: r.pool,
+        strategy: r.strategy,
+        pnl_sol: pnlSol,
+        pnl_pct: r.amount_sol > 0 ? (pnlSol / r.amount_sol) * 100 : 0,
+        fees_earned_sol: r.fees_earned_sol ?? (r.amount_sol > 0 && r.initial_value_usd > 0 ? (r.fees_earned_usd ?? 0) / (r.initial_value_usd / r.amount_sol) : 0),
+        range_efficiency: r.range_efficiency,
+        minutes_held: r.minutes_held,
+        close_reason: r.close_reason,
+        closed_at: r.recorded_at,
+      };
+    });
 
-  const totalPnl = filtered.reduce((s, r) => s + (r.pnl_usd ?? 0), 0);
-  const wins = filtered.filter((r) => r.pnl_usd > 0).length;
+  const totalPnlSol = filtered.reduce((s, r) => s + (r.pnl_sol ?? 0), 0);
+  const wins = filtered.filter((r) => (r.pnl_sol ?? 0) > 0).length;
 
   return {
     hours,
     count: filtered.length,
-    total_pnl_usd: Math.round(totalPnl * 100) / 100,
+    total_pnl_sol: totalPnlSol,
     win_rate_pct: filtered.length > 0 ? Math.round((wins / filtered.length) * 100) : null,
     positions: filtered,
   };
@@ -491,17 +490,26 @@ export function getPerformanceSummary() {
 
   if (p.length === 0) return null;
 
-  const totalPnl = p.reduce((s, x) => s + x.pnl_usd, 0);
-  const avgPnlPct = p.reduce((s, x) => s + x.pnl_pct, 0) / p.length;
-  const avgRangeEfficiency = p.reduce((s, x) => s + x.range_efficiency, 0) / p.length;
-  const wins = p.filter((x) => x.pnl_usd > 0).length;
+  const records = p.map(r => {
+    const pnlSol = r.pnl_sol ?? (
+      r.amount_sol > 0 && r.initial_value_usd > 0
+        ? (((r.final_value_usd ?? 0) + (r.fees_earned_usd ?? 0)) - (r.initial_value_usd ?? 0)) / (r.initial_value_usd / r.amount_sol)
+        : 0
+    );
+    return { pnl_sol: pnlSol, pnl_pct: r.amount_sol > 0 ? (pnlSol / r.amount_sol) * 100 : 0, range_efficiency: r.range_efficiency ?? 0 };
+  });
+
+  const totalPnlSol = records.reduce((s, x) => s + x.pnl_sol, 0);
+  const avgPnlPct = records.reduce((s, x) => s + x.pnl_pct, 0) / records.length;
+  const avgRangeEfficiency = records.reduce((s, x) => s + x.range_efficiency, 0) / records.length;
+  const wins = records.filter((x) => x.pnl_sol > 0).length;
 
   return {
-    total_positions_closed: p.length,
-    total_pnl_usd: Math.round(totalPnl * 100) / 100,
-    avg_pnl_pct: Math.round(avgPnlPct * 100) / 100,
-    avg_range_efficiency_pct: Math.round(avgRangeEfficiency * 10) / 10,
-    win_rate_pct: Math.round((wins / p.length) * 100),
+    total_positions_closed: records.length,
+    total_pnl_sol: totalPnlSol,
+    avg_pnl_pct,
+    avg_range_efficiency_pct: avgRangeEfficiency,
+    win_rate_pct: records.length > 0 ? Math.round((wins / records.length) * 100) : 0,
     total_lessons: data.lessons.length,
   };
 }

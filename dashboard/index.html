@@ -476,7 +476,7 @@ function fmtPnL(val) {
   if (val == null || isNaN(val)) return '<span class="pnl-zero">-</span>';
   const n = Number(val);
   const cls = n > 0 ? 'pnl-pos' : n < 0 ? 'pnl-neg' : 'pnl-zero';
-  return `<span class="${cls}">${n > 0 ? '+' : ''}${n.toFixed(2)}</span>`;
+  return `<span class="${cls}">${n > 0 ? '+' : ''}${n}</span>`;
 }
 function fmtPnLPct(val) {
   if (val == null || isNaN(val)) return '<span class="pnl-zero">-</span>';
@@ -521,14 +521,14 @@ function rangeEffBadge(v) {
 function computeStats(positions, history) {
   const active = positions.length;
   const total = history.length;
-  const winners = history.filter(p => (p.pnl_usd||0) > 0).length;
+  const winners = history.filter(p => (p.pnl_sol||0) > 0).length;
   const winRate = total > 0 ? winners / total * 100 : 0;
-  const totalPnl = history.reduce((s,p) => s + (p.pnl_usd||0), 0);
-  const totalFees = history.reduce((s,p) => s + (p.fees_earned_usd||0), 0);
+  const totalPnlSol = history.reduce((s,p) => s + (p.pnl_sol||0), 0);
+  const totalFeesSol = history.reduce((s,p) => s + (p.fees_earned_sol||0), 0);
   const avgMins = total > 0 ? history.reduce((s,p) => s + (p.minutes_held||0), 0) / total : 0;
   const avgEff = total > 0 ? history.reduce((s,p) => s + (p.range_efficiency||0), 0) / total : 0;
   const bestPnl = total > 0 ? Math.max(...history.map(p => p.pnl_pct||0)) : 0;
-  return { active, max: appConfig.maxPositions, winRate, totalPnl, totalFees, avgMins, avgEff, bestPnl, total };
+  return { active, max: appConfig.maxPositions, winRate, totalPnl: totalPnlSol, totalFees: totalFeesSol, avgMins, avgEff, bestPnl, total };
 }
 
 function renderStats(stats) {
@@ -551,11 +551,11 @@ function renderStats(stats) {
       <div class="stat-label">Win Rate</div>
     </div>
     <div class="stat-card">
-      <div class="stat-value ${pnlCls}"><span class="stat-icon stat-icon-pnl">${pnlIcon}</span>${stats.totalPnl >= 0 ? '+' : ''}$${fmtNum(Math.abs(stats.totalPnl))}</div>
+      <div class="stat-value ${pnlCls}"><span class="stat-icon stat-icon-pnl">${pnlIcon}</span>${stats.totalPnl >= 0 ? '+' : ''}◎${stats.totalPnl}</div>
       <div class="stat-label">Total PnL</div>
     </div>
     <div class="stat-card">
-      <div class="stat-value"><span class="stat-icon stat-icon-fees">⚡</span>$${fmtNum(stats.totalFees)}</div>
+      <div class="stat-value"><span class="stat-icon stat-icon-fees">⚡</span>◎${stats.totalFees}</div>
       <div class="stat-label">Fees Earned</div>
     </div>
     <div class="stat-card">
@@ -586,32 +586,32 @@ function renderPositions(list) {
 
   document.getElementById('positionsBody').innerHTML = list.map(p => {
     const bins = p.bin_range ? Math.abs(p.bin_range.max - p.bin_range.min) : null;
-    const pnlUsd = p.pnl_usd != null ? Number(p.pnl_usd) : null;
+    const pnlSol = p.pnl_usd != null ? Number(p.pnl_usd) : null;
     const pnlPct = p.pnl_pct != null ? Number(p.pnl_pct) : null;
     return `<tr>
     <td><strong>${p.pool_name||shortAddr(p.pool)}</strong></td>
     <td>${stratBadge(p.strategy)}</td>
     <td class="text-mono">${(p.amount_sol||0).toFixed(2)} SOL</td>
-    <td class="text-mono text-xs">${pnlUsd != null ? (pnlUsd >= 0 ? '<span class="pnl-pos">+$'+pnlUsd.toFixed(2)+'</span>' : '<span class="pnl-neg">-$'+Math.abs(pnlUsd).toFixed(2)+'</span>') : '-'}${pnlPct != null ? ' ' + (pnlPct >= 0 ? '<span class="pnl-pos">+'+pnlPct.toFixed(2)+'%</span>' : '<span class="pnl-neg">'+pnlPct.toFixed(2)+'%</span>') : ''}</td>
+    <td class="text-mono text-xs">${pnlSol != null ? (pnlSol >= 0 ? '<span class="pnl-pos">+◎'+pnlSol+'</span>' : '<span class="pnl-neg">-◎'+Math.abs(pnlSol)+'</span>') : '-'}${pnlPct != null ? ' ' + (pnlPct >= 0 ? '<span class="pnl-pos">+'+pnlPct+'%</span>' : '<span class="pnl-neg">'+pnlPct+'%</span>') : ''}</td>
     <td class="text-mono text-xs">${p.bin_range ? p.bin_range.min+'-'+p.bin_range.max : '-'}</td>
     <td class="text-mono text-xs">${bins != null ? bins : '-'}</td>
-    <td class="text-mono text-xs">${p.total_fees_claimed_usd != null ? '$'+p.total_fees_claimed_usd.toFixed(2) : '-'}</td>
+    <td class="text-mono text-xs">${p.total_fees_claimed_usd != null ? '◎'+p.total_fees_claimed_usd : '-'}</td>
     <td>${statusBadge(p)}</td>
     <td class="text-mono text-xs">${fmtAge(p.deployed_at)}</td>
   </tr>`}).join('');
 
   document.getElementById('positionsCards').innerHTML = list.map(p => {
     const bins = p.bin_range ? Math.abs(p.bin_range.max - p.bin_range.min) : null;
-    const pnlUsd = p.pnl_usd != null ? Number(p.pnl_usd) : null;
+    const pnlSol = p.pnl_usd != null ? Number(p.pnl_usd) : null;
     const pnlPct = p.pnl_pct != null ? Number(p.pnl_pct) : null;
     return `<div class="pos-card">
     <div class="row"><span class="pool-name">${p.pool_name||shortAddr(p.pool)}</span>${stratBadge(p.strategy)}</div>
     <div class="divider"></div>
     <div class="row"><span class="label">Amount</span><span class="value">${(p.amount_sol||0).toFixed(2)} SOL</span></div>
-    <div class="row"><span class="label">PnL</span><span class="value text-xs">${pnlUsd != null ? (pnlUsd >= 0 ? '<span class="pnl-pos">+$'+pnlUsd.toFixed(2)+'</span>' : '<span class="pnl-neg">-$'+Math.abs(pnlUsd).toFixed(2)+'</span>') : '-'}${pnlPct != null ? ' ' + (pnlPct >= 0 ? '<span class="pnl-pos">+'+pnlPct.toFixed(2)+'%</span>' : '<span class="pnl-neg">'+pnlPct.toFixed(2)+'%</span>') : ''}</span></div>
+    <div class="row"><span class="label">PnL</span><span class="value text-xs">${pnlSol != null ? (pnlSol >= 0 ? '<span class="pnl-pos">+◎'+pnlSol+'</span>' : '<span class="pnl-neg">-◎'+Math.abs(pnlSol)+'</span>') : '-'}${pnlPct != null ? ' ' + (pnlPct >= 0 ? '<span class="pnl-pos">+'+pnlPct+'%</span>' : '<span class="pnl-neg">'+pnlPct+'%</span>') : ''}</span></div>
     <div class="row"><span class="label">Range</span><span class="value text-xs">${p.bin_range ? p.bin_range.min+'-'+p.bin_range.max : '-'}</span></div>
     <div class="row"><span class="label">Bins</span><span class="value text-xs">${bins != null ? bins : '-'}</span></div>
-    <div class="row"><span class="label">Fees</span><span class="value">${p.total_fees_claimed_usd != null ? '$'+p.total_fees_claimed_usd.toFixed(2) : '-'}</span></div>
+    <div class="row"><span class="label">Fees</span><span class="value">${p.total_fees_claimed_usd != null ? '◎'+p.total_fees_claimed_usd : '-'}</span></div>
     <div class="row"><span class="label">Status</span><span>${statusBadge(p)}</span></div>
     <div class="row"><span class="label">Age</span><span class="value text-xs">${fmtAge(p.deployed_at)}</span></div>
   </div>`}).join('');
@@ -644,10 +644,10 @@ function renderHistory(list) {
   document.getElementById('historyBody').innerHTML = pageItems.map(p => `<tr>
     <td><strong>${p.pool_name||'-'}</strong></td>
     <td>${stratBadge(p.strategy)}</td>
-    <td class="text-mono">${fmtPnL(p.pnl_usd)}</td>
+    <td class="text-mono">${fmtPnL(p.pnl_sol)}</td>
     <td class="text-mono">${fmtPnLPct(p.pnl_pct)}</td>
     <td class="text-mono text-xs">${fmtHold(p.minutes_held)}</td>
-    <td class="text-mono text-xs">${p.fees_earned_usd != null && p.fees_earned_usd !== 0 ? '$'+p.fees_earned_usd.toFixed(2) : '-'}</td>
+    <td class="text-mono text-xs">${p.fees_earned_sol != null && p.fees_earned_sol !== 0 ? '◎'+p.fees_earned_sol : '-'}</td>
     <td>${rangeEffBadge(p.range_efficiency)}</td>
     <td class="text-xs" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.close_reason||'-'}</td>
   </tr>`).join('');
@@ -655,9 +655,9 @@ function renderHistory(list) {
   document.getElementById('historyCards').innerHTML = pageItems.map(p => `<div class="pos-card">
     <div class="row"><span class="pool-name">${p.pool_name||'-'}</span>${stratBadge(p.strategy)}</div>
     <div class="divider"></div>
-    <div class="row"><span class="label">PnL</span><span class="value">${fmtPnL(p.pnl_usd)} (${fmtPnLPct(p.pnl_pct)})</span></div>
+    <div class="row"><span class="label">PnL</span><span class="value">${fmtPnL(p.pnl_sol)} (${fmtPnLPct(p.pnl_pct)})</span></div>
     <div class="row"><span class="label">Hold</span><span class="value text-xs">${fmtHold(p.minutes_held)}</span></div>
-    <div class="row"><span class="label">Fees</span><span class="value">${p.fees_earned_usd != null && p.fees_earned_usd !== 0 ? '$'+p.fees_earned_usd.toFixed(2) : '-'}</span></div>
+    <div class="row"><span class="label">Fees</span><span class="value">${p.fees_earned_sol != null && p.fees_earned_sol !== 0 ? '◎'+p.fees_earned_sol : '-'}</span></div>
     <div class="row"><span class="label">R.Eff</span><span>${rangeEffBadge(p.range_efficiency)}</span></div>
     <div class="row"><span class="label">Reason</span><span class="value text-xs" style="max-width:200px">${p.close_reason||'-'}</span></div>
   </div>`).join('');
