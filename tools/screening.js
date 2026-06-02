@@ -479,10 +479,6 @@ function condensePool(p) {
     pool_fees_sol: null,
     pool_fees_source: null,
     volume_window: round(p.volume),
-    // API sometimes returns 0 for fee_active_tvl_ratio on short timeframes — compute from raw values as fallback
-    fee_active_tvl_ratio: p.fee_active_tvl_ratio > 0
-      ? fix(p.fee_active_tvl_ratio, 4)
-      : (p.active_tvl > 0 ? fix((p.fee / p.active_tvl) * 100, 4) : 0),
     volatility: fix(p.volatility, 2),
 
 

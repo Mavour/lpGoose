@@ -601,7 +601,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
       const block = [
         `POOL: ${pool.name} (${pool.pool})`,
-        `  metrics: bin_step=${pool.bin_step}, fee_pct=${pool.fee_pct}%, fee_tvl=${pool.fee_active_tvl_ratio}, vol=$${pool.volume_window}, tvl=$${pool.active_tvl}, volatility=${pool.volatility}, mcap=$${pool.mcap}, organic=${pool.organic_score}${pool.token_age_hours != null ? `, age=${pool.token_age_hours}h` : ""}`,
+        `  metrics: bin_step=${pool.bin_step}, fee_pct=${pool.fee_pct}%, fee_tvl=N/A, vol=$${pool.volume_window}, tvl=$${pool.active_tvl}, volatility=${pool.volatility}, mcap=$${pool.mcap}, organic=${pool.organic_score}${pool.token_age_hours != null ? `, age=${pool.token_age_hours}h` : ""}`,
         `  audit: top10=${top10Pct}%, bots=${botPct}%, pool_fees=${feesSol}SOL${pool.pool_fees_source ? ` (${pool.pool_fees_source})` : ""}${launchpad ? `, launchpad=${launchpad}` : ""}`,
         okxParts ? `  okx: ${okxParts}` : null,
         okxTags  ? `  tags: ${okxTags}` : null,
