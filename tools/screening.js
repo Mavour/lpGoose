@@ -323,21 +323,6 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     if (eligible.length < before) log("dev_blocklist", `Filtered ${before - eligible.length} pool(s) via OKX creator check`);
   }
 
-  // ─── PvP (same-symbol rival) detection ───
-  if (config.screening.avoidPvpSymbols && eligible.length > 0) {
-    await enrichPvpRisk(eligible);
-
-    if (config.screening.blockPvpSymbols) {
-      const before = eligible.length;
-      const pvpRemoved = eligible.filter((p) => p.is_pvp);
-      pvpRemoved.forEach((p) => log("screening", `PVP hard filter: dropped ${p.name} — rival ${p.pvp_rival_name}`));
-      eligible.splice(0, eligible.length, ...eligible.filter((p) => !p.is_pvp));
-      if (eligible.length < before) {
-        log("screening", `PVP hard filter removed ${before - eligible.length} pool(s)`);
-      }
-    }
-  }
-
   const gated = [];
   for (const pool of eligible) {
     const gate = evaluateScreeningGate(pool, { tokenInfo: pool.token_info });
@@ -349,6 +334,21 @@ export async function getTopCandidates({ limit = 10 } = {}) {
       continue;
     }
     gated.push(pool);
+  }
+
+  // ─── PvP (same-symbol rival) detection — run after hard gates so all final candidates are checked ───
+  if (config.screening.avoidPvpSymbols && gated.length > 0) {
+    await enrichPvpRisk(gated);
+
+    if (config.screening.blockPvpSymbols) {
+      const before = gated.length;
+      const pvpRemoved = gated.filter((p) => p.is_pvp);
+      pvpRemoved.forEach((p) => log("screening", `PVP hard filter: dropped ${p.name} — rival ${p.pvp_rival_name}`));
+      gated.splice(0, gated.length, ...gated.filter((p) => !p.is_pvp));
+      if (gated.length < before) {
+        log("screening", `PVP hard filter removed ${before - gated.length} pool(s)`);
+      }
+    }
   }
 
   return {
