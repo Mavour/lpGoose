@@ -111,7 +111,10 @@ export async function deployPosition({
   pool_address = normalizeMint(pool_address);
   const activeStrategy = config.strategy.strategy;
 
-  const activeBinsBelow = bins_below ?? config.strategy.minBinsBelow;
+  const activeBinsBelow = Math.max(
+    config.strategy.minBinsBelow,
+    Math.min(config.strategy.maxBinsBelow, bins_below ?? config.strategy.minBinsBelow)
+  );
   const activeBinsAbove = bins_above ?? 0;
 
   if (isPoolOnCooldown(pool_address)) {

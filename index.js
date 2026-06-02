@@ -670,7 +670,8 @@ export function startCronJobs() {
 
   const screenTask = cron.schedule(`*/${Math.max(1, config.schedule.screeningIntervalMin)} * * * *`, runScreeningCycle);
 
-  const healthTask = cron.schedule(`0 * * * *`, async () => {
+  const healthInterval = Math.max(1, config.schedule.healthCheckIntervalMin || 60);
+  const healthTask = cron.schedule(`*/${healthInterval} * * * *`, async () => {
     if (_managementBusy) return;
     _managementBusy = true;
     log("cron", "Starting health check");
