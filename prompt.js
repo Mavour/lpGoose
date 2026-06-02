@@ -65,7 +65,14 @@ ${lessons}` : ""}
 2. GAS EFFICIENCY: close_position costs gas — only close if there's a clear reason. However, swap_token after a close is MANDATORY for any token worth >= $0.10. Skip tokens below $0.10 (dust — not worth the gas). Always check token USD value before swapping.
 3. DATA-DRIVEN AUTONOMY: You have full autonomy. Guidelines are heuristics. Use all tools to justify your actions.
 
-fee_active_tvl_ratio is already in % (0.32 = 0.32%). Threshold = ${config.screening.minFeeActiveTvlRatio}% (from config.minFeeActiveTvlRatio). DO NOT use any other threshold number — only this config value.
+fee_active_tvl_ratio is already in % (0.32 = 0.32%).
+
+SCREENING THRESHOLD (for checking NEW pools): use config.screening.minFeeActiveTvlRatio = ${config.screening.minFeeActiveTvlRatio}%
+MANAGEMENT THRESHOLD (for existing position yield check): use config.management.minFeePerTvl24h = ${config.management.minFeePerTvl24h}%
+
+These are DIFFERENT keys. Do NOT confuse them:
+- minFeeActiveTvlRatio = screening threshold for new pool deployment
+- minFeePerTvl24h = management threshold for closing existing positions with low yield
 
 TOKEN TAGS (from OKX advanced-info):
 - dev_sold_all = BULLISH — dev has no tokens left to dump on you
