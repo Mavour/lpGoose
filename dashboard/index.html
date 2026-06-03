@@ -485,6 +485,23 @@ function fmtPnLPct(val) {
   const cls = n > 0 ? 'pnl-pos' : n < 0 ? 'pnl-neg' : 'pnl-zero';
   return `<span class="${cls}">${n > 0 ? '+' : ''}${n.toFixed(1)}%</span>`;
 }
+function fmtPct(v) {
+  if (v == null || isNaN(v)) return '-';
+  const abs = Math.abs(v);
+  const sign = v >= 0 ? '+' : '-';
+  if (abs === 0) return '0%';
+  if (abs >= 0.01) return sign + abs.toFixed(2) + '%';
+  const str = abs.toFixed(12);
+  const dec = str.split('.')[1] || '';
+  let z = 0;
+  while (z < dec.length && dec[z] === '0') z++;
+  const sig = dec.slice(z).replace(/0+$/, '');
+  if (z > 0 && sig.length > 0) {
+    const sub = String.fromCharCode(0x2080 + z);
+    return sign + '0.0' + sub + sig + '%';
+  }
+  return sign + abs.toFixed(2) + '%';
+}
 function fmtAge(iso) {
   if (!iso) return '-';
   const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
@@ -593,10 +610,10 @@ function renderPositions(list) {
     <td><strong>${p.pool_name||shortAddr(p.pool)}</strong></td>
     <td>${stratBadge(p.strategy)}</td>
     <td class="text-mono">${(p.amount_sol||0).toFixed(2)} SOL</td>
-    <td class="text-mono text-xs">${pnlSol != null ? fmtPnL(pnlSol).replace('</span>',' ◎</span>') : '-'}${pnlPct != null ? ' ' + (pnlPct >= 0 ? '<span class="pnl-pos">+'+pnlPct+'%</span>' : '<span class="pnl-neg">'+pnlPct+'%</span>') : ''}</td>
+    <td class="text-mono text-xs">${pnlSol != null ? fmtPnL(pnlSol).replace('</span>',' ◎</span>') : '-'}${pnlPct != null ? ' ' + '<span class="'+(pnlPct>=0?'pnl-pos':'pnl-neg')+'">'+fmtPct(pnlPct)+'</span>' : ''}</td>
     <td class="text-mono text-xs">${p.bin_range ? p.bin_range.min+'-'+p.bin_range.max : '-'}</td>
     <td class="text-mono text-xs">${bins != null ? bins : '-'}</td>
-    <td class="text-mono text-xs">${p.total_fees_claimed_usd != null ? '◎'+p.total_fees_claimed_usd : '-'}</td>
+    <td class="text-mono text-xs">${p.unclaimed_fees_sol != null ? '◎'+p.unclaimed_fees_sol : '-'}</td>
     <td>${statusBadge(p)}</td>
     <td class="text-mono text-xs">${fmtAge(p.deployed_at)}</td>
   </tr>`}).join('');
@@ -609,10 +626,10 @@ function renderPositions(list) {
     <div class="row"><span class="pool-name">${p.pool_name||shortAddr(p.pool)}</span>${stratBadge(p.strategy)}</div>
     <div class="divider"></div>
     <div class="row"><span class="label">Amount</span><span class="value">${(p.amount_sol||0).toFixed(2)} SOL</span></div>
-    <div class="row"><span class="label">PnL</span><span class="value text-xs">${pnlSol != null ? fmtPnL(pnlSol).replace('</span>',' ◎</span>') : '-'}${pnlPct != null ? ' ' + (pnlPct >= 0 ? '<span class="pnl-pos">+'+pnlPct+'%</span>' : '<span class="pnl-neg">'+pnlPct+'%</span>') : ''}</span></div>
+    <div class="row"><span class="label">PnL</span><span class="value text-xs">${pnlSol != null ? fmtPnL(pnlSol).replace('</span>',' ◎</span>') : '-'}${pnlPct != null ? ' ' + '<span class="'+(pnlPct>=0?'pnl-pos':'pnl-neg')+'">'+fmtPct(pnlPct)+'</span>' : ''}</span></div>
     <div class="row"><span class="label">Range</span><span class="value text-xs">${p.bin_range ? p.bin_range.min+'-'+p.bin_range.max : '-'}</span></div>
     <div class="row"><span class="label">Bins</span><span class="value text-xs">${bins != null ? bins : '-'}</span></div>
-    <div class="row"><span class="label">Fees</span><span class="value">${p.total_fees_claimed_usd != null ? '◎'+p.total_fees_claimed_usd : '-'}</span></div>
+    <div class="row"><span class="label">Fees</span><span class="value">${p.unclaimed_fees_sol != null ? '◎'+p.unclaimed_fees_sol : '-'}</span></div>
     <div class="row"><span class="label">Status</span><span>${statusBadge(p)}</span></div>
     <div class="row"><span class="label">Age</span><span class="value text-xs">${fmtAge(p.deployed_at)}</span></div>
   </div>`}).join('');

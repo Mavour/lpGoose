@@ -150,8 +150,11 @@ function apiPositions(req, res) {
             ? +(pnlByPos[p.position]?.pnlSol ?? pnlByPos[p.position]?.pnlUsd ?? NaN) || null
             : +(pnlByPos[p.position]?.pnlUsd ?? pnlByPos[p.position]?.pnlSol ?? NaN) || null,
           pnl_pct: solMode
-            ? +(pnlByPos[p.position]?.pnlSolPctChange ?? pnlByPos[p.position]?.pnlPctChange ?? NaN) || null
-            : +(pnlByPos[p.position]?.pnlPctChange ?? pnlByPos[p.position]?.pnlSolPctChange ?? NaN) || null,
+            ? +Math.round((pnlByPos[p.position]?.pnlSolPctChange ?? pnlByPos[p.position]?.pnlPctChange ?? NaN) * 100) / 100 || null
+            : +Math.round((pnlByPos[p.position]?.pnlPctChange ?? pnlByPos[p.position]?.pnlSolPctChange ?? NaN) * 100) / 100 || null,
+          unclaimed_fees_sol: +(pnlByPos[p.position]?.unrealizedPnl?.unclaimedFeeTokenX?.amountSol || 0)
+                            + +(pnlByPos[p.position]?.unrealizedPnl?.unclaimedFeeTokenY?.amountSol || 0) || null,
+          all_time_fees_sol:  +(pnlByPos[p.position]?.allTimeFees?.total?.sol ?? NaN) || null,
         }));
         json(res, list);
       }
