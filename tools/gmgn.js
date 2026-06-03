@@ -1,22 +1,17 @@
-const DEFAULT_GMGN_BASE = "https://gmgn.ai";
+import crypto from "crypto";
+
+const DEFAULT_GMGN_BASE = "https://openapi.gmgn.ai";
 
 function gmgnHeaders() {
   const key = process.env.GMGN_API_KEY || process.env.GMGN_API_TOKEN || "";
-  const headers = {
-    accept: "application/json, text/plain, */*",
-    "user-agent": "Mozilla/5.0",
-  };
-  if (key) {
-    headers.authorization = key.startsWith("Bearer ") ? key : `Bearer ${key}`;
-    headers["x-api-key"] = key;
-    headers["api-key"] = key;
-  }
-  return headers;
+  return { "X-APIKEY": key };
 }
 
 async function fetchJson(path) {
   const base = (process.env.GMGN_API_BASE || DEFAULT_GMGN_BASE).replace(/\/$/, "");
-  const res = await fetch(`${base}${path}`, { headers: gmgnHeaders() });
+  const separator = path.includes("?") ? "&" : "?";
+  const url = `${base}${path}${separator}timestamp=${Date.now()}&client_id=${crypto.randomUUID()}`;
+  const res = await fetch(url, { headers: gmgnHeaders() });
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`GMGN API error ${res.status}: ${text.slice(0, 120)}`);
@@ -62,6 +57,8 @@ function feeValueOf(obj) {
     "feeSol",
     "fees",
     "fee",
+    "total_fee",
+    "totalFee",
   ];
   for (const key of directKeys) {
     const n = toNumber(obj[key]);
@@ -98,35 +95,17 @@ function findMatchingPool(root, poolAddress) {
 }
 
 export async function getGmgnPoolFees({ mint, pool_address }) {
-  if (!mint && !pool_address) return { pool_fees_sol: null, source: null };
+  if (!mint) return { pool_fees_sol: null, source: null };
 
-  const attempts = [];
-  if (pool_address) {
-    attempts.push(`/defi/quotation/v1/pools/sol/${pool_address}`);
-    attempts.push(`/defi/quotation/v1/pool/sol/${pool_address}`);
-  }
-  if (mint) {
-    attempts.push(`/defi/quotation/v1/tokens/sol/${mint}`);
-    attempts.push(`/defi/quotation/v1/token/sol/${mint}`);
-  }
-
-  const errors = [];
-  for (const path of attempts) {
-    try {
-      const data = await fetchJson(path);
-      const poolObj = pool_address ? findMatchingPool(data, pool_address) : data?.data || data;
-      const value = feeValueOf(poolObj);
-      if (value != null) {
-        return { pool_fees_sol: Number(value.toFixed(2)), source: "gmgn" };
-      }
-    } catch (e) {
-      errors.push(e.message);
+  try {
+    const data = await fetchJson(`/v1/token/info?chain=sol&address=${mint}`);
+    const info = data?.data?.data || data?.data || data;
+    const value = feeValueOf(info);
+    if (value != null) {
+      return { pool_fees_sol: Number(value.toFixed(2)), source: "gmgn" };
     }
+    return { pool_fees_sol: null, source: null, error: "total_fee not found in GMGN response" };
+  } catch (e) {
+    return { pool_fees_sol: null, source: null, error: e.message };
   }
-
-  return {
-    pool_fees_sol: null,
-    source: null,
-    error: errors[0] || "GMGN pool fee not found",
-  };
 }
