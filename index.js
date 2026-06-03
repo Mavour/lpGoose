@@ -914,6 +914,7 @@ if (isTTY) {
       if (value === "mixed") setActiveStrategy({ id: "multi_layer" });
     }
     if (config.risk && key in config.risk) config.risk[key] = value;
+    if (config.chartIndicators && key in config.chartIndicators) config.chartIndicators[key] = value;
     if (key === "deployAmountSol") {
       config.management.minSolToOpen = value;
       config.risk.maxDeployAmount = value;
@@ -966,6 +967,7 @@ if (isTTY) {
     if (key in config.management) return config.management[key];
     if (key in config.schedule) return config.schedule[key];
     if (key in config.llm) return config.llm[key];
+    if (config.chartIndicators && key in config.chartIndicators) return config.chartIndicators[key];
     if (key in config.strategy) {
       const v = config.strategy[key];
       return typeof v === "object" ? JSON.stringify(v) : v;
@@ -1052,6 +1054,12 @@ if (isTTY) {
       ["minBinsBelow", "Min bins"],
       ["maxBinsBelow", "Max bins"],
     ],
+    indicators: [
+      ["stPeriod", "ST Period"],
+      ["stMultiplier", "ST Multiplier"],
+      ["interval", "ST Interval"],
+      ["failOpen", "Fail Open"],
+    ],
   };
 
   function buildSettingsMenu(section = "quick", preset = "custom") {
@@ -1060,6 +1068,8 @@ if (isTTY) {
     const trailing = config.management.trailingTakeProfit ? "ON" : "OFF";
     const solMode = config.management.solMode ? "SOL" : "USD";
     const dryRun = process.env.DRY_RUN === "true" ? "on" : "off";
+    const st = config.chartIndicators;
+    const supState = st.enabled ? `ON (${st.stPeriod}/${st.stMultiplier}, ${st.interval})` : "OFF";
     const settings = menuSections[section] || menuSections.quick;
 
     const text = [
@@ -1068,7 +1078,7 @@ if (isTTY) {
       `Mode: ${solMode} | Source: meteora | Strat: ${strategyName}`,
       `Deploy: ${config.management.deployAmountSol} SOL | MaxPos: ${config.risk.maxPositions} | Gas: ${config.management.gasReserve}`,
       `TP/SL: ${config.management.takeProfitFeePct}% / ${config.management.stopLossPct}% | Trailing: ${trailing}`,
-      `Bins range: [${config.strategy.minBinsBelow}–${config.strategy.maxBinsBelow}] | Dry run: ${dryRun}`,
+      `Bins range: [${config.strategy.minBinsBelow}–${config.strategy.maxBinsBelow}] | Sup: ${supState} | Dry run: ${dryRun}`,
       `PvP: ${config.screening.avoidPvpSymbols ? "detect" : "OFF"}${config.screening.blockPvpSymbols ? " + block" : ""}`,
       "",
       `${settings.length} editable settings. Tap a value to edit.`,
@@ -1077,7 +1087,7 @@ if (isTTY) {
     const sectionRows = [
       ["quick", "screen", "risk"],
       ["strategy", "manage", "exits"],
-      ["schedule", "llm"],
+      ["schedule", "llm", "indicators"],
     ].map((row) => row.map((id) => ({
       text: `${id === section ? "✓ " : ""}${id[0].toUpperCase()}${id.slice(1)}`,
       callback_data: `menu:${id}:${preset}`,
