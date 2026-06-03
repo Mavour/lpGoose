@@ -148,9 +148,11 @@ function apiPositions(req, res) {
           const v = pnlByPos[p.position];
           return {
             ...p,
-            pnl_sol:    Number.isFinite(+(v?.pnlSol ?? NaN))   ? +Math.round(+(v.pnlSol) * 1e8) / 1e8 : null,
-            pnl_pct:    Number.isFinite(+(v?.pnlSolPctChange ?? NaN))
-                       ? +Math.round(+(v.pnlSolPctChange) * 100) / 100 : null,
+            pnl_sol: Number.isFinite(+(v?.pnlSol ?? NaN)) || Number.isFinite(+(v?.pnlUsd ?? NaN))
+              ? +(v?.pnlSol ?? v?.pnlUsd ?? 0) : null,
+            pnl_pct: Number.isFinite(+(v?.pnlSolPctChange ?? NaN))
+                    || Number.isFinite(+(v?.pnlPctChange ?? NaN))
+              ? +Math.round(+(v?.pnlSolPctChange ?? v?.pnlPctChange ?? 0) * 100) / 100 : null,
             unclaimed_fees_sol: Number.isFinite(+(v?.unrealizedPnl?.unclaimedFeeTokenX?.amountSol ?? NaN))
                             || Number.isFinite(+(v?.unrealizedPnl?.unclaimedFeeTokenY?.amountSol ?? NaN))
                             ? +Math.round((
