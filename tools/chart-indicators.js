@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { log } from "../logger.js";
 
 function getGMGNKey() {
@@ -33,7 +34,8 @@ async function fetchKlineGMGN(mint, interval = "5m", limit = 298) {
   const resolution = toGMGNInterval(interval);
   const fetchLimit = Math.max(limit + 5, 105);
   const ts = Math.floor(Date.now() / 1000);
-  const url = `https://openapi.gmgn.ai/v1/market/token_kline?chain=sol&address=${mint}&resolution=${resolution}&limit=${fetchLimit}&timestamp=${ts}`;
+  const cid = crypto.randomUUID();
+  const url = `https://openapi.gmgn.ai/v1/market/token_kline?chain=sol&address=${mint}&resolution=${resolution}&limit=${fetchLimit}&timestamp=${ts}&client_id=${cid}`;
 
   const res = await fetch(url, {
     headers: { "X-APIKEY": apiKey },
