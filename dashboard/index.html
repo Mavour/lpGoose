@@ -610,7 +610,7 @@ function renderPositions(list) {
     <td><strong>${p.pool_name||shortAddr(p.pool)}</strong></td>
     <td>${stratBadge(p.strategy)}</td>
     <td class="text-mono">${(p.amount_sol||0).toFixed(2)} SOL</td>
-    <td class="text-mono text-xs">${pnlSol != null ? fmtPnL(pnlSol).replace('</span>',' ◎</span>') : '-'}${pnlPct != null ? ' ' + '<span class="'+(pnlPct>=0?'pnl-pos':'pnl-neg')+'">'+fmtPct(pnlPct)+'</span>' : ''}</td>
+    <td class="text-mono text-xs">${pnlSol != null ? fmtPnL(pnlSol) + (pnlPct != null ? ' ◎' : '') : '-'}${pnlPct != null ? ' ' + '<span class="'+(pnlPct>=0?'pnl-pos':'pnl-neg')+'">'+fmtPct(pnlPct)+'</span>' : ''}</td>
     <td class="text-mono text-xs">${p.bin_range ? p.bin_range.min+'-'+p.bin_range.max : '-'}</td>
     <td class="text-mono text-xs">${bins != null ? bins : '-'}</td>
     <td class="text-mono text-xs">${p.unclaimed_fees_sol != null ? '◎'+p.unclaimed_fees_sol : '-'}</td>
@@ -626,7 +626,7 @@ function renderPositions(list) {
     <div class="row"><span class="pool-name">${p.pool_name||shortAddr(p.pool)}</span>${stratBadge(p.strategy)}</div>
     <div class="divider"></div>
     <div class="row"><span class="label">Amount</span><span class="value">${(p.amount_sol||0).toFixed(2)} SOL</span></div>
-    <div class="row"><span class="label">PnL</span><span class="value text-xs">${pnlSol != null ? fmtPnL(pnlSol).replace('</span>',' ◎</span>') : '-'}${pnlPct != null ? ' ' + '<span class="'+(pnlPct>=0?'pnl-pos':'pnl-neg')+'">'+fmtPct(pnlPct)+'</span>' : ''}</span></div>
+    <div class="row"><span class="label">PnL</span><span class="value text-xs">${pnlSol != null ? fmtPnL(pnlSol) + (pnlPct != null ? ' ◎' : '') : '-'}${pnlPct != null ? ' ' + '<span class="'+(pnlPct>=0?'pnl-pos':'pnl-neg')+'">'+fmtPct(pnlPct)+'</span>' : ''}</span></div>
     <div class="row"><span class="label">Range</span><span class="value text-xs">${p.bin_range ? p.bin_range.min+'-'+p.bin_range.max : '-'}</span></div>
     <div class="row"><span class="label">Bins</span><span class="value text-xs">${bins != null ? bins : '-'}</span></div>
     <div class="row"><span class="label">Fees</span><span class="value">${p.unclaimed_fees_sol != null ? '◎'+p.unclaimed_fees_sol : '-'}</span></div>
