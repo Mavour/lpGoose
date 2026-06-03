@@ -290,6 +290,11 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   }
   if (pos.closed) return null;
 
+  // Sanity cap: reject absurd PnL values (API sometimes returns bogus data for new positions)
+  if (currentPnlPct != null && (currentPnlPct > 200 || currentPnlPct < -200)) {
+    currentPnlPct = null;
+  }
+
   let changed = false;
 
   // Track peak PnL

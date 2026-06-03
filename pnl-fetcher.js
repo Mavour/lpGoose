@@ -144,9 +144,19 @@ function normalizePosition(raw, fallbackAddress, source) {
   };
 }
 
+let _lastLpAgentCall = 0;
+const LPAGENT_MIN_INTERVAL_MS = 2000;
+
 async function fetchLpAgent(path, context) {
   const apiKey = getLpAgentKey();
   if (!apiKey) return null;
+
+  const now = Date.now();
+  const elapsed = now - _lastLpAgentCall;
+  if (_lastLpAgentCall > 0 && elapsed < LPAGENT_MIN_INTERVAL_MS) {
+    await new Promise(r => setTimeout(r, LPAGENT_MIN_INTERVAL_MS - elapsed));
+  }
+  _lastLpAgentCall = Date.now();
 
   return fetchJsonWithOneRetry(
     `${LPAGENT_BASE_URL}${path}`,
@@ -157,6 +167,18 @@ async function fetchLpAgent(path, context) {
 
 async function fetchMeteora(path, context) {
   return fetchJsonWithOneRetry(`${METEORA_BASE_URL}${path}`, {}, context);
+}
+
+async function fetchMeteoraPoolPnl(poolAddress, walletAddress) {
+  const url = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${walletAddress}&status=open&pageSize=100&page=1`;
+  const data = await fetchJsonWithOneRetry(url, {}, `Meteora pool PnL ${poolAddress.slice(0, 8)}`);
+  const positions = data?.positions || data?.data || [];
+  const byAddress = {};
+  for (const p of positions) {
+    const addr = p.positionAddress || p.address || p.position;
+    if (addr) byAddress[addr] = p;
+  }
+  return byAddress;
 }
 
 /**
@@ -246,21 +268,25 @@ export async function getWalletPnl(walletAddress) {
   }
 
   try {
-    const meteoraPayload = await fetchMeteora(
-      `/position/all_by_user/${encodeURIComponent(walletAddress)}`,
-      `Meteora wallet ${walletAddress}`
-    );
+    const portfolioUrl = `https://dlmm.datapi.meteora.ag/portfolio/open?user=${encodeURIComponent(walletAddress)}`;
+    const portfolio = await fetchJsonWithOneRetry(portfolioUrl, {}, `Meteora portfolio ${walletAddress}`);
+    const pools = portfolio?.pools || [];
+    const allPositions = [];
 
-    const positions = firstArray(meteoraPayload).map((p) =>
-      normalizePosition(p, p.position || p.positionAddress || p.address, "meteora_fallback")
-    );
+    for (const pool of pools) {
+      const pnlByPos = await fetchMeteoraPoolPnl(pool.poolAddress, walletAddress);
+      for (const posAddr of (pool.listPositions || [])) {
+        const raw = pnlByPos[posAddr] || {};
+        allPositions.push(normalizePosition({ ...raw, positionAddress: posAddr, position: posAddr }, posAddr, "meteora_fallback"));
+      }
+    }
 
     logSource("meteora_fallback", `wallet=${walletAddress}`);
     return {
       walletAddress,
-      positions,
-      totalPnlUsd: positions.reduce((sum, p) => sum + p.pnlUsd, 0),
-      totalFeesCollected: positions.reduce((sum, p) => sum + p.feesCollected, 0),
+      positions: allPositions,
+      totalPnlUsd: allPositions.reduce((sum, p) => sum + p.pnlUsd, 0),
+      totalFeesCollected: allPositions.reduce((sum, p) => sum + p.feesCollected, 0),
       source: "meteora_fallback",
     };
   } catch (error) {
