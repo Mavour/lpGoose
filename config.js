@@ -84,7 +84,7 @@ export const config = {
     stPeriod:      u.chartIndicators?.stPeriod      ?? 10,
     stMultiplier:  u.chartIndicators?.stMultiplier  ?? 3,
     interval:      u.chartIndicators?.interval      ?? "5m",
-    failOpen:      u.chartIndicators?.failOpen      ?? true,
+    failOpen:      u.chartIndicators?.failOpen      ?? false,
   },
 
   // ─── Strategy Mapping ───────────────────

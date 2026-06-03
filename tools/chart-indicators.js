@@ -144,18 +144,18 @@ export async function confirmSupertrendBreak({ mint, interval = "5m", limit = 29
 
     const latest = candles[candles.length - 1];
 
-    if (st.supertrendBreakDown) {
-      return { confirmed: true, direction: st.direction, reason: `Bearish break at ${latest.close.toFixed(8)}` };
+    if (st.supertrendBreakUp) {
+      return { confirmed: true, direction: st.direction, reason: `Bullish break at ${latest.close.toFixed(8)}` };
     }
 
-    if (st.direction === "bearish") {
-      return { confirmed: true, direction: st.direction, reason: `Bearish trend (ST=${st.value.toFixed(8)}, price=${latest.close.toFixed(8)})` };
+    if (st.direction === "bullish") {
+      return { confirmed: true, direction: st.direction, reason: `Bullish trend (ST=${st.value.toFixed(8)}, price=${latest.close.toFixed(8)})` };
     }
 
     return {
       confirmed: false,
       direction: st.direction,
-      reason: `Bullish trend (ST=${st.value.toFixed(8)}, price=${latest.close.toFixed(8)}) - wait for bearish`,
+      reason: `Bearish trend (ST=${st.value.toFixed(8)}, price=${latest.close.toFixed(8)}) - wait for bullish`,
     };
   } catch (e) {
     log("screening_warn", `GMGN supertrend error for ${mint?.slice(0, 8)}: ${e.message}`);
