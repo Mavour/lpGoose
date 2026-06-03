@@ -64,67 +64,95 @@ async function fetchKlineGMGN(mint, interval = "5m", limit = 298) {
 
 export function calcSupertrend(candles, period = 10, multiplier = 3) {
   if (!candles || candles.length < period + 1) {
-    return { value: null, direction: "neutral", supertrendBreakUp: false, supertrendBreakDown: false };
+    return {
+      value: null,
+      direction: "neutral",
+      previousDirection: "neutral",
+      supertrendBreakUp: false,
+      supertrendBreakDown: false,
+      upperBand: [],
+      lowerBand: [],
+      directions: [],
+      values: [],
+    };
   }
 
-  const tr = [];
+  const tr = new Array(candles.length).fill(null);
   for (let i = 1; i < candles.length; i++) {
     const high = candles[i].high;
     const low = candles[i].low;
     const prevClose = candles[i - 1].close;
-    tr.push(Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose)));
+    tr[i] = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
   }
 
-  const atr = [];
-  let sum = tr.slice(0, period).reduce((a, b) => a + b, 0);
-  atr.push(sum / period);
-  for (let i = period; i < tr.length; i++) {
-    atr.push((atr[atr.length - 1] * (period - 1) + tr[i]) / period);
+  const atr = new Array(candles.length).fill(null);
+  let sum = 0;
+  for (let i = 1; i <= period; i++) sum += tr[i];
+  atr[period] = sum / period;
+  for (let i = period + 1; i < candles.length; i++) {
+    atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period;
   }
 
-  const hl2 = candles.slice(1).map(c => (c.high + c.low) / 2);
-  const basicUpper = [];
-  const basicLower = [];
-  for (let i = 0; i < atr.length; i++) {
-    basicUpper.push(hl2[i] + multiplier * atr[i]);
-    basicLower.push(hl2[i] - multiplier * atr[i]);
-  }
+  const upperBand = new Array(candles.length).fill(null);
+  const lowerBand = new Array(candles.length).fill(null);
+  const directions = new Array(candles.length).fill("neutral");
+  const values = new Array(candles.length).fill(null);
 
-  const upperBand = [basicUpper[0]];
-  const lowerBand = [basicLower[0]];
-  let direction = candles[1].close <= basicLower[0] ? "bearish" : "bullish";
+  for (let i = period; i < candles.length; i++) {
+    const hl2 = (candles[i].high + candles[i].low) / 2;
+    const basicUpper = hl2 + multiplier * atr[i];
+    const basicLower = hl2 - multiplier * atr[i];
 
-  for (let i = 1; i < basicUpper.length; i++) {
-    const prevClose = candles[i].close;
+    if (i === period) {
+      upperBand[i] = basicUpper;
+      lowerBand[i] = basicLower;
+      directions[i] = candles[i].close <= basicLower ? "bearish" : "bullish";
+      values[i] = directions[i] === "bullish" ? lowerBand[i] : upperBand[i];
+      continue;
+    }
 
-    if (basicUpper[i] < upperBand[i - 1] || prevClose > upperBand[i - 1]) {
-      upperBand.push(basicUpper[i]);
+    const prevClose = candles[i - 1].close;
+    if (basicUpper < upperBand[i - 1] || prevClose > upperBand[i - 1]) {
+      upperBand[i] = basicUpper;
     } else {
-      upperBand.push(upperBand[i - 1]);
+      upperBand[i] = upperBand[i - 1];
     }
 
-    if (basicLower[i] > lowerBand[i - 1] || prevClose < lowerBand[i - 1]) {
-      lowerBand.push(basicLower[i]);
+    if (basicLower > lowerBand[i - 1] || prevClose < lowerBand[i - 1]) {
+      lowerBand[i] = basicLower;
     } else {
-      lowerBand.push(lowerBand[i - 1]);
+      lowerBand[i] = lowerBand[i - 1];
     }
 
-    if (prevClose <= lowerBand[i - 1]) {
-      direction = "bearish";
-    } else if (prevClose >= upperBand[i - 1]) {
-      direction = "bullish";
+    const previousDirection = directions[i - 1];
+    const close = candles[i].close;
+    if (previousDirection === "bearish" && close >= upperBand[i - 1]) {
+      directions[i] = "bullish";
+    } else if (previousDirection === "bullish" && close <= lowerBand[i - 1]) {
+      directions[i] = "bearish";
+    } else {
+      directions[i] = previousDirection;
     }
+    values[i] = directions[i] === "bullish" ? lowerBand[i] : upperBand[i];
   }
 
-  const prevDir = candles[candles.length - 2].close <= lowerBand[lowerBand.length - 2] ? "bearish" : "bullish";
+  const latestIndex = candles.length - 1;
+  const previousIndex = latestIndex - 1;
+  const direction = directions[latestIndex];
+  const prevDir = directions[previousIndex] || "neutral";
   const supertrendBreakDown = prevDir === "bullish" && direction === "bearish";
   const supertrendBreakUp = prevDir === "bearish" && direction === "bullish";
 
   return {
-    value: direction === "bullish" ? lowerBand[lowerBand.length - 1] : upperBand[upperBand.length - 1],
+    value: values[latestIndex],
     direction,
+    previousDirection: prevDir,
     supertrendBreakUp,
     supertrendBreakDown,
+    upperBand,
+    lowerBand,
+    directions,
+    values,
   };
 }
 
@@ -143,22 +171,54 @@ export async function confirmSupertrendBreak({ mint, interval = "5m", limit = 29
     }
 
     const latest = candles[candles.length - 1];
+    const previous = candles[candles.length - 2];
+    const latestClose = latest.close;
+    const previousClose = previous?.close ?? null;
+    const signal = {
+      interval,
+      supertrend: st.value,
+      close: latestClose,
+      previousClose,
+      previousDirection: st.previousDirection,
+      direction: st.direction,
+      supertrendBreakUp: st.supertrendBreakUp,
+      supertrendBreakDown: st.supertrendBreakDown,
+    };
 
     if (st.supertrendBreakUp) {
-      return { confirmed: true, direction: st.direction, reason: `Bullish break at ${latest.close.toFixed(8)}` };
+      return {
+        confirmed: true,
+        direction: st.direction,
+        reason: `Bullish break ${interval} (ST=${formatPrice(st.value)}, prevClose=${formatPrice(previousClose)}, close=${formatPrice(latestClose)}, prevDir=${st.previousDirection}, dir=${st.direction})`,
+        signal,
+      };
     }
 
-    if (st.direction === "bullish") {
-      return { confirmed: true, direction: st.direction, reason: `Bullish trend (ST=${st.value.toFixed(8)}, price=${latest.close.toFixed(8)})` };
+    if (st.direction === "bullish" && latestClose >= st.value) {
+      return {
+        confirmed: true,
+        direction: st.direction,
+        reason: `Bullish trend ${interval} (ST=${formatPrice(st.value)}, prevClose=${formatPrice(previousClose)}, close=${formatPrice(latestClose)}, prevDir=${st.previousDirection}, dir=${st.direction})`,
+        signal,
+      };
     }
 
     return {
       confirmed: false,
       direction: st.direction,
-      reason: `Bearish trend (ST=${st.value.toFixed(8)}, price=${latest.close.toFixed(8)}) - wait for bullish`,
+      reason: `Bearish trend ${interval} (ST=${formatPrice(st.value)}, prevClose=${formatPrice(previousClose)}, close=${formatPrice(latestClose)}, prevDir=${st.previousDirection}, dir=${st.direction}) - wait for bullish close`,
+      signal,
     };
   } catch (e) {
     log("screening_warn", `GMGN supertrend error for ${mint?.slice(0, 8)}: ${e.message}`);
     return { confirmed: false, error: e.message };
   }
+}
+
+export async function confirmEntrySupertrendBreak({ mint, refresh = true, ...options } = {}) {
+  return confirmSupertrendBreak({ mint, ...options });
+}
+
+function formatPrice(value) {
+  return value == null || !Number.isFinite(Number(value)) ? "n/a" : Number(value).toFixed(8);
 }

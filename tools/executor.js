@@ -403,8 +403,8 @@ async function runSafetyChecks(name, args) {
       const baseMintForSt = args.base_mint || liveBaseMint;
       if (baseMintForSt) {
         const cc = config.chartIndicators;
-        const { confirmSupertrendBreak } = await import("./chart-indicators.js");
-        const stCheck = await confirmSupertrendBreak({
+        const { confirmEntrySupertrendBreak } = await import("./chart-indicators.js");
+        const stCheck = await confirmEntrySupertrendBreak({
           mint: baseMintForSt,
           interval: cc.interval || "5m",
           period: cc.stPeriod || 10,

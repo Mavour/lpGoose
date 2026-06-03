@@ -339,12 +339,12 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   // ─── Supertrend entry gate (hard filter) ───
   if (gated.length > 0) {
     const cc = config.chartIndicators;
-    const { confirmSupertrendBreak } = await import("./chart-indicators.js");
+    const { confirmEntrySupertrendBreak } = await import("./chart-indicators.js");
     const stResults = await Promise.allSettled(
       gated.map((p) => {
         const mint = p.base?.mint;
         if (!mint) return Promise.resolve({ confirmed: true, direction: "neutral", reason: "no mint" });
-        return confirmSupertrendBreak({
+        return confirmEntrySupertrendBreak({
           mint,
           interval: cc.interval || "5m",
           period: cc.stPeriod || 10,
