@@ -483,14 +483,14 @@ function fmtPnLPct(val) {
   if (val == null || isNaN(val)) return '<span class="pnl-zero">-</span>';
   const n = Number(val);
   const cls = n > 0 ? 'pnl-pos' : n < 0 ? 'pnl-neg' : 'pnl-zero';
-  return `<span class="${cls}">${n > 0 ? '+' : ''}${n.toFixed(1)}%</span>`;
+  return `<span class="${cls}">${n > 0 ? '+' : ''}${n.toFixed(4)}%</span>`;
 }
 function fmtPct(v) {
   if (v == null || isNaN(v)) return '-';
   const abs = Math.abs(v);
   const sign = v >= 0 ? '+' : '-';
   if (abs === 0) return '0%';
-  if (abs >= 0.01) return sign + abs.toFixed(2) + '%';
+  if (abs >= 0.01) return sign + abs.toFixed(4) + '%';
   const str = abs.toFixed(12);
   const dec = str.split('.')[1] || '';
   let z = 0;
@@ -500,7 +500,7 @@ function fmtPct(v) {
     const sub = String.fromCharCode(0x2080 + z);
     return sign + '0.0' + sub + sig + '%';
   }
-  return sign + abs.toFixed(2) + '%';
+  return sign + abs.toFixed(4) + '%';
 }
 function fmtAge(iso) {
   if (!iso) return '-';

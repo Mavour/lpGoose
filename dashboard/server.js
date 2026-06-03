@@ -152,7 +152,7 @@ function apiPositions(req, res) {
               ? +(v?.pnlSol ?? v?.pnlUsd ?? 0) : null,
             pnl_pct: Number.isFinite(+(v?.pnlSolPctChange ?? NaN))
                     || Number.isFinite(+(v?.pnlPctChange ?? NaN))
-              ? +Math.round(+(v?.pnlSolPctChange ?? v?.pnlPctChange ?? 0) * 100) / 100 : null,
+              ? +Math.round(+(v?.pnlSolPctChange ?? v?.pnlPctChange ?? 0) * 10000) / 10000 : null,
             unclaimed_fees_sol: Number.isFinite(+(v?.unrealizedPnl?.unclaimedFeeTokenX?.amountSol ?? NaN))
                             || Number.isFinite(+(v?.unrealizedPnl?.unclaimedFeeTokenY?.amountSol ?? NaN))
                             ? +Math.round((
