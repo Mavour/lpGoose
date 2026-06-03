@@ -690,6 +690,15 @@ Summarize the current portfolio health, total fees earned, and performance of al
     _pnlPollBusy = true;
     try {
       const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
+
+      // Write live cache for dashboard — gives it LPAgent-enriched data instantly
+      try {
+        if (result) {
+          const cachePath = path.join(__dirname, 'live-positions-cache.json');
+          fs.writeFileSync(cachePath, JSON.stringify({ updatedAt: Date.now(), positions: result.positions }));
+        }
+      } catch {}
+
       if (!result?.positions?.length) return;
       for (const p of result.positions) {
         const exit = updatePnlAndCheckExits(p.position, p, config.management);

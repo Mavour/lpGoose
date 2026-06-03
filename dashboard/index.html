@@ -863,6 +863,15 @@ initAppConfig().then(() => {
 fetchBalance();
 refreshLogList();
 
+// SSE: instant position updates when agent's 30s poller writes cache
+function connectPositionsSSE() {
+  const es = new EventSource('/api/positions/stream');
+  es.onmessage = () => refreshData();
+  es.onerror = () => {}; // auto-reconnect by EventSource
+}
+connectPositionsSSE();
+
+// Polling fallback (cache reads are local — near-zero cost)
 setInterval(refreshData, 5000);
 setInterval(fetchBalance, 5000);
 setInterval(refreshLogList, 30000);

@@ -85,6 +85,9 @@ function getWalletPubkey() {
   } catch { return null; }
 }
 
+// ─── Shared cache ──────────────────────────────────────────
+const LIVE_CACHE_PATH = path.join(ROOT, 'live-positions-cache.json');
+
 // ─── API: positions ───────────────────────────────────────
 function apiPositions(req, res) {
   const sp = path.join(ROOT, 'state.json');
@@ -94,12 +97,6 @@ function apiPositions(req, res) {
       const state = JSON.parse(d);
       const positions = Object.values(state.positions || {}).filter(p => !p.closed);
       if (!positions.length) return json(res, []);
-
-      let solMode = false;
-      try {
-        const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'user-config.json'), 'utf-8'));
-        solMode = !!cfg.solMode;
-      } catch {}
 
       const baseList = positions.map(p => ({
         position:      p.position,
@@ -121,6 +118,27 @@ function apiPositions(req, res) {
         notes:         p.notes,
       }));
 
+      // Try shared live cache first (LPAgent-enriched, written by agent's 30s poller)
+      try {
+        const cacheRaw = fs.readFileSync(LIVE_CACHE_PATH, 'utf-8');
+        const cache = JSON.parse(cacheRaw);
+        if (cache && Array.isArray(cache.positions)) {
+          const cacheMap = new Map(cache.positions.map(p => [p.position, p]));
+          const list = baseList.map(p => {
+            const v = cacheMap.get(p.position);
+            return Object.assign({}, p, {
+              pnl_sol:            v?.pnl_usd != null ? +v.pnl_usd : null,
+              pnl_pct:            v?.pnl_pct != null ? +v.pnl_pct : null,
+              unclaimed_fees_sol: v?.unclaimed_fees_usd != null ? +v.unclaimed_fees_usd : null,
+              all_time_fees_sol:  v?.collected_fees_usd != null ? +v.collected_fees_usd : null,
+              in_range:           v?.in_range ?? true,
+            });
+          });
+          return json(res, list);
+        }
+      } catch {}
+
+      // Fallback: read from Meteora API directly
       const wallet = getWalletPubkey();
       if (!wallet) return json(res, baseList);
 
@@ -146,8 +164,7 @@ function apiPositions(req, res) {
       function respond() {
         const list = baseList.map(p => {
           const v = pnlByPos[p.position];
-          return {
-            ...p,
+          return Object.assign({}, p, {
             pnl_sol: Number.isFinite(+(v?.pnlSol ?? NaN)) || Number.isFinite(+(v?.pnlUsd ?? NaN))
               ? +(v?.pnlSol ?? v?.pnlUsd ?? 0) : null,
             pnl_pct: Number.isFinite(+(v?.pnlSolPctChange ?? NaN))
@@ -161,7 +178,7 @@ function apiPositions(req, res) {
                             ) * 1e8) / 1e8 : null,
             all_time_fees_sol:  Number.isFinite(+(v?.allTimeFees?.total?.sol ?? NaN))
                                ? +Math.round(+(v.allTimeFees.total.sol) * 1e8) / 1e8 : null,
-          };
+          });
         });
         json(res, list);
       }
@@ -169,6 +186,56 @@ function apiPositions(req, res) {
       if (!pools.length) respond();
     } catch { json(res, []); }
   });
+}
+
+// ─── SSE: positions live stream ───────────────────────────
+const _sseClients = new Set();
+let _cacheWatchTimer = null;
+
+function broadcastPositions() {
+  try {
+    const data = fs.readFileSync(LIVE_CACHE_PATH, 'utf-8');
+    for (const client of _sseClients) {
+      try { client.write('data: ' + data + '\n\n'); } catch { _sseClients.delete(client); }
+    }
+  } catch {}
+}
+
+function startCacheWatcher() {
+  if (_cacheWatchTimer) return;
+  let lastMtime = 0;
+  try { lastMtime = fs.statSync(LIVE_CACHE_PATH).mtimeMs; } catch {}
+  _cacheWatchTimer = setInterval(() => {
+    try {
+      const stat = fs.statSync(LIVE_CACHE_PATH);
+      if (stat.mtimeMs > lastMtime) {
+        lastMtime = stat.mtimeMs;
+        broadcastPositions();
+      }
+    } catch {}
+  }, 2000);
+}
+
+function apiPositionsStream(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  });
+
+  // Send current data immediately
+  try {
+    const data = fs.readFileSync(LIVE_CACHE_PATH, 'utf-8');
+    res.write('data: ' + data + '\n\n');
+  } catch {}
+
+  _sseClients.add(res);
+
+  const ping = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch { clearInterval(ping); }
+  }, 30000);
+
+  req.on('close', () => { _sseClients.delete(res); clearInterval(ping); });
 }
 
 // ─── API: history ─────────────────────────────────────────
@@ -352,13 +419,14 @@ const server = http.createServer((req, res) => {
   const p = u.pathname;
 
   switch (p) {
-    case '/api/positions': return apiPositions(req, res);
-    case '/api/history':   return apiHistory(req, res);
-    case '/api/config':    return apiConfig(req, res);
-    case '/api/balance':   return apiBalance(req, res);
-    case '/api/logs':      return apiLogsList(req, res);
-    case '/api/logs/content': return apiLogContent(req, res, u);
-    case '/api/logs/stream':  return apiLogStream(req, res, u);
+    case '/api/positions':        return apiPositions(req, res);
+    case '/api/positions/stream': return apiPositionsStream(req, res);
+    case '/api/history':          return apiHistory(req, res);
+    case '/api/config':           return apiConfig(req, res);
+    case '/api/balance':          return apiBalance(req, res);
+    case '/api/logs':             return apiLogsList(req, res);
+    case '/api/logs/content':     return apiLogContent(req, res, u);
+    case '/api/logs/stream':      return apiLogStream(req, res, u);
   }
 
   let filePath = p === '/' ? path.join(__dirname, 'index.html') : path.join(__dirname, p);
@@ -366,6 +434,8 @@ const server = http.createServer((req, res) => {
   if (!resolved.startsWith(__dirname)) { fail(res, 403); return; }
   serveFile(res, resolved);
 });
+
+startCacheWatcher();
 
 server.listen(PORT, () => {
   console.log(`[dashboard] http://localhost:${PORT}`);
