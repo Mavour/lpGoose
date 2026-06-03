@@ -144,18 +144,23 @@ function apiPositions(req, res) {
       }
 
       function respond() {
-        const list = baseList.map(p => ({
-          ...p,
-          pnl_usd: solMode
-            ? +(pnlByPos[p.position]?.pnlSol ?? pnlByPos[p.position]?.pnlUsd ?? NaN) || null
-            : +(pnlByPos[p.position]?.pnlUsd ?? pnlByPos[p.position]?.pnlSol ?? NaN) || null,
-          pnl_pct: solMode
-            ? +Math.round((pnlByPos[p.position]?.pnlSolPctChange ?? pnlByPos[p.position]?.pnlPctChange ?? NaN) * 100) / 100 || null
-            : +Math.round((pnlByPos[p.position]?.pnlPctChange ?? pnlByPos[p.position]?.pnlSolPctChange ?? NaN) * 100) / 100 || null,
-          unclaimed_fees_sol: +(pnlByPos[p.position]?.unrealizedPnl?.unclaimedFeeTokenX?.amountSol || 0)
-                            + +(pnlByPos[p.position]?.unrealizedPnl?.unclaimedFeeTokenY?.amountSol || 0) || null,
-          all_time_fees_sol:  +(pnlByPos[p.position]?.allTimeFees?.total?.sol ?? NaN) || null,
-        }));
+        const list = baseList.map(p => {
+          const v = pnlByPos[p.position];
+          return {
+            ...p,
+            pnl_sol:    Number.isFinite(+(v?.pnlSol ?? NaN))   ? +Math.round(+(v.pnlSol) * 1e8) / 1e8 : null,
+            pnl_pct:    Number.isFinite(+(v?.pnlSolPctChange ?? NaN))
+                       ? +Math.round(+(v.pnlSolPctChange) * 100) / 100 : null,
+            unclaimed_fees_sol: Number.isFinite(+(v?.unrealizedPnl?.unclaimedFeeTokenX?.amountSol ?? NaN))
+                            || Number.isFinite(+(v?.unrealizedPnl?.unclaimedFeeTokenY?.amountSol ?? NaN))
+                            ? +Math.round((
+                                +(v?.unrealizedPnl?.unclaimedFeeTokenX?.amountSol || 0)
+                              + +(v?.unrealizedPnl?.unclaimedFeeTokenY?.amountSol || 0)
+                            ) * 1e8) / 1e8 : null,
+            all_time_fees_sol:  Number.isFinite(+(v?.allTimeFees?.total?.sol ?? NaN))
+                               ? +Math.round(+(v.allTimeFees.total.sol) * 1e8) / 1e8 : null,
+          };
+        });
         json(res, list);
       }
 

@@ -604,7 +604,7 @@ function renderPositions(list) {
 
   document.getElementById('positionsBody').innerHTML = list.map(p => {
     const bins = p.bin_range ? Math.abs(p.bin_range.max - p.bin_range.min) : null;
-    const pnlSol = p.pnl_usd != null ? Number(p.pnl_usd) : null;
+    const pnlSol = p.pnl_sol != null ? Number(p.pnl_sol) : null;
     const pnlPct = p.pnl_pct != null ? Number(p.pnl_pct) : null;
     return `<tr>
     <td><strong>${p.pool_name||shortAddr(p.pool)}</strong></td>
@@ -620,7 +620,7 @@ function renderPositions(list) {
 
   document.getElementById('positionsCards').innerHTML = list.map(p => {
     const bins = p.bin_range ? Math.abs(p.bin_range.max - p.bin_range.min) : null;
-    const pnlSol = p.pnl_usd != null ? Number(p.pnl_usd) : null;
+    const pnlSol = p.pnl_sol != null ? Number(p.pnl_sol) : null;
     const pnlPct = p.pnl_pct != null ? Number(p.pnl_pct) : null;
     return `<div class="pos-card">
     <div class="row"><span class="pool-name">${p.pool_name||shortAddr(p.pool)}</span>${stratBadge(p.strategy)}</div>
