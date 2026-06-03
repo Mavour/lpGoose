@@ -51,6 +51,13 @@ function formatCountdown(seconds) {
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
+function formatDecimal(value, maxDecimals = 5) {
+  if (value == null) return "?";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "?";
+  return n.toFixed(maxDecimals).replace(/\.?0+$/, "");
+}
+
 function buildPrompt() {
   const mgmt = formatCountdown(nextRunIn(timers.managementLastRun, config.schedule.managementIntervalMin));
   const scrn = formatCountdown(nextRunIn(timers.screeningLastRun, config.schedule.screeningIntervalMin));
@@ -320,10 +327,10 @@ export async function runManagementCycle({ silent = false } = {}) {
     const reportLines = positionData.map((p) => {
       const act = actionMap.get(p.position);
       const inRange = p.in_range ? "🟢 IN" : `🔴 OOR ${p.minutes_out_of_range ?? 0}m`;
-      const val = config.management.solMode ? `◎${p.total_value_usd ?? "?"}` : `$${p.total_value_usd ?? "?"}`;
-      const unclaimed = config.management.solMode ? `◎${p.unclaimed_fees_usd ?? "?"}` : `$${p.unclaimed_fees_usd ?? "?"}`;
+      const val = config.management.solMode ? `◎${formatDecimal(p.total_value_usd)}` : `$${formatDecimal(p.total_value_usd, 2)}`;
+      const unclaimed = config.management.solMode ? `◎${formatDecimal(p.unclaimed_fees_usd)}` : `$${formatDecimal(p.unclaimed_fees_usd, 2)}`;
       const statusLabel = act.action === "INSTRUCTION" ? "HOLD (instruction)" : act.action;
-      let line = `**${p.pair}** | Age: ${p.age_minutes ?? "?"}m | Val: ${val} | Unclaimed: ${unclaimed} | PnL: ${p.pnl_pct ?? "?"}% | Yield: ${p.fee_per_tvl_24h ?? "?"}% | ${inRange} | ${statusLabel}`;
+      let line = `**${p.pair}** | Age: ${p.age_minutes ?? "?"}m | Val: ${val} | Unclaimed: ${unclaimed} | PnL: ${formatDecimal(p.pnl_pct, 4)}% | Yield: ${formatDecimal(p.fee_per_tvl_24h, 2)}% | ${inRange} | ${statusLabel}`;
       if (p.instruction) line += `\nNote: "${p.instruction}"`;
       if (act.action === "CLOSE" && act.rule === "exit") line += `\n⚡ Trailing TP: ${act.reason}`;
       if (act.action === "CLOSE" && act.rule && act.rule !== "exit") line += `\nRule ${act.rule}: ${act.reason}`;
@@ -338,7 +345,7 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     const cur = config.management.solMode ? "◎" : "$";
     mgmtReport = reportLines.join("\n\n") +
-      `\n\nSummary: 💼 ${positions.length} positions | ${cur}${totalValue.toFixed(4)} | fees: ${cur}${totalUnclaimed.toFixed(4)} | ${actionSummary}`;
+      `\n\nSummary: 💼 ${positions.length} positions | ${cur}${formatDecimal(totalValue)} | fees: ${cur}${formatDecimal(totalUnclaimed)} | ${actionSummary}`;
 
     // ── Call LLM only if action needed ──────────────────────────────
     if (managementEvents.length > 0) {
@@ -1307,10 +1314,11 @@ if (isTTY) {
         if (total_positions === 0) { await sendMessage("No open positions."); return; }
         const cur = config.management.solMode ? "◎" : "$";
         const lines = positions.map((p, i) => {
-          const pnl = p.pnl_usd >= 0 ? `+${cur}${p.pnl_usd}` : `-${cur}${Math.abs(p.pnl_usd)}`;
+          const pnlDecimals = config.management.solMode ? 5 : 2;
+          const pnl = p.pnl_usd >= 0 ? `+${cur}${formatDecimal(p.pnl_usd, pnlDecimals)}` : `-${cur}${formatDecimal(Math.abs(p.pnl_usd), pnlDecimals)}`;
           const age = p.age_minutes != null ? `${p.age_minutes}m` : "?";
           const oor = !p.in_range ? " ⚠️OOR" : "";
-          return `${i + 1}. ${p.pair} | ${cur}${p.total_value_usd} | PnL: ${pnl} | fees: ${cur}${p.unclaimed_fees_usd} | ${age}${oor}`;
+          return `${i + 1}. ${p.pair} | ${cur}${formatDecimal(p.total_value_usd, pnlDecimals)} | PnL: ${pnl} | fees: ${cur}${formatDecimal(p.unclaimed_fees_usd, pnlDecimals)} | ${age}${oor}`;
         });
         await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /set <n> <note> to set instruction`);
       } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => { }); }
