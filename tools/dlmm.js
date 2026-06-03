@@ -546,7 +546,8 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
 
     // ── LPAgent PnL enrichment (primary) ──
     // Override Meteora SDK PnL with LPAgent data for accuracy
-    try {
+    // Skip if no positions — saves API quota
+    if (positions.length > 0) try {
       const walletPnl = await getWalletPnl(walletAddress);
       if (walletPnl?.source === "lpagent" && walletPnl.positions.length > 0) {
         const pnlMap = new Map(walletPnl.positions.map(p => [p.positionAddress, p]));

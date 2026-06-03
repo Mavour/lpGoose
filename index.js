@@ -14,7 +14,7 @@ import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, sendKeyboard, editKeyboard, answerCallback, notifyClose, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, updatePoolTvl, getPoolTvl } from "./state.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, updatePoolTvl, getPoolTvl } from "./state.js";
 import { getActiveStrategy, setActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
@@ -689,6 +689,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
     if (_managementBusy || _screeningBusy || _pnlPollBusy) return;
     _pnlPollBusy = true;
     try {
+      if (getTrackedPositions(true).length === 0) return;
       const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
 
       // Write live cache for dashboard — gives it LPAgent-enriched data instantly
