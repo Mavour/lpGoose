@@ -532,7 +532,7 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
           pnl_true_usd:       Math.round(parseFloat(binData?.pnlUsd || 0) * 10000) / 10000,
           pnl_pct:            Math.round(parseFloat(binData
             ? config.management.solMode ? (binData.pnlSolPctChange || 0) : (binData.pnlPctChange || 0)
-            : config.management.solMode ? (pool.pnlSolPctChange || 0) : (pool.pnlPctChange || 0)) * 100) / 100,
+            : config.management.solMode ? (pool.pnlSolPctChange || 0) : (pool.pnlPctChange || 0)) * 10000) / 10000,
           unclaimed_fees_true_usd: Math.round((binData
             ? parseFloat(binData.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(binData.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)
             : parseFloat(pool.unclaimedFees || 0)) * 10000) / 10000,
@@ -553,18 +553,18 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
         for (const pos of positions) {
           const pnl = pnlMap.get(pos.position);
           if (!pnl) continue;
-          if (pnl.pnlPct != null) pos.pnl_pct = Math.round(pnl.pnlPct * 100) / 100;
-          if (pnl.pnlPct != null) pos.pnlSolPctChange = Math.round(pnl.pnlPct * 100) / 100;
-          if (pnl.pnlUsd != null) pos.pnl_usd = Math.round(pnl.pnlUsd * 100) / 100;
-          if (pnl.pnlUsd != null) pos.pnl_true_usd = Math.round(pnl.pnlUsd * 100) / 100;
-          if (pnl.pnlUsd != null) pos.pnl_sol = Math.round(pnl.pnlUsd * 100) / 100;
+          if (pnl.pnlPct != null) pos.pnl_pct = Math.round(pnl.pnlPct * 10000) / 10000;
+          if (pnl.pnlPct != null) pos.pnlSolPctChange = Math.round(pnl.pnlPct * 10000) / 10000;
+          if (pnl.pnlUsd != null) pos.pnl_usd = pnl.pnlUsd;
+          if (pnl.pnlUsd != null) pos.pnl_true_usd = pnl.pnlUsd;
+          if (pnl.pnlUsd != null) pos.pnl_sol = pnl.pnlUsd;
           if (pnl.currentValue > 0) {
-            pos.total_value_usd = Math.round(pnl.currentValue * 100) / 100;
-            pos.total_value_true_usd = Math.round(pnl.currentValue * 100) / 100;
+            pos.total_value_usd = pnl.currentValue;
+            pos.total_value_true_usd = pnl.currentValue;
           }
           if (pnl.feesCollected > 0) {
-            pos.collected_fees_usd = Math.round(pnl.feesCollected * 100) / 100;
-            pos.collected_fees_true_usd = Math.round(pnl.feesCollected * 100) / 100;
+            pos.collected_fees_usd = pnl.feesCollected;
+            pos.collected_fees_true_usd = pnl.feesCollected;
           }
         }
         if (!silent) log("positions", `LPAgent enriched ${positions.length} position(s) with PnL data`);
