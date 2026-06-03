@@ -386,6 +386,24 @@ async function runSafetyChecks(name, args) {
         };
       }
 
+      // Supertrend gate: re-check at deploy time (fresh data)
+      if (args.pool_address) {
+        const cc = config.chartIndicators;
+        const { confirmSupertrendBreak } = await import("./chart-indicators.js");
+        const stCheck = await confirmSupertrendBreak({
+          pool_address: args.pool_address,
+          interval: cc.interval || "5m",
+          period: cc.stPeriod || 10,
+          multiplier: cc.stMultiplier || 3,
+        }).catch(() => null);
+        if (stCheck && !stCheck.confirmed) {
+          if (cc.failOpen === false) {
+            return { pass: false, reason: `Supertrend not confirmed at deploy time: ${stCheck.reason}` };
+          }
+          log("executor_warn", `Supertrend gate fail-open at deploy: ${args.pool_address} — ${stCheck.reason}`);
+        }
+      }
+
       // Hard gate: reject pools with fee_tvl below config's minFeeActiveTvlRatio
       const { minFeeActiveTvlRatio } = config.screening;
       const livePool = await getPoolDetail({ pool_address: args.pool_address, timeframe: config.screening.timeframe });

@@ -77,6 +77,16 @@ export const config = {
     solMode:               u.solMode               ?? false,
   },
 
+  // ─── Chart Indicators (Supertrend Entry Gate) ───
+  chartIndicators: {
+    enabled:       u.chartIndicators?.enabled       ?? true,
+    entryPreset:   u.chartIndicators?.entryPreset   ?? "supertrend_break",
+    stPeriod:      u.chartIndicators?.stPeriod      ?? 10,
+    stMultiplier:  u.chartIndicators?.stMultiplier  ?? 3,
+    interval:      u.chartIndicators?.interval      ?? "5m",
+    failOpen:      u.chartIndicators?.failOpen      ?? true,
+  },
+
   // ─── Strategy Mapping ───────────────────
   strategy: {
     strategy:  u.strategy  ?? "bid_ask",

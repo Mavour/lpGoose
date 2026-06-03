@@ -336,6 +336,45 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     gated.push(pool);
   }
 
+  // ─── Supertrend entry gate (hard filter) ───
+  if (gated.length > 0) {
+    const cc = config.chartIndicators;
+    const { confirmSupertrendBreak } = await import("./chart-indicators.js");
+    const stResults = await Promise.allSettled(
+      gated.map((p) => {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), 5000);
+        return confirmSupertrendBreak({
+          pool_address: p.pool,
+          interval: cc.interval || "5m",
+          period: cc.stPeriod || 10,
+          multiplier: cc.stMultiplier || 3,
+        });
+      })
+    );
+    const before = gated.length;
+    const stPassed = [];
+    for (let i = 0; i < gated.length; i++) {
+      const r = stResults[i];
+      if (r.status === "fulfilled" && r.value.confirmed) {
+        gated[i].supertrend_direction = r.value.direction;
+        gated[i].supertrend_reason = r.value.reason;
+        stPassed.push(gated[i]);
+      } else if (r.status === "rejected" || r.value?.error) {
+        if (cc.failOpen !== false) {
+          log("screening_warn", `Supertrend gate error for ${gated[i].name}, fail-open allowing: ${r.value?.error || r.reason}`);
+          stPassed.push(gated[i]);
+        } else {
+          log("screening", `Supertrend gate: dropped ${gated[i].name} — error (fail-closed): ${r.value?.error || r.reason}`);
+        }
+      } else {
+        log("screening", `Supertrend gate: dropped ${gated[i].name} — ${r.value?.reason}`);
+      }
+    }
+    gated.splice(0, gated.length, ...stPassed);
+    if (gated.length < before) log("screening", `Supertrend gate removed ${before - gated.length} pool(s)`);
+  }
+
   // ─── PvP (same-symbol rival) detection — run after hard gates so all final candidates are checked ───
   if (config.screening.avoidPvpSymbols && gated.length > 0) {
     await enrichPvpRisk(gated);
