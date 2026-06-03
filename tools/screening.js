@@ -342,10 +342,10 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     const { confirmSupertrendBreak } = await import("./chart-indicators.js");
     const stResults = await Promise.allSettled(
       gated.map((p) => {
-        const controller = new AbortController();
-        setTimeout(() => controller.abort(), 5000);
+        const mint = p.base?.mint;
+        if (!mint) return Promise.resolve({ confirmed: true, direction: "neutral", reason: "no mint" });
         return confirmSupertrendBreak({
-          pool_address: p.pool,
+          mint,
           interval: cc.interval || "5m",
           period: cc.stPeriod || 10,
           multiplier: cc.stMultiplier || 3,
@@ -361,11 +361,17 @@ export async function getTopCandidates({ limit = 10 } = {}) {
         gated[i].supertrend_reason = r.value.reason;
         stPassed.push(gated[i]);
       } else if (r.status === "rejected" || r.value?.error) {
+        const errMsg = r.value?.error || (r.reason?.message || String(r.reason));
         if (cc.failOpen !== false) {
-          log("screening_warn", `Supertrend gate error for ${gated[i].name}, fail-open allowing: ${r.value?.error || r.reason}`);
+          log("screening_warn", `Supertrend gate error for ${gated[i].name}, fail-open allowing: ${errMsg}`);
+          if (errMsg.includes("GMGN") || errMsg.includes("401") || errMsg.includes("insufficient data")) {
+            import("../telegram.js").then(({ sendMessage }) => {
+              sendMessage(`⚠️ GMGN API error: ${errMsg.slice(0, 120)}`).catch(() => {});
+            }).catch(() => {});
+          }
           stPassed.push(gated[i]);
         } else {
-          log("screening", `Supertrend gate: dropped ${gated[i].name} — error (fail-closed): ${r.value?.error || r.reason}`);
+          log("screening", `Supertrend gate: dropped ${gated[i].name} — error (fail-closed): ${errMsg}`);
         }
       } else {
         log("screening", `Supertrend gate: dropped ${gated[i].name} — ${r.value?.reason}`);

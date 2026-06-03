@@ -386,24 +386,6 @@ async function runSafetyChecks(name, args) {
         };
       }
 
-      // Supertrend gate: re-check at deploy time (fresh data)
-      if (args.pool_address) {
-        const cc = config.chartIndicators;
-        const { confirmSupertrendBreak } = await import("./chart-indicators.js");
-        const stCheck = await confirmSupertrendBreak({
-          pool_address: args.pool_address,
-          interval: cc.interval || "5m",
-          period: cc.stPeriod || 10,
-          multiplier: cc.stMultiplier || 3,
-        }).catch(() => null);
-        if (stCheck && !stCheck.confirmed) {
-          if (cc.failOpen === false) {
-            return { pass: false, reason: `Supertrend not confirmed at deploy time: ${stCheck.reason}` };
-          }
-          log("executor_warn", `Supertrend gate fail-open at deploy: ${args.pool_address} — ${stCheck.reason}`);
-        }
-      }
-
       // Hard gate: reject pools with fee_tvl below config's minFeeActiveTvlRatio
       const { minFeeActiveTvlRatio } = config.screening;
       const livePool = await getPoolDetail({ pool_address: args.pool_address, timeframe: config.screening.timeframe });
@@ -416,6 +398,26 @@ async function runSafetyChecks(name, args) {
         return { pass: false, reason: `fee_tvl ${liveFeeTvl}% < hard minimum ${minFeeActiveTvlRatio}%` };
       }
       const liveBaseMint = livePool.token_x?.address || livePool.mint_x || livePool.base_mint || null;
+
+      // Supertrend gate: re-check at deploy time (fresh data via GMGN)
+      const baseMintForSt = args.base_mint || liveBaseMint;
+      if (baseMintForSt) {
+        const cc = config.chartIndicators;
+        const { confirmSupertrendBreak } = await import("./chart-indicators.js");
+        const stCheck = await confirmSupertrendBreak({
+          mint: baseMintForSt,
+          interval: cc.interval || "5m",
+          period: cc.stPeriod || 10,
+          multiplier: cc.stMultiplier || 3,
+        }).catch(() => null);
+        if (stCheck && !stCheck.confirmed) {
+          if (cc.failOpen === false) {
+            return { pass: false, reason: `Supertrend not confirmed at deploy time: ${stCheck.reason}` };
+          }
+          log("executor_warn", `Supertrend gate fail-open at deploy: ${baseMintForSt.slice(0, 8)} — ${stCheck.reason}`);
+        }
+      }
+
       const SOL_MINT = "So11111111111111111111111111111111111111112";
       if (livePool.token_y?.address && livePool.token_y.address !== SOL_MINT) {
         return { pass: false, reason: `quote token ${livePool.token_y.symbol} is not SOL` };
