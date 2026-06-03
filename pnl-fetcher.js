@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { log } from "./logger.js";
 
 const LPAGENT_BASE_URL = "https://api.lpagent.io/open-api/v1";
 const METEORA_BASE_URL = "https://dlmm-api.meteora.ag";
@@ -12,11 +13,11 @@ function getLpAgentKey() {
 }
 
 function logSource(source, detail) {
-  console.log(`[pnl-fetcher] source=${source}${detail ? ` ${detail}` : ""}`);
+  log("pnl_fetcher", `source=${source}${detail ? ` ${detail}` : ""}`);
 }
 
 function logError(context, error) {
-  console.error(`[pnl-fetcher] ${context}: ${error?.message || error}`);
+  log("pnl_fetcher_warn", `${context}: ${error?.message || error}`);
 }
 
 function isRetryableStatus(status) {
@@ -126,12 +127,19 @@ function normalizePosition(raw, fallbackAddress, source) {
     raw?.inRange ??
     (typeof raw?.isOutOfRange === "boolean" ? !raw.isOutOfRange : null);
 
+  const pnlPct =
+    raw?.pnlPctChange ??
+    raw?.pnl_pct ??
+    raw?.pnlPercent ??
+    null;
+
   return {
     positionAddress,
     pnlUsd: toNumber(pnlUsd),
     feesCollected: toNumber(feesCollected),
     currentValue: toNumber(currentValue),
     inRange,
+    pnlPct: pnlPct != null ? toNumber(pnlPct) : null,
     source,
   };
 }

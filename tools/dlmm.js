@@ -21,6 +21,7 @@ import {
 import { recordPerformance } from "../lessons.js";
 import { isPoolOnCooldown, setTokenCloseCooldown } from "../pool-memory.js";
 import { normalizeMint } from "./wallet.js";
+import { getWalletPnl } from "../pnl-fetcher.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
 // @meteora-ag/dlmm → @coral-xyz/anchor uses CJS directory imports
@@ -541,6 +542,33 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
           instruction:        tracked?.instruction ?? null,
         });
       }
+    }
+
+    // ── LPAgent PnL enrichment (primary) ──
+    // Override Meteora SDK PnL with LPAgent data for accuracy
+    try {
+      const walletPnl = await getWalletPnl(walletAddress);
+      if (walletPnl?.source === "lpagent" && walletPnl.positions.length > 0) {
+        const pnlMap = new Map(walletPnl.positions.map(p => [p.positionAddress, p]));
+        for (const pos of positions) {
+          const pnl = pnlMap.get(pos.position);
+          if (!pnl) continue;
+          if (pnl.pnlPct != null) pos.pnl_pct = Math.round(pnl.pnlPct * 100) / 100;
+          if (pnl.pnlUsd != null) pos.pnl_usd = Math.round(pnl.pnlUsd * 100) / 100;
+          if (pnl.pnlUsd != null) pos.pnl_true_usd = Math.round(pnl.pnlUsd * 100) / 100;
+          if (pnl.currentValue > 0) {
+            pos.total_value_usd = Math.round(pnl.currentValue * 100) / 100;
+            pos.total_value_true_usd = Math.round(pnl.currentValue * 100) / 100;
+          }
+          if (pnl.feesCollected > 0) {
+            pos.collected_fees_usd = Math.round(pnl.feesCollected * 100) / 100;
+            pos.collected_fees_true_usd = Math.round(pnl.feesCollected * 100) / 100;
+          }
+        }
+        if (!silent) log("positions", `LPAgent enriched ${positions.length} position(s) with PnL data`);
+      }
+    } catch (e) {
+      log("positions_warn", `LPAgent enrichment failed: ${e.message}`);
     }
 
     const result = { wallet: walletAddress, total_positions: positions.length, positions };
