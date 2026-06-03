@@ -6,7 +6,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { agentLoop } from "./agent.js";
 import { log } from "./logger.js";
-import { getMyPositions, closePosition, claimFees, getActiveBin } from "./tools/dlmm.js";
+import { getMyPositions, closePosition, claimFees, getActiveBin, deployPosition } from "./tools/dlmm.js";
 import { getWalletBalances, swapToken } from "./tools/wallet.js";
 import { evaluateScreeningGate, getTopCandidates } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
@@ -517,15 +517,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
     return null;
   }
   timers.screeningLastRun = Date.now();
-  log("cron", `Starting screening cycle [model: ${config.llm.screeningModel}]`);
+  log("cron", `Starting screening cycle [auto-deploy mode]`);
   let screenReport = null;
   try {
     // Reuse pre-fetched balance — no extra RPC call needed
     const currentBalance = preBalance;
     const deployAmount = computeDeployAmount(currentBalance.sol);
     log("cron", `Computed deploy amount: ${deployAmount} SOL (wallet: ${currentBalance.sol} SOL)`);
-
-    const strategyBlock = `STRATEGY (config): ${config.strategy.strategy} — Fixed by user-config. Agent does not change.`;
 
     // Fetch top candidates, then recon each sequentially with a small delay to avoid 429s
     const topCandidates = await getTopCandidates({ limit: 10 }).catch(() => null);
@@ -570,83 +568,70 @@ export async function runScreeningCycle({ silent = false } = {}) {
       passing.map(({ pool }) => getActiveBin({ pool_address: pool.pool }))
     );
 
-    // Build compact candidate blocks
-    const candidateBlocks = passing.map(({ pool, sw, n, ti, memoryRisk }, i) => {
+    // ─── Auto-deploy: pick best candidate and deploy directly (no LLM involvement) ───
+    const indexed = passing.map((c, i) => ({ ...c, idx: i, activeBin: activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value?.binId : null }));
+    const best = indexed.sort((a, b) => (b.pool.fee_active_tvl_ratio ?? 0) - (a.pool.fee_active_tvl_ratio ?? 0))[0];
+
+    const { pool, sw, n, ti, activeBin, idx: bestIdx } = best;
+    const volatility = pool.volatility ?? 5;
+
+    const bins_below = Math.round(
+      Math.min(config.strategy.maxBinsBelow, Math.max(config.strategy.minBinsBelow,
+        config.strategy.minBinsBelow + (volatility / 5) * (config.strategy.maxBinsBelow - config.strategy.minBinsBelow)))
+    );
+
+    const deployResult = await deployPosition({
+      pool_address: pool.pool,
+      amount_sol: deployAmount,
+      strategy: config.strategy.strategy,
+      bins_below,
+      bins_above: 0,
+      pool_name: pool.name,
+      bin_step: pool.bin_step,
+      fee_tvl_ratio: pool.fee_active_tvl_ratio,
+      volatility: pool.volatility,
+      organic_score: pool.organic_score,
+    });
+
+    if (deployResult.success) {
+      const minPrice = deployResult.price_range?.min ?? "?";
+      const maxPrice = deployResult.price_range?.max ?? "?";
+      const downsidePct = minPrice !== "?" && maxPrice !== "?" ? ((minPrice / maxPrice - 1) * 100).toFixed(2) : "?";
+
+      const feeTvlStr = pool.fee_active_tvl_ratio != null ? `${pool.fee_active_tvl_ratio}%` : "?";
       const botPct = ti?.audit?.bot_holders_pct ?? "?";
       const top10Pct = ti?.audit?.top_holders_pct ?? "?";
       const feesSol = pool.pool_fees_sol ?? "?";
       const launchpad = ti?.launchpad ?? null;
-      const priceChange = ti?.stats_1h?.price_change;
-      const netBuyers = ti?.stats_1h?.net_buyers;
-      const activeBin = activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value?.binId : null;
 
-      // OKX signals
       const okxParts = [
         pool.risk_level     != null ? `risk=${pool.risk_level}`               : null,
         pool.bundle_pct     != null ? `bundle=${pool.bundle_pct}%`            : null,
-        pool.sniper_pct     != null ? `sniper=${pool.sniper_pct}%`            : null,
-        pool.suspicious_pct != null ? `suspicious=${pool.suspicious_pct}%`    : null,
-        pool.new_wallet_pct != null ? `new_wallets=${pool.new_wallet_pct}%`   : null,
-        pool.is_rugpull != null ? `rugpull=${pool.is_rugpull ? "YES" : "NO"}` : null,
-        pool.is_wash != null ? `wash=${pool.is_wash ? "YES" : "NO"}` : null,
-      ].filter(Boolean).join(", ");
+        pool.is_rugpull != null ? `rugpull=${pool.is_rugpull ? "Y" : "N"}` : null,
+        pool.is_wash != null ? `wash=${pool.is_wash ? "Y" : "N"}` : null,
+      ].filter(Boolean).join(" | ");
 
-      const okxTags = [
-        pool.smart_money_buy    ? "smart_money_buy"    : null,
-        pool.kol_in_clusters    ? "kol_in_clusters"    : null,
-        pool.dex_boost          ? "dex_boost"          : null,
-        pool.dex_screener_paid  ? "dex_screener_paid"  : null,
-        pool.dev_sold_all       ? "dev_sold_all(bullish)" : null,
-      ].filter(Boolean).join(", ");
+      const rejectedStr = passing.length > 1
+        ? indexed.filter((_, i) => i !== bestIdx).map(c => `${c.pool.name} (fee_tvl=${c.pool.fee_active_tvl_ratio ?? "?"}%)`).join("; ")
+        : "N/A — single candidate.";
 
-      const block = [
-        `POOL: ${pool.name} (${pool.pool})`,
-        `  metrics: bin_step=${pool.bin_step}, fee_pct=${pool.fee_pct}%, fee_tvl=N/A, vol=$${pool.volume_window}, tvl=$${pool.active_tvl}, volatility=${pool.volatility}, mcap=$${pool.mcap}, organic=${pool.organic_score}${pool.token_age_hours != null ? `, age=${pool.token_age_hours}h` : ""}`,
-        `  audit: top10=${top10Pct}%, bots=${botPct}%, pool_fees=${feesSol}SOL${pool.pool_fees_source ? ` (${pool.pool_fees_source})` : ""}${launchpad ? `, launchpad=${launchpad}` : ""}`,
-        okxParts ? `  okx: ${okxParts}` : null,
-        okxTags  ? `  tags: ${okxTags}` : null,
-        pool.price_vs_ath_pct != null ? `  ath: price_vs_ath=${pool.price_vs_ath_pct}%${pool.top_cluster_trend ? `, top_cluster=${pool.top_cluster_trend}` : ""}` : null,
-        `  smart_wallets: ${sw?.in_pool?.length ?? 0} present${sw?.in_pool?.length ? ` → CONFIDENCE BOOST (${sw.in_pool.map(w => w.name).join(", ")})` : ""}`,
-        activeBin != null ? `  active_bin: ${activeBin}` : null,
-        priceChange != null ? `  1h: price${priceChange >= 0 ? "+" : ""}${priceChange}%, net_buyers=${netBuyers ?? "?"}` : null,
-        n?.narrative ? `  narrative: ${n.narrative.slice(0, 500)}` : `  narrative: none`,
-
+      screenReport = [
+        `Decision: DEPLOYED PAIR`,
+        `pool: ${pool.name} | ${pool.pool}`,
+        `amount: ${deployAmount} SOL | strategy=${config.strategy.strategy} | active_bin=${activeBin ?? "?"}`,
+        `metrics: bin_step=${pool.bin_step} | fee=${pool.fee_pct}% | fee_tvl=${feeTvlStr} | volume=$${pool.volume_window} | tvl=$${pool.active_tvl} | volatility=${pool.volatility} | organic=${pool.organic_score} | mcap=$${pool.mcap}`,
+        `holder_audit: top10=${top10Pct}% | bots=${botPct}% | pool_fees=${feesSol}SOL${pool.pool_fees_source ? ` (${pool.pool_fees_source})` : ""}${pool.token_age_hours != null ? ` | token_age=${pool.token_age_hours}h` : ""}${launchpad ? ` | launchpad=${launchpad}` : ""}`,
+        okxParts ? `okx: ${okxParts}` : null,
+        `smart_wallets: ${sw?.in_pool?.length ?? 0} present`,
+        `range: ${minPrice}→${maxPrice} SOL (downside=${downsidePct}%)`,
+        n?.narrative ? `narrative: ${n.narrative.slice(0, 500)}` : `narrative: none`,
+        `analysis: Auto-deployed via hard gates — fee_tvl=${feeTvlStr}, pool_fees=${feesSol}SOL, bots=${botPct}%, top10=${top10Pct}%, volatility=${pool.volatility}.`,
+        `reason: Best candidate by fee yield (fee_tvl=${feeTvlStr}). All config thresholds satisfied.`,
+        `rejected: ${rejectedStr}`,
       ].filter(Boolean).join("\n");
-
-      return block;
-    });
-
-    const { content } = await agentLoop(`
-SCREENING CYCLE
-${strategyBlock}
-Positions: ${prePositions.total_positions}/${config.risk.maxPositions} | SOL: ${currentBalance.sol.toFixed(3)} | Deploy: ${deployAmount} SOL
-
-PRE-LOADED CANDIDATES (${passing.length} pools):
-${candidateBlocks.join("\n\n")}
-
-STEPS:
-1. Pick the best candidate from this hard-gated live list based on narrative quality, smart wallets, and pool metrics.
-2. Call deploy_position (active_bin is pre-fetched above — no need to call get_active_bin).
-    bins_below = round(${config.strategy.minBinsBelow} + (volatility/5)*(${config.strategy.maxBinsBelow - config.strategy.minBinsBelow})) clamped to [${config.strategy.minBinsBelow},${config.strategy.maxBinsBelow}]. Use bin_step only within config range [${config.screening.minBinStep},${config.screening.maxBinStep}].
-3. Report in this exact format (no tables, no extra sections):
-   Decision: DEPLOYED PAIR
-   pool: <name> | <pool address>
-   amount: <deploy amount> SOL | strategy=<strategy> | active_bin=<bin>
-   metrics: bin_step=X | fee=X% | fee_tvl=X% | volume=$X | tvl=$X | volatility=X | organic=X | mcap=$X
-   holder_audit: top10=X% | bots=X% | pool_fees=XSOL (gmgn|meteora_fallback) | token_age=Xh
-   okx: risk=X | bundle=X% | sniper=X% | suspicious=X% | ath=X% | rugpull=Y/N | wash=Y/N
-   smart_wallets: <names or none>
-   range: minPrice→maxPrice (downside=(minPrice/maxPrice-1)*100%)
-   narrative: <1-2 sentences on what the token/pool is and why it has attention>
-   analysis: <2-4 sentences covering why this setup is attractive right now, key risks, and what outweighed the alternatives>
-   reason: <one decisive sentence explaining why this pool won over the rest>
-   rejected: <one short sentence on why the next best alternatives were passed over>
-4. If no pool qualifies, report in this exact format instead:
-   Decision: NO DEPLOY
-   analysis: <2-4 sentences explaining why current candidates were rejected>
-   rejected: <short semicolon-separated reasons for the top candidates that were skipped>
-      `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048);
-    screenReport = content;
+    } else {
+      screenReport = `Decision: DEPLOY FAILED\npool: ${pool.name} | ${pool.pool}\nerror: ${deployResult.error || "Unknown error"}`;
+    }
   } catch (error) {
     log("cron_error", `Screening cycle failed: ${error.message}`);
     screenReport = `Screening cycle failed: ${error.message}`;
