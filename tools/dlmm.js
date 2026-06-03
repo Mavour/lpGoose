@@ -554,24 +554,46 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
         for (const pos of positions) {
           const pnl = pnlMap.get(pos.position);
           if (!pnl) continue;
+          const tracked = getTrackedPosition(pos.position);
           if (pnl.pnlPct != null) pos.pnl_pct = Math.round(pnl.pnlPct * 10000) / 10000;
           if (pnl.pnlPct != null) pos.pnlSolPctChange = Math.round(pnl.pnlPct * 10000) / 10000;
-          if (pnl.pnlUsd != null) pos.pnl_usd = pnl.pnlUsd;
           if (pnl.pnlUsd != null) pos.pnl_true_usd = pnl.pnlUsd;
-          if (pnl.pnlUsd != null) pos.pnl_sol = pnl.pnlUsd;
+          if (!config.management.solMode && pnl.pnlUsd != null) pos.pnl_usd = pnl.pnlUsd;
           if (pnl.currentValue > 0) {
-            pos.total_value_usd = pnl.currentValue;
-            pos.total_value_true_usd = pnl.currentValue;
+            const expectedUsd = tracked?.initial_value_usd && pnl.pnlPct != null
+              ? tracked.initial_value_usd * (1 + pnl.pnlPct / 100)
+              : null;
+            const valueMatchesPnl = !expectedUsd || Math.abs(pnl.currentValue - expectedUsd) / expectedUsd <= 0.5;
+            if (valueMatchesPnl) {
+              pos.total_value_true_usd = pnl.currentValue;
+              if (!config.management.solMode) pos.total_value_usd = pnl.currentValue;
+            } else {
+              log("positions_warn", `Ignoring inconsistent LPAgent value for ${pos.pair}: current=${pnl.currentValue}, expected~${expectedUsd.toFixed(4)} from PnL ${pnl.pnlPct}%`);
+            }
           }
           if (pnl.feesCollected > 0) {
-            pos.collected_fees_usd = pnl.feesCollected;
             pos.collected_fees_true_usd = pnl.feesCollected;
+            if (!config.management.solMode) pos.collected_fees_usd = pnl.feesCollected;
           }
         }
         if (!silent) log("positions", `LPAgent enriched ${positions.length} position(s) with PnL data`);
       }
     } catch (e) {
       log("positions_warn", `LPAgent enrichment failed: ${e.message}`);
+    }
+
+    if (config.management.solMode) {
+      for (const pos of positions) {
+        const tracked = getTrackedPosition(pos.position);
+        const maxPlausibleSol = tracked?.amount_sol ? tracked.amount_sol * 10 : null;
+        if (maxPlausibleSol && pos.total_value_usd > maxPlausibleSol) {
+          const fallbackSol = pos.pnl_pct != null
+            ? tracked.amount_sol * (1 + pos.pnl_pct / 100)
+            : tracked.amount_sol;
+          log("positions_warn", `Capped implausible SOL-mode value for ${pos.pair}: ${pos.total_value_usd} SOL -> ${fallbackSol.toFixed(6)} SOL`);
+          pos.total_value_usd = Math.max(0, Math.round(fallbackSol * 1_000_000) / 1_000_000);
+        }
+      }
     }
 
     const result = { wallet: walletAddress, total_positions: positions.length, positions };
