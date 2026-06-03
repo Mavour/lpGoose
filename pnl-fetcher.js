@@ -102,6 +102,7 @@ function normalizePosition(raw, fallbackAddress, source) {
     fallbackAddress;
 
   const pnlUsd =
+    raw?.pnl?.valueNative ??
     raw?.pnl?.value ??
     raw?.pnlUsd ??
     raw?.pnl_usd ??
@@ -111,13 +112,16 @@ function normalizePosition(raw, fallbackAddress, source) {
 
   const feesCollected =
     raw?.collectedFee ??
+    raw?.collectedFeeNative ??
     raw?.feesCollected ??
     raw?.allTimeFees?.total?.usd ??
+    raw?.allTimeFees?.total?.sol ??
     raw?.feeUsd ??
     0;
 
   const currentValue =
     raw?.currentValue ??
+    raw?.valueNative ??
     raw?.value ??
     raw?.unrealizedPnl?.balances ??
     raw?.balances ??
@@ -128,6 +132,8 @@ function normalizePosition(raw, fallbackAddress, source) {
     (typeof raw?.isOutOfRange === "boolean" ? !raw.isOutOfRange : null);
 
   const pnlPct =
+    raw?.pnl?.percentNative ??
+    raw?.pnl?.percent ??
     raw?.pnlPctChange ??
     raw?.pnl_pct ??
     raw?.pnlPercent ??

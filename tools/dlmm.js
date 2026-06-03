@@ -554,8 +554,10 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
           const pnl = pnlMap.get(pos.position);
           if (!pnl) continue;
           if (pnl.pnlPct != null) pos.pnl_pct = Math.round(pnl.pnlPct * 100) / 100;
+          if (pnl.pnlPct != null) pos.pnlSolPctChange = Math.round(pnl.pnlPct * 100) / 100;
           if (pnl.pnlUsd != null) pos.pnl_usd = Math.round(pnl.pnlUsd * 100) / 100;
           if (pnl.pnlUsd != null) pos.pnl_true_usd = Math.round(pnl.pnlUsd * 100) / 100;
+          if (pnl.pnlUsd != null) pos.pnl_sol = Math.round(pnl.pnlUsd * 100) / 100;
           if (pnl.currentValue > 0) {
             pos.total_value_usd = Math.round(pnl.currentValue * 100) / 100;
             pos.total_value_true_usd = Math.round(pnl.currentValue * 100) / 100;
