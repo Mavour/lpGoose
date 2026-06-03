@@ -387,7 +387,7 @@ a{color:var(--accent);text-decoration:none}
     <div class="card-body">
       <table class="data-table" id="historyTable">
         <thead><tr>
-          <th>Pool</th><th>Strategy</th><th>PnL</th><th>PnL %</th><th>Hold</th><th>Fees</th><th>R.Eff</th><th>Reason</th>
+          <th>Pool</th><th>Strategy</th><th>Bins</th><th>PnL</th><th>PnL %</th><th>Hold</th><th>Fees</th><th>R.Eff</th><th>Reason</th>
         </tr></thead>
         <tbody id="historyBody"></tbody>
       </table>
@@ -529,10 +529,15 @@ function statusBadge(p) {
   return '<span class="badge badge-inrange">In Range</span>';
 }
 function rangeEffBadge(v) {
-  if (v == null || isNaN(v)) return '-';
+  if (v == null) return '-';
   if (v >= 65) return '<span class="range-eff-badge range-eff-high">'+v.toFixed(0)+'%</span>';
   if (v >= 40) return '<span class="range-eff-badge range-eff-mid">'+v.toFixed(0)+'%</span>';
   return '<span class="range-eff-badge range-eff-low">'+v.toFixed(0)+'%</span>';
+}
+function binsCount(br) {
+  if (br == null) return null;
+  if (typeof br === 'object' && br.min != null && br.max != null) return Math.abs(br.max - br.min);
+  return br;
 }
 
 // ─── stats ───
@@ -662,6 +667,7 @@ function renderHistory(list) {
   document.getElementById('historyBody').innerHTML = pageItems.map(p => `<tr>
     <td><strong>${p.pool_name||'-'}</strong></td>
     <td>${stratBadge(p.strategy)}</td>
+    <td class="text-mono text-xs">${binsCount(p.bin_range) != null ? binsCount(p.bin_range) : '-'}</td>
     <td class="text-mono">${fmtPnL(p.pnl_sol)}</td>
     <td class="text-mono">${fmtPnLPct(p.pnl_pct)}</td>
     <td class="text-mono text-xs">${fmtHold(p.minutes_held)}</td>
@@ -674,6 +680,7 @@ function renderHistory(list) {
     <div class="row"><span class="pool-name">${p.pool_name||'-'}</span>${stratBadge(p.strategy)}</div>
     <div class="divider"></div>
     <div class="row"><span class="label">PnL</span><span class="value">${fmtPnL(p.pnl_sol)} (${fmtPnLPct(p.pnl_pct)})</span></div>
+    <div class="row"><span class="label">Bins</span><span class="value text-xs">${binsCount(p.bin_range) != null ? binsCount(p.bin_range) : '-'}</span></div>
     <div class="row"><span class="label">Hold</span><span class="value text-xs">${fmtHold(p.minutes_held)}</span></div>
     <div class="row"><span class="label">Fees</span><span class="value">${p.fees_earned_sol != null && p.fees_earned_sol !== 0 ? '◎'+p.fees_earned_sol : '-'}</span></div>
     <div class="row"><span class="label">R.Eff</span><span>${rangeEffBadge(p.range_efficiency)}</span></div>

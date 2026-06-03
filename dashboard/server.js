@@ -197,6 +197,8 @@ function apiHistory(req, res) {
           close_reason:     p.close_reason || '-',
           range_efficiency: p.range_efficiency ?? 0,
           amount_sol:       p.amount_sol ?? 0,
+          bin_range:        p.bin_range ?? null,
+          bin_step:         p.bin_step ?? null,
           recorded_at:      p.recorded_at,
         };
       }).reverse();
