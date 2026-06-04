@@ -906,7 +906,13 @@ if (isTTY) {
     const cfg = fs.existsSync(USER_CONFIG_PATH)
       ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
       : {};
-    cfg[key] = value;
+    if (config.chartIndicators && key in config.chartIndicators) {
+      cfg.chartIndicators = cfg.chartIndicators || {};
+      cfg.chartIndicators[key] = value;
+      delete cfg[key];
+    } else {
+      cfg[key] = value;
+    }
     if (key === "deployAmountSol") {
       cfg.minSolToOpen = value;
       cfg.maxDeployAmount = value;
