@@ -160,6 +160,7 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     // Whale exit detection has top priority over regular management rules.
     const whaleClosedPositions = new Set();
+    const whaleEmergencyPositions = new Set();
     for (const p of config.management.whaleGuardEnabled ? positions : []) {
       try {
         const poolUrl = `https://pool-discovery-api.datapi.meteora.ag/pools?page_size=1&filter_by=${encodeURIComponent(`pool_address=${p.pool}`)}&timeframe=5m`;
@@ -179,10 +180,19 @@ export async function runManagementCycle({ silent = false } = {}) {
           if (tvlDrop >= config.management.whaleGuardMinDropUsd || tvlDropPct >= config.management.whaleGuardMinDropPct) {
             log("cron", `Whale exit detected: ${p.pair} - TVL dropped $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%)`);
             const whaleReason = `WHALE EXIT: closed ${p.pair} - TVL drop $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%)`;
-            try {
-              const closeResult = await closePosition({ position_address: p.position, reason: whaleReason });
-              const closeSucceeded = closeResult.success || closeResult.dry_run;
-              if (closeSucceeded) {
+            let closeSucceeded = false;
+            let lastCloseError = null;
+            for (let attempt = 1; attempt <= 3; attempt++) {
+              try {
+                const closeResult = await closePosition({ position_address: p.position, reason: whaleReason });
+                closeSucceeded = closeResult.success || closeResult.dry_run;
+                if (!closeSucceeded) {
+                  lastCloseError = closeResult.error || "unknown close failure";
+                  log("cron_error", `Whale exit close attempt ${attempt}/3 failed for ${p.pair}: ${lastCloseError}`);
+                  if (attempt < 3) await new Promise((r) => setTimeout(r, 3000));
+                  continue;
+                }
+
                 whaleClosedPositions.add(p.position);
                 if (closeResult.base_mint && closeResult.success) {
                   await autoSwapBaseToSol(closeResult.base_mint, "whale exit").catch((e) =>
@@ -203,13 +213,19 @@ export async function runManagementCycle({ silent = false } = {}) {
                 }).catch(() => {});
                 sendMessage(`WHALE EXIT: ${p.pair} - TVL dropped $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%). Position closed.`).catch(() => {});
                 managementEvents.push(whaleReason);
-              } else {
-                log("cron_error", `Whale exit close failed for ${p.pair}: ${closeResult.error}`);
-                managementEvents.push(`Whale exit close failed for ${p.pair}: ${closeResult.error}`);
+                break;
+              } catch (e) {
+                lastCloseError = e.message;
+                log("cron_error", `Whale exit close attempt ${attempt}/3 errored for ${p.pair}: ${e.message}`);
+                if (attempt < 3) await new Promise((r) => setTimeout(r, 3000));
               }
-            } catch (e) {
-              log("cron_error", `Whale exit close failed for ${p.pair}: ${e.message}`);
-              managementEvents.push(`Whale exit close error for ${p.pair}: ${e.message}`);
+            }
+            if (!closeSucceeded) {
+              whaleEmergencyPositions.add(p.position);
+              const failMsg = `Whale exit close failed after 3 attempts for ${p.pair}: ${lastCloseError || "unknown error"}`;
+              log("cron_error", failMsg);
+              sendMessage(`WHALE EXIT CRITICAL: ${p.pair} TVL dropped $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%), but close failed after 3 attempts: ${lastCloseError || "unknown error"}. Will retry next management cycle.`).catch(() => {});
+              managementEvents.push(failMsg);
             }
             continue;
           }
@@ -221,8 +237,10 @@ export async function runManagementCycle({ silent = false } = {}) {
       }
     }
 
-    if (whaleClosedPositions.size > 0) {
-      positions = positions.filter((p) => !whaleClosedPositions.has(p.position));
+    if (whaleClosedPositions.size > 0 || whaleEmergencyPositions.size > 0) {
+      positions = positions.filter((p) =>
+        !whaleClosedPositions.has(p.position) && !whaleEmergencyPositions.has(p.position)
+      );
       if (positions.length === 0) {
         mgmtReport = managementEvents.join("\n");
         if (Date.now() - _screeningLastTriggered > screeningCooldownMs) {
