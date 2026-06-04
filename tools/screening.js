@@ -433,6 +433,10 @@ export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
 
   const launchpad = tokenInfo?.launchpad ?? null;
   if (launchpad && s.blockedLaunchpads.includes(launchpad)) return fail(`blocked launchpad ${launchpad}`);
+  if (Array.isArray(s.allowedLaunchpads) && s.allowedLaunchpads.length > 0) {
+    if (!launchpad) return fail("launchpad unavailable but allowlist is active");
+    if (!s.allowedLaunchpads.includes(launchpad)) return fail(`launchpad ${launchpad} not in allowlist`);
+  }
 
   const botPct = numberOrNull(tokenInfo?.audit?.bot_holders_pct);
   if (botPct != null && s.maxBotHoldersPct != null && botPct > s.maxBotHoldersPct) return fail(`bots ${botPct}% > max ${s.maxBotHoldersPct}%`);

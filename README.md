@@ -395,6 +395,7 @@ All fields are optional — defaults shown. Edit `user-config.json`.
 | `maxBundlersPct` | `30` | Maximum bundler % in top 100 holders |
 | `maxTop10Pct` | `60` | Maximum top-10 holder concentration |
 | `blockedLaunchpads` | `[]` | Launchpad names to never deploy into |
+| `allowedLaunchpads` | `[]` | Optional allowlist; when non-empty, only these launchpads can pass |
 
 ### Management
 

@@ -34,6 +34,7 @@
   "maxBotHoldersPct": 30,
   "maxTop10Pct": 60,
   "blockedLaunchpads": [],
+  "allowedLaunchpads": [],
   "minTokenAgeHours": null,
   "maxTokenAgeHours": null,
   "athFilterPct": null,
