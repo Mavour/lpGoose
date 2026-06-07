@@ -671,19 +671,47 @@ export async function runScreeningCycle({ silent = false } = {}) {
         ? indexed.filter((_, i) => i !== bestIdx).map(c => `${c.pool.name} (fee_tvl=${c.pool.fee_active_tvl_ratio ?? "?"}%)`).join("; ")
         : "N/A — single candidate.";
 
+      const thesis = n?.narrative
+        ? n.narrative.slice(0, 220)
+        : "No narrative available.";
+
       screenReport = [
-        `Decision: DEPLOYED PAIR`,
-        `pool: ${pool.name} | ${pool.pool}`,
-        `amount: ${deployAmount} SOL | strategy=${config.strategy.strategy} | active_bin=${activeBin ?? "?"}`,
-        `metrics: bin_step=${pool.bin_step} | fee=${pool.fee_pct}% | fee_tvl=${feeTvlStr} | volume=$${pool.volume_window} | tvl=$${pool.active_tvl} | volatility=${pool.volatility} | organic=${pool.organic_score} | mcap=$${pool.mcap}`,
-        `holder_audit: top10=${top10Pct}% | bots=${botPct}% | pool_fees=${feesSol}SOL${pool.pool_fees_source ? ` (${pool.pool_fees_source})` : ""}${pool.token_age_hours != null ? ` | token_age=${pool.token_age_hours}h` : ""}${launchpad ? ` | launchpad=${launchpad}` : ""}`,
+        `DEPLOYED: ${pool.name}`,
+        `${pool.pool}`,
+        ``,
+        `Allocation`,
+        `Amount: ${deployAmount} SOL`,
+        `Strategy: ${config.strategy.strategy}`,
+        `Active bin: ${activeBin ?? "?"}`,
+        `Range: ${minPrice} → ${maxPrice} SOL`,
+        `Downside cover: ${downsidePct}%`,
+        ``,
+        `Pool Quality`,
+        `Fee tier: ${pool.fee_pct}%`,
+        `Fee/TVL: ${feeTvlStr}`,
+        `Pool fees: ${feesSol} SOL${pool.pool_fees_source ? ` (${pool.pool_fees_source})` : ""}`,
+        `Volume: $${pool.volume_window}`,
+        `TVL: $${pool.active_tvl}`,
+        `Volatility: ${pool.volatility}`,
+        `Bin step: ${pool.bin_step}`,
+        ``,
+        `Risk Check`,
+        `Organic: ${pool.organic_score}`,
+        `Market cap: $${pool.mcap}`,
+        `Top 10 holders: ${top10Pct}%`,
+        `Bot holders: ${botPct}%`,
+        pool.token_age_hours != null ? `Token age: ${pool.token_age_hours}h` : null,
+        launchpad ? `Launchpad: ${launchpad}` : null,
+        `Smart wallets: ${sw?.in_pool?.length ?? 0} present`,
         okxParts ? `okx: ${okxParts}` : null,
-        `smart_wallets: ${sw?.in_pool?.length ?? 0} present`,
-        `range: ${minPrice}→${maxPrice} SOL (downside=${downsidePct}%)`,
-        n?.narrative ? `narrative: ${n.narrative.slice(0, 500)}` : `narrative: none`,
-        `analysis: Auto-deployed via hard gates — fee_tvl=${feeTvlStr}, pool_fees=${feesSol}SOL, bots=${botPct}%, top10=${top10Pct}%, volatility=${pool.volatility}.`,
-        `reason: Best candidate by fee yield (fee_tvl=${feeTvlStr}). All config thresholds satisfied.`,
-        `rejected: ${rejectedStr}`,
+        ``,
+        `Thesis`,
+        thesis,
+        ``,
+        `Why Deployed`,
+        `Best candidate by fee yield. All configured hard gates passed.`,
+        ``,
+        `Rejected: ${rejectedStr}`,
       ].filter(Boolean).join("\n");
     } else {
       screenReport = `Decision: DEPLOY FAILED\npool: ${pool.name} | ${pool.pool}\nerror: ${deployResult.error || "Unknown error"}`;
