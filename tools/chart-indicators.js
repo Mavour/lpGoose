@@ -27,6 +27,15 @@ function toGMGNInterval(interval) {
   return "5m";
 }
 
+function intervalSeconds(interval) {
+  const normalized = toGMGNInterval(interval);
+  const match = normalized.match(/^(\d+)([mhd])$/);
+  if (!match) return 300;
+  const value = Number(match[1]);
+  const unitSeconds = match[2] === "d" ? 86400 : match[2] === "h" ? 3600 : 60;
+  return value * unitSeconds;
+}
+
 async function fetchKlineGMGN(mint, interval = "5m", limit = 298) {
   const apiKey = getGMGNKey();
   if (!apiKey) throw new Error("GMGN_API_KEY not set");
@@ -59,7 +68,9 @@ async function fetchKlineGMGN(mint, interval = "5m", limit = 298) {
     low: Number(c.low),
     close: Number(c.close),
     volume: Number(c.volume),
-  })).filter((c) => c.close != null && !isNaN(c.close));
+  }))
+    .filter((c) => c.close != null && !isNaN(c.close))
+    .sort((a, b) => Number(a.time) - Number(b.time));
 }
 
 export function calcSupertrend(candles, period = 10, multiplier = 3) {
@@ -176,6 +187,7 @@ export async function confirmSupertrendBreak({ mint, interval = "5m", limit = 29
     const previousClose = previous?.close ?? null;
     const signal = {
       interval,
+      candleTime: latest.time,
       supertrend: st.value,
       close: latestClose,
       previousClose,
@@ -219,10 +231,25 @@ export async function confirmEntrySupertrendBreak({
   mint,
   refresh = true,
   maxDistancePct = null,
+  minCandleAgeSeconds = 0,
   ...options
 } = {}) {
+  const candleAge = getCurrentCandleAgeSeconds(options.interval);
+  if (minCandleAgeSeconds > 0 && candleAge < minCandleAgeSeconds) {
+    return {
+      confirmed: false,
+      direction: "neutral",
+      reason: `New ${options.interval || "5m"} candle is only ${candleAge}s old (minimum ${minCandleAgeSeconds}s)`,
+    };
+  }
+
   const result = await confirmSupertrendBreak({ mint, ...options });
   return confirmBullishEntry(result, maxDistancePct);
+}
+
+export function getCurrentCandleAgeSeconds(interval = "5m", nowMs = Date.now()) {
+  const duration = intervalSeconds(interval);
+  return Math.floor(nowMs / 1000) % duration;
 }
 
 export async function confirmExitSupertrendFlip({ mint, ...options } = {}) {

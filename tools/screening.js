@@ -350,6 +350,7 @@ export async function getTopCandidates({ limit = 10 } = {}) {
           period: cc.stPeriod || 10,
           multiplier: cc.stMultiplier || 3,
           maxDistancePct: cc.maxEntryDistancePct,
+          minCandleAgeSeconds: cc.minEntryCandleAgeSeconds,
         });
       })
     );

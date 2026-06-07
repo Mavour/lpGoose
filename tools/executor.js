@@ -411,6 +411,7 @@ async function runSafetyChecks(name, args) {
           period: cc.stPeriod || 10,
           multiplier: cc.stMultiplier || 3,
           maxDistancePct: cc.maxEntryDistancePct,
+          minCandleAgeSeconds: cc.minEntryCandleAgeSeconds,
         }).catch(() => null);
         if (stCheck && !stCheck.confirmed) {
           if (cc.failOpen === false) {

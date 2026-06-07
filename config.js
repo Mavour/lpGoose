@@ -89,6 +89,7 @@ export const config = {
     interval:      u.chartIndicators?.interval      ?? "5m",
     failOpen:      u.chartIndicators?.failOpen      ?? false,
     maxEntryDistancePct: u.chartIndicators?.maxEntryDistancePct ?? null,
+    minEntryCandleAgeSeconds: u.chartIndicators?.minEntryCandleAgeSeconds ?? 0,
     exitOnBearishFlip: u.chartIndicators?.exitOnBearishFlip ?? false,
   },
 
