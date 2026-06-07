@@ -1,5 +1,9 @@
 import assert from "assert";
-import { calcSupertrend } from "../tools/chart-indicators.js";
+import {
+  calcSupertrend,
+  requireFreshBearishFlip,
+  requireFreshBullishBreak,
+} from "../tools/chart-indicators.js";
 
 function candle(close, spread = 1) {
   return {
@@ -67,6 +71,44 @@ assertLatest(
   bullishContinuation,
   { direction: "bullish", previousDirection: "bullish" },
   "bullish continuation after break",
+);
+
+assert.equal(
+  requireFreshBullishBreak({
+    confirmed: true,
+    direction: "bullish",
+    signal: { interval: "5m", supertrendBreakUp: true },
+  }).confirmed,
+  true,
+  "fresh bullish break is accepted for entry",
+);
+
+assert.equal(
+  requireFreshBullishBreak({
+    confirmed: true,
+    direction: "bullish",
+    signal: { interval: "5m", supertrendBreakUp: false },
+  }).confirmed,
+  false,
+  "bullish continuation is rejected for entry",
+);
+
+assert.equal(
+  requireFreshBearishFlip({
+    direction: "bearish",
+    signal: { interval: "5m", supertrendBreakDown: true },
+  }).triggered,
+  true,
+  "fresh bearish flip triggers exit",
+);
+
+assert.equal(
+  requireFreshBearishFlip({
+    direction: "bearish",
+    signal: { interval: "5m", supertrendBreakDown: false },
+  }).triggered,
+  false,
+  "bearish continuation does not repeatedly trigger exit",
 );
 
 console.log("Supertrend tests passed");

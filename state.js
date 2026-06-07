@@ -271,7 +271,8 @@ export function getStateSummary() {
  * Returns { action, reason } or null if no exit needed.
  */
 export function updatePnlAndCheckExits(position_address, positionData, mgmtConfig) {
-  const { pnl_pct: currentPnlPct, in_range, fee_per_tvl_24h } = positionData;
+  let { pnl_pct: currentPnlPct } = positionData;
+  const { in_range, fee_per_tvl_24h } = positionData;
   const state = load();
   let pos = state.positions[position_address];
   if (!pos) {
@@ -343,19 +344,12 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   }
 
   // ── Out of range too long ──────────────────────────────────────
-  if (pos.out_of_range_since) {
-    const isAboveRange = positionData.active_bin != null &&
-      positionData.upper_bin != null &&
-      positionData.active_bin > positionData.upper_bin;
-
-    const minutesOOR = Math.floor((Date.now() - new Date(pos.out_of_range_since).getTime()) / 60000);
-    if (isAboveRange && minutesOOR >= mgmtConfig.outOfRangeWaitMinutes) {
-      return {
-        action: "OUT_OF_RANGE",
-        reason: `Out of range for ${minutesOOR}m (limit: ${mgmtConfig.outOfRangeWaitMinutes}m)`,
-      };
-    }
-  }
+  const outOfRangeExit = evaluateOutOfRangeExit(
+    positionData,
+    pos.out_of_range_since,
+    mgmtConfig
+  );
+  if (outOfRangeExit) return outOfRangeExit;
 
   // ── Low yield (only after position has had time to accumulate fees) ───
   const { age_minutes } = positionData;
@@ -373,6 +367,47 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   }
 
   return null;
+}
+
+export function evaluateOutOfRangeExit(positionData, outOfRangeSince, mgmtConfig, now = Date.now()) {
+  if (!outOfRangeSince || mgmtConfig.outOfRangeWaitMinutes == null) return null;
+
+  const {
+    active_bin: activeBin,
+    lower_bin: lowerBin,
+    upper_bin: upperBin,
+    pnl_pct: pnlPct,
+  } = positionData;
+  if (activeBin == null || lowerBin == null || upperBin == null) return null;
+
+  const direction = activeBin < lowerBin
+    ? "below"
+    : activeBin > upperBin
+      ? "above"
+      : null;
+  if (!direction) return null;
+
+  const minutesOOR = Math.floor((now - new Date(outOfRangeSince).getTime()) / 60000);
+  const downsideWaitMinutes = mgmtConfig.downsideOutOfRangeWaitMinutes
+    ?? mgmtConfig.outOfRangeWaitMinutes;
+  const waitMinutes = direction === "below"
+    ? downsideWaitMinutes
+    : mgmtConfig.outOfRangeWaitMinutes;
+  if (minutesOOR < waitMinutes) return null;
+
+  const downsideLossPct = mgmtConfig.downsideOutOfRangeLossPct;
+  if (
+    direction === "below" &&
+    downsideLossPct != null &&
+    (pnlPct == null || pnlPct > downsideLossPct)
+  ) {
+    return null;
+  }
+
+  return {
+    action: "OUT_OF_RANGE",
+    reason: `Out of range ${direction} for ${minutesOOR}m (limit: ${waitMinutes}m${direction === "below" && downsideLossPct != null ? `, PnL <= ${downsideLossPct}%` : ""})`,
+  };
 }
 
 // ─── Briefing Tracking ─────────────────────────────────────────

@@ -269,6 +269,36 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     // ── Deterministic rule checks (no LLM) ──────────────────────────
     // action: CLOSE | CLAIM | STAY | INSTRUCTION (needs LLM)
+    if (config.chartIndicators.enabled && config.chartIndicators.exitOnBearishFlip) {
+      const { confirmExitSupertrendFlip } = await import("./tools/chart-indicators.js");
+      const checksByMint = new Map();
+      for (const p of positionData) {
+        if (exitMap.has(p.position) || !p.base_mint) continue;
+        if (!checksByMint.has(p.base_mint)) {
+          checksByMint.set(p.base_mint, confirmExitSupertrendFlip({
+            mint: p.base_mint,
+            interval: config.chartIndicators.interval || "5m",
+            period: config.chartIndicators.stPeriod || 10,
+            multiplier: config.chartIndicators.stMultiplier || 3,
+          }).catch((error) => ({ triggered: false, error: error.message })));
+        }
+      }
+
+      const resultsByMint = new Map(
+        await Promise.all([...checksByMint.entries()].map(async ([mint, check]) => [mint, await check]))
+      );
+      for (const p of positionData) {
+        if (exitMap.has(p.position) || !p.base_mint) continue;
+        const result = resultsByMint.get(p.base_mint);
+        if (result?.triggered) {
+          exitMap.set(p.position, result.reason);
+          log("state", `Exit alert for ${p.pair}: ${result.reason}`);
+        } else if (result?.error) {
+          log("cron_warn", `Supertrend exit check skipped for ${p.pair}: ${result.error}`);
+        }
+      }
+    }
+
     const actionMap = new Map();
     for (const p of positionData) {
       // Hard exit — highest priority

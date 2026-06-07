@@ -57,6 +57,8 @@ export const config = {
     autoSwapAfterClaim:    u.autoSwapAfterClaim    ?? false,
     outOfRangeBinsToClose: u.outOfRangeBinsToClose ?? 10,
     outOfRangeWaitMinutes: u.outOfRangeWaitMinutes ?? 30,
+    downsideOutOfRangeWaitMinutes: u.downsideOutOfRangeWaitMinutes ?? u.outOfRangeWaitMinutes ?? 30,
+    downsideOutOfRangeLossPct: u.downsideOutOfRangeLossPct ?? null,
     minVolumeToRebalance:  u.minVolumeToRebalance  ?? 1000,
     stopLossPct:           u.stopLossPct           ?? u.emergencyPriceDropPct ?? -50,
     takeProfitFeePct:      u.takeProfitFeePct      ?? 5,
@@ -86,6 +88,7 @@ export const config = {
     stMultiplier:  u.chartIndicators?.stMultiplier  ?? 3,
     interval:      u.chartIndicators?.interval      ?? "5m",
     failOpen:      u.chartIndicators?.failOpen      ?? false,
+    exitOnBearishFlip: u.chartIndicators?.exitOnBearishFlip ?? false,
   },
 
   // ─── Strategy Mapping ───────────────────
