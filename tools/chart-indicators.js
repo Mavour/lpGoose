@@ -222,24 +222,12 @@ export async function confirmEntrySupertrendBreak({
   mint,
   ...options
 } = {}) {
-  const result = await confirmSupertrendBreak({ mint, ...options });
-  return requireFreshBullishBreak(result);
+  return confirmSupertrendBreak({ mint, ...options });
 }
 
 export async function confirmExitSupertrendFlip({ mint, ...options } = {}) {
   const result = await confirmSupertrendBreak({ mint, ...options });
   return requireFreshBearishFlip(result);
-}
-
-export function requireFreshBullishBreak(result) {
-  if (!result?.confirmed || result.error) return result;
-  if (result.signal?.supertrendBreakUp) return result;
-
-  return {
-    ...result,
-    confirmed: false,
-    reason: `Bullish continuation ${result.signal?.interval || "5m"} - wait for a fresh Supertrend break`,
-  };
 }
 
 export function requireFreshBearishFlip(result) {
