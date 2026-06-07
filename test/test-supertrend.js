@@ -1,8 +1,6 @@
 import assert from "assert";
 import {
   calcSupertrend,
-  confirmBullishEntry,
-  getCurrentCandleAgeSeconds,
   requireFreshBearishFlip,
   requireFreshBullishBreak,
 } from "../tools/chart-indicators.js";
@@ -93,50 +91,6 @@ assert.equal(
   }).confirmed,
   false,
   "bullish continuation is rejected for entry",
-);
-
-assert.equal(
-  confirmBullishEntry({
-    confirmed: true,
-    direction: "bullish",
-    reason: "Bullish trend 5m",
-    signal: {
-      interval: "5m",
-      close: 110,
-      supertrend: 100,
-      supertrendBreakUp: false,
-    },
-  }, 12).confirmed,
-  true,
-  "bullish continuation within distance limit is accepted",
-);
-
-assert.equal(
-  confirmBullishEntry({
-    confirmed: true,
-    direction: "bullish",
-    reason: "Bullish trend 5m",
-    signal: {
-      interval: "5m",
-      close: 113,
-      supertrend: 100,
-      supertrendBreakUp: false,
-    },
-  }, 12).confirmed,
-  false,
-  "overextended bullish continuation is rejected",
-);
-
-assert.equal(
-  getCurrentCandleAgeSeconds("5m", Date.parse("2026-06-07T21:40:03.000Z")),
-  3,
-  "candle age is measured from the five-minute boundary",
-);
-
-assert.equal(
-  getCurrentCandleAgeSeconds("5m", Date.parse("2026-06-07T21:41:00.000Z")),
-  60,
-  "entry becomes eligible after the configured settling period",
 );
 
 assert.equal(

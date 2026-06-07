@@ -349,8 +349,6 @@ export async function getTopCandidates({ limit = 10 } = {}) {
           interval: cc.interval || "5m",
           period: cc.stPeriod || 10,
           multiplier: cc.stMultiplier || 3,
-          maxDistancePct: cc.maxEntryDistancePct,
-          minCandleAgeSeconds: cc.minEntryCandleAgeSeconds,
         });
       })
     );

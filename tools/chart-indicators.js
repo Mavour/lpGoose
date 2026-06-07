@@ -27,15 +27,6 @@ function toGMGNInterval(interval) {
   return "5m";
 }
 
-function intervalSeconds(interval) {
-  const normalized = toGMGNInterval(interval);
-  const match = normalized.match(/^(\d+)([mhd])$/);
-  if (!match) return 300;
-  const value = Number(match[1]);
-  const unitSeconds = match[2] === "d" ? 86400 : match[2] === "h" ? 3600 : 60;
-  return value * unitSeconds;
-}
-
 async function fetchKlineGMGN(mint, interval = "5m", limit = 298) {
   const apiKey = getGMGNKey();
   if (!apiKey) throw new Error("GMGN_API_KEY not set");
@@ -229,27 +220,10 @@ export async function confirmSupertrendBreak({ mint, interval = "5m", limit = 29
 
 export async function confirmEntrySupertrendBreak({
   mint,
-  refresh = true,
-  maxDistancePct = null,
-  minCandleAgeSeconds = 0,
   ...options
 } = {}) {
-  const candleAge = getCurrentCandleAgeSeconds(options.interval);
-  if (minCandleAgeSeconds > 0 && candleAge < minCandleAgeSeconds) {
-    return {
-      confirmed: false,
-      direction: "neutral",
-      reason: `New ${options.interval || "5m"} candle is only ${candleAge}s old (minimum ${minCandleAgeSeconds}s)`,
-    };
-  }
-
   const result = await confirmSupertrendBreak({ mint, ...options });
-  return confirmBullishEntry(result, maxDistancePct);
-}
-
-export function getCurrentCandleAgeSeconds(interval = "5m", nowMs = Date.now()) {
-  const duration = intervalSeconds(interval);
-  return Math.floor(nowMs / 1000) % duration;
+  return requireFreshBullishBreak(result);
 }
 
 export async function confirmExitSupertrendFlip({ mint, ...options } = {}) {
@@ -265,34 +239,6 @@ export function requireFreshBullishBreak(result) {
     ...result,
     confirmed: false,
     reason: `Bullish continuation ${result.signal?.interval || "5m"} - wait for a fresh Supertrend break`,
-  };
-}
-
-export function confirmBullishEntry(result, maxDistancePct = null) {
-  if (!result?.confirmed || result.error) return result;
-
-  const close = Number(result.signal?.close);
-  const supertrend = Number(result.signal?.supertrend);
-  const distancePct = close > 0 && supertrend > 0
-    ? ((close / supertrend) - 1) * 100
-    : null;
-
-  if (
-    maxDistancePct != null &&
-    distancePct != null &&
-    distancePct > maxDistancePct
-  ) {
-    return {
-      ...result,
-      confirmed: false,
-      reason: `Bullish trend ${result.signal.interval} but price is ${distancePct.toFixed(2)}% above Supertrend (max ${maxDistancePct}%)`,
-    };
-  }
-
-  return {
-    ...result,
-    confirmed: true,
-    reason: `${result.reason}${distancePct != null ? ` | distance=${distancePct.toFixed(2)}%` : ""}`,
   };
 }
 
