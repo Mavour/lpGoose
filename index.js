@@ -1258,6 +1258,10 @@ if (isTTY) {
         const is = (b, s) => current.bidask === b && current.spot === s;
         const keyboard = [
           [
+            { text: `90/10${is(90,10) ? " ✓" : ""}`, callback_data: `set_mixed:90:10:${section}:${preset}` },
+            { text: `85/15${is(85,15) ? " ✓" : ""}`, callback_data: `set_mixed:85:15:${section}:${preset}` },
+          ],
+          [
             { text: `70/30${is(70,30) ? " ✓" : ""}`, callback_data: `set_mixed:70:30:${section}:${preset}` },
             { text: `60/40${is(60,40) ? " ✓" : ""}`, callback_data: `set_mixed:60:40:${section}:${preset}` },
           ],
