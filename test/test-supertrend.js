@@ -1,6 +1,7 @@
 import assert from "assert";
 import {
   calcSupertrend,
+  confirmBullishEntry,
   requireFreshBearishFlip,
   requireFreshBullishBreak,
 } from "../tools/chart-indicators.js";
@@ -91,6 +92,38 @@ assert.equal(
   }).confirmed,
   false,
   "bullish continuation is rejected for entry",
+);
+
+assert.equal(
+  confirmBullishEntry({
+    confirmed: true,
+    direction: "bullish",
+    reason: "Bullish trend 5m",
+    signal: {
+      interval: "5m",
+      close: 110,
+      supertrend: 100,
+      supertrendBreakUp: false,
+    },
+  }, 12).confirmed,
+  true,
+  "bullish continuation within distance limit is accepted",
+);
+
+assert.equal(
+  confirmBullishEntry({
+    confirmed: true,
+    direction: "bullish",
+    reason: "Bullish trend 5m",
+    signal: {
+      interval: "5m",
+      close: 113,
+      supertrend: 100,
+      supertrendBreakUp: false,
+    },
+  }, 12).confirmed,
+  false,
+  "overextended bullish continuation is rejected",
 );
 
 assert.equal(

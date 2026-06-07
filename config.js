@@ -88,6 +88,7 @@ export const config = {
     stMultiplier:  u.chartIndicators?.stMultiplier  ?? 3,
     interval:      u.chartIndicators?.interval      ?? "5m",
     failOpen:      u.chartIndicators?.failOpen      ?? false,
+    maxEntryDistancePct: u.chartIndicators?.maxEntryDistancePct ?? null,
     exitOnBearishFlip: u.chartIndicators?.exitOnBearishFlip ?? false,
   },
 

@@ -215,9 +215,14 @@ export async function confirmSupertrendBreak({ mint, interval = "5m", limit = 29
   }
 }
 
-export async function confirmEntrySupertrendBreak({ mint, refresh = true, ...options } = {}) {
+export async function confirmEntrySupertrendBreak({
+  mint,
+  refresh = true,
+  maxDistancePct = null,
+  ...options
+} = {}) {
   const result = await confirmSupertrendBreak({ mint, ...options });
-  return requireFreshBullishBreak(result);
+  return confirmBullishEntry(result, maxDistancePct);
 }
 
 export async function confirmExitSupertrendFlip({ mint, ...options } = {}) {
@@ -233,6 +238,34 @@ export function requireFreshBullishBreak(result) {
     ...result,
     confirmed: false,
     reason: `Bullish continuation ${result.signal?.interval || "5m"} - wait for a fresh Supertrend break`,
+  };
+}
+
+export function confirmBullishEntry(result, maxDistancePct = null) {
+  if (!result?.confirmed || result.error) return result;
+
+  const close = Number(result.signal?.close);
+  const supertrend = Number(result.signal?.supertrend);
+  const distancePct = close > 0 && supertrend > 0
+    ? ((close / supertrend) - 1) * 100
+    : null;
+
+  if (
+    maxDistancePct != null &&
+    distancePct != null &&
+    distancePct > maxDistancePct
+  ) {
+    return {
+      ...result,
+      confirmed: false,
+      reason: `Bullish trend ${result.signal.interval} but price is ${distancePct.toFixed(2)}% above Supertrend (max ${maxDistancePct}%)`,
+    };
+  }
+
+  return {
+    ...result,
+    confirmed: true,
+    reason: `${result.reason}${distancePct != null ? ` | distance=${distancePct.toFixed(2)}%` : ""}`,
   };
 }
 
