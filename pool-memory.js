@@ -127,8 +127,9 @@ export function setTokenCloseCooldown({
 } = {}) {
   if (!base_mint) return { saved: false, reason: "base_mint required" };
 
-  const duration = Number.isFinite(Number(duration_minutes))
-    ? Number(duration_minutes)
+  const requestedDuration = duration_minutes == null ? NaN : Number(duration_minutes);
+  const duration = Number.isFinite(requestedDuration) && requestedDuration > 0
+    ? requestedDuration
     : Math.max(1, Number(config.schedule.managementIntervalMin) || 1);
   const now = Date.now();
   const cooldownUntil = new Date(now + duration * 60_000).toISOString();
