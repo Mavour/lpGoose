@@ -803,6 +803,15 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     const { pool, sw, n, ti, activeBin, idx: bestIdx, confidence } = best;
     const sizing = getConfidenceSizing(confidence.total, deployAmount, config.confidence);
+    const confidenceLog = [
+      `Confidence ${pool.name}: total=${confidence.total}%`,
+      `volatility=${confidence.volatility_score}/40 raw=${pool.volatility ?? "?"}`,
+      `fee_active_tvl=${confidence.fee_active_tvl_score}/40 raw=${pool.fee_active_tvl_ratio ?? "?"}%`,
+      `smart_wallet=${confidence.smart_wallet_score}/20 recent=${confidence.recent_smart_wallets.length}/${sw?.in_pool?.length ?? 0}`,
+      `action=${sizing.action}`,
+      `amount=${sizing.amount} SOL`,
+    ].join(" | ");
+    log("screening", confidenceLog);
     if (sizing.action === "skip") {
       screenReport = [
         `SKIPPED: ${pool.name}`,
