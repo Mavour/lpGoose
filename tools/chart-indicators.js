@@ -27,7 +27,7 @@ function toGMGNInterval(interval) {
   return "5m";
 }
 
-async function fetchKlineGMGN(mint, interval = "5m", limit = 298) {
+export async function fetchKlineGMGN(mint, interval = "5m", limit = 298) {
   const apiKey = getGMGNKey();
   if (!apiKey) throw new Error("GMGN_API_KEY not set");
 

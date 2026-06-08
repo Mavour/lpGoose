@@ -98,6 +98,7 @@ export async function deployPosition({
   amount_x,
   amount_y,
   strategy,
+  strategy_label,
   bins_below,
   bins_above,
   // optional pool metadata for learning (passed by agent when available)
@@ -108,14 +109,19 @@ export async function deployPosition({
   fee_tvl_ratio,
   organic_score,
   initial_value_usd,
+  signal_snapshot,
 }) {
   pool_address = normalizeMint(pool_address);
-  const activeStrategy = config.strategy.strategy;
+  const activeStrategy = strategy || config.strategy.strategy;
+  const trackedStrategy = strategy_label || activeStrategy;
 
-  const activeBinsBelow = Math.max(
-    config.strategy.minBinsBelow,
-    Math.min(config.strategy.maxBinsBelow, bins_below ?? config.strategy.minBinsBelow)
-  );
+  const usesExplicitRange = strategy_label === "bottom_spot_lp";
+  const activeBinsBelow = usesExplicitRange
+    ? Math.max(1, Math.min(1400, bins_below ?? config.strategy.minBinsBelow))
+    : Math.max(
+      config.strategy.minBinsBelow,
+      Math.min(config.strategy.maxBinsBelow, bins_below ?? config.strategy.minBinsBelow)
+    );
   const activeBinsAbove = bins_above ?? 0;
 
   if (isPoolOnCooldown(pool_address)) {
@@ -128,6 +134,7 @@ export async function deployPosition({
     const result = {
       pool_address,
       strategy: activeStrategy,
+      strategy_label: trackedStrategy,
       bins_below: activeBinsBelow,
       bins_above: activeBinsAbove,
       amount_x: amount_x || 0,
@@ -335,7 +342,7 @@ export async function deployPosition({
       position: newPosition.publicKey.toString(),
       pool: pool_address,
       pool_name,
-      strategy: activeStrategy,
+      strategy: trackedStrategy,
       bin_range: { min: minBinId, max: maxBinId, bins_below: activeBinsBelow, bins_above: activeBinsAbove },
       bin_step,
       volatility,
@@ -345,6 +352,7 @@ export async function deployPosition({
       amount_x: finalAmountX,
       active_bin: activeBin.binId,
       initial_value_usd,
+      signal_snapshot,
     });
 
     const actualBinStep = pool.lbPair.binStep;
@@ -366,6 +374,7 @@ export async function deployPosition({
       bin_step: actualBinStep,
       base_fee: actualBaseFee,
       strategy: activeStrategy,
+      strategy_label: trackedStrategy,
       wide_range: isWideRange,
       amount_x: finalAmountX,
       amount_y: finalAmountY,
@@ -509,6 +518,7 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
           lower_bin:          lowerBin,
           upper_bin:          upperBin,
           active_bin:         activeBin,
+          strategy:           tracked?.strategy ?? null,
           in_range:           !isOOR,
           unclaimed_fees_usd: (binData
             ? config.management.solMode

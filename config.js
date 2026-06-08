@@ -99,6 +99,29 @@ export const config = {
     mixedRatio: u.mixedRatio ?? { bidask: 70, spot: 30 },
   },
 
+  bottomSpotLP: {
+    enabled: u.bottomSpotLP?.enabled ?? false,
+    deployAmountSol: u.bottomSpotLP?.deployAmountSol ?? 0.3,
+    minBaseFee: u.bottomSpotLP?.minBaseFee ?? 2.0,
+    minTvl: u.bottomSpotLP?.minTvl ?? 10_000,
+    maxTvl: u.bottomSpotLP?.maxTvl ?? 150_000,
+    minOrganic: u.bottomSpotLP?.minOrganic ?? 65,
+    rangePct: u.bottomSpotLP?.rangePct ?? -45,
+    minDumpPct: u.bottomSpotLP?.minDumpPct ?? 45,
+    minRetracePct: u.bottomSpotLP?.minRetracePct ?? 5,
+    athLookbackCandles: u.bottomSpotLP?.athLookbackCandles ?? 48,
+    rsiExitThreshold: u.bottomSpotLP?.rsiExitThreshold ?? 90,
+    takeProfitFeePct: u.bottomSpotLP?.takeProfitFeePct ?? 5,
+    maxILPct: u.bottomSpotLP?.maxILPct ?? 25,
+    minFeesToOverrideStopLoss: u.bottomSpotLP?.minFeesToOverrideStopLoss ?? 8,
+    outOfRangeWaitMinutes: u.bottomSpotLP?.outOfRangeWaitMinutes ?? 60,
+    outOfRangeTolerance: u.bottomSpotLP?.outOfRangeTolerance ?? 15,
+    feesForReposition: u.bottomSpotLP?.feesForReposition ?? 3,
+    enableTAExit: u.bottomSpotLP?.enableTAExit ?? true,
+    maxBottomSpotPositions: u.bottomSpotLP?.maxBottomSpotPositions ?? 1,
+    logLevel: u.bottomSpotLP?.logLevel ?? "verbose",
+  },
+
   // ─── Scheduling ─────────────────────────
   schedule: {
     managementIntervalMin:  u.managementIntervalMin  ?? 10,

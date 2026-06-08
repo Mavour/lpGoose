@@ -19,6 +19,8 @@ import { getActiveStrategy, setActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
+import { BottomSpotLPStrategy } from "./strategies/index.js";
+import { fetchKlineGMGN } from "./tools/chart-indicators.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -299,6 +301,49 @@ export async function runManagementCycle({ silent = false } = {}) {
       }
     }
 
+    if (config.bottomSpotLP?.enabled) {
+      const bottomStrategy = new BottomSpotLPStrategy(config.bottomSpotLP);
+      for (const p of positionData) {
+        if (exitMap.has(p.position) || p.strategy !== "bottom_spot_lp" || !p.base_mint) {
+          continue;
+        }
+        try {
+          const candles = await fetchKlineGMGN(
+            p.base_mint,
+            config.chartIndicators.interval || config.screening.timeframe || "5m",
+            80,
+          );
+          const tracked = getTrackedPosition(p.position);
+          const amountSol = tracked?.amount_sol || p.total_value_usd || 0;
+          const feesPct = amountSol > 0
+            ? ((p.unclaimed_fees_usd || 0) / amountSol) * 100
+            : 0;
+          const decision = await bottomStrategy.evaluatePosition(
+            {
+              ...p,
+              upperPrice: tracked?.signal_snapshot?.upperPrice,
+              lowerPrice: tracked?.signal_snapshot?.lowerPrice,
+              ilPct: p.pnl_pct != null && p.pnl_pct < 0 ? Math.abs(p.pnl_pct) : 0,
+            },
+            candles,
+            { pct: feesPct },
+          );
+
+          if (decision.action === "close") {
+            exitMap.set(p.position, `bottom_spot_lp: ${decision.reason}`);
+            log("state", `Bottom Spot exit alert for ${p.pair}: ${decision.reason}`);
+          } else if (decision.action === "reposition") {
+            log(
+              "bottom_spot_warn",
+              `Reposition signal for ${p.pair}; holding until close/redeploy flow is added`,
+            );
+          }
+        } catch (e) {
+          log("bottom_spot_warn", `Exit check skipped for ${p.pair}: ${e.message}`);
+        }
+      }
+    }
+
     const actionMap = new Map();
     for (const p of positionData) {
       // Hard exit — highest priority
@@ -544,6 +589,117 @@ After executing, write a brief one-line result per position.
   return mgmtReport;
 }
 
+async function tryBottomSpotDeploy(passing, prePositions, preBalance) {
+  const cfg = config.bottomSpotLP;
+  if (!cfg?.enabled) return null;
+
+  const bottomOpen = (prePositions?.positions || [])
+    .filter((p) => p.strategy === "bottom_spot_lp").length;
+  if (bottomOpen >= cfg.maxBottomSpotPositions) {
+    log("bottom_spot", `Skipped - max Bottom Spot positions reached (${bottomOpen})`);
+    return null;
+  }
+
+  const amountSol = cfg.deployAmountSol;
+  const minRequired = amountSol + config.management.gasReserve;
+  if (preBalance.sol < minRequired) {
+    log("bottom_spot", `Skipped - insufficient SOL (${preBalance.sol} < ${minRequired})`);
+    return null;
+  }
+
+  const strategy = new BottomSpotLPStrategy(cfg);
+  const triggered = [];
+  for (const candidate of passing) {
+    const pool = candidate.pool;
+    const mint = pool.base?.mint;
+    if (!mint) continue;
+
+    try {
+      const candles = await fetchKlineGMGN(
+        mint,
+        config.chartIndicators.interval || config.screening.timeframe || "5m",
+        Math.max(60, cfg.athLookbackCandles + 10),
+      );
+      const evaluation = await strategy.shouldDeploy(candles, [pool]);
+      if (evaluation.deploy) {
+        triggered.push({ ...evaluation, candidate, candles });
+        const dump = evaluation.signal.dumpPct.toFixed(2);
+        const retrace = evaluation.signal.retracePct.toFixed(2);
+        log("bottom_spot", `${pool.name} triggered: dump=${dump}%, retrace=${retrace}%`);
+      }
+    } catch (e) {
+      log("bottom_spot_warn", `Candle check skipped for ${pool.name}: ${e.message}`);
+    }
+
+    await new Promise((r) => setTimeout(r, 150));
+  }
+
+  if (triggered.length === 0) return null;
+
+  const selectedPool = triggered
+    .sort((a, b) =>
+      (b.pool.active_tvl ?? b.pool.tvl ?? 0) - (a.pool.active_tvl ?? a.pool.tvl ?? 0)
+    )[0];
+  const deployParams = strategy.buildDeployParams(
+    selectedPool.pool,
+    selectedPool.binRange,
+    amountSol,
+  );
+  if (!deployParams.valid) {
+    return {
+      report: `Bottom Spot signal found, but deploy params invalid: ${deployParams.reason}`,
+    };
+  }
+  deployParams.signal_snapshot = {
+    ...deployParams.signal_snapshot,
+    dumpPct: selectedPool.signal.dumpPct,
+    retracePct: selectedPool.signal.retracePct,
+    athPrice: selectedPool.signal.athPrice,
+    dumpLow: selectedPool.signal.dumpLow,
+    currentPrice: selectedPool.signal.currentPrice,
+  };
+
+  const deployResult = await deployPosition(deployParams);
+  const pool = selectedPool.pool;
+  if (deployResult.success || deployResult.dry_run) {
+    const status = deployResult.dry_run ? "DRY RUN" : "DEPLOYED";
+    return {
+      deployed: true,
+      report: [
+        `BOTTOM SPOT ${status}: ${pool.name}`,
+        `${pool.pool}`,
+        ``,
+        `Trigger`,
+        `Dump from ATH: ${selectedPool.signal.dumpPct.toFixed(2)}%`,
+        `Retrace from low: ${selectedPool.signal.retracePct.toFixed(2)}%`,
+        `ATH: ${selectedPool.signal.athPrice}`,
+        `Dump low: ${selectedPool.signal.dumpLow}`,
+        `Current: ${selectedPool.signal.currentPrice}`,
+        ``,
+        `Allocation`,
+        `Amount: ${amountSol} SOL`,
+        `Strategy: bottom_spot_lp (on-chain Spot)`,
+        `Range: ${selectedPool.binRange.lowerPrice} -> ${selectedPool.binRange.upperPrice}`,
+        `Bins below: ${selectedPool.binRange.totalBins}`,
+        ``,
+        `Pool Quality`,
+        `Fee tier: ${pool.fee_pct}%`,
+        `Fee/TVL: ${pool.fee_active_tvl_ratio ?? "?"}%`,
+        `TVL: $${pool.active_tvl ?? pool.tvl ?? "?"}`,
+        `Organic: ${pool.organic_score ?? pool.base?.organic ?? "?"}`,
+        `Bin step: ${pool.bin_step}`,
+      ].join("\n"),
+    };
+  }
+
+  return {
+    deployed: false,
+    report: `Bottom Spot deploy failed for ${pool.name}: ${
+      deployResult.error || "unknown error"
+    }`,
+  };
+}
+
 export async function runScreeningCycle({ silent = false } = {}) {
   if (_screeningBusy) {
     log("cron", "Screening skipped — previous cycle still running");
@@ -617,6 +773,15 @@ export async function runScreeningCycle({ silent = false } = {}) {
     if (passing.length === 0) {
       screenReport = `No candidates available (all blocked by hard screening gates).`;
       return screenReport;
+    }
+
+    const bottomSpotResult = await tryBottomSpotDeploy(passing, prePositions, currentBalance);
+    if (bottomSpotResult?.deployed) {
+      screenReport = bottomSpotResult.report;
+      return screenReport;
+    }
+    if (bottomSpotResult?.report) {
+      log("bottom_spot_warn", bottomSpotResult.report);
     }
 
     // Pre-fetch active_bin for all passing candidates in parallel
@@ -983,7 +1148,11 @@ if (isTTY) {
     const cfg = fs.existsSync(USER_CONFIG_PATH)
       ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
       : {};
-    if (config.chartIndicators && key in config.chartIndicators) {
+    if (key.startsWith("bottomSpotLP.")) {
+      const field = key.split(".")[1];
+      cfg.bottomSpotLP = cfg.bottomSpotLP || {};
+      cfg.bottomSpotLP[field] = value;
+    } else if (config.chartIndicators && key in config.chartIndicators) {
       cfg.chartIndicators = cfg.chartIndicators || {};
       cfg.chartIndicators[key] = value;
       delete cfg[key];
@@ -1008,6 +1177,12 @@ if (isTTY) {
     }
     if (config.llm && key in config.llm) config.llm[key] = value;
     if (config.strategy && key in config.strategy) config.strategy[key] = value;
+    if (key.startsWith("bottomSpotLP.")) {
+      const field = key.split(".")[1];
+      if (field && config.bottomSpotLP && field in config.bottomSpotLP) {
+        config.bottomSpotLP[field] = value;
+      }
+    }
     if (key === "strategy") {
       if (value === "bid_ask") setActiveStrategy({ id: "single_sided_reseed" });
       if (value === "spot") setActiveStrategy({ id: "custom_ratio_spot" });
@@ -1062,6 +1237,10 @@ if (isTTY) {
 
   function settingValue(key) {
     if (key === "dryRun") return process.env.DRY_RUN === "true" ? "on" : "off";
+    if (key.startsWith("bottomSpotLP.")) {
+      const field = key.split(".")[1];
+      return config.bottomSpotLP?.[field] ?? "?";
+    }
     if (key in config.risk) return config.risk[key];
     if (key in config.screening) return config.screening[key];
     if (key in config.management) return config.management[key];
@@ -1160,6 +1339,21 @@ if (isTTY) {
       ["interval", "ST Interval"],
       ["failOpen", "Fail Open"],
     ],
+    bottom: [
+      ["bottomSpotLP.enabled", "Enabled"],
+      ["bottomSpotLP.deployAmountSol", "Deploy SOL"],
+      ["bottomSpotLP.minDumpPct", "Min dump %"],
+      ["bottomSpotLP.minRetracePct", "Min retrace %"],
+      ["bottomSpotLP.rangePct", "Range %"],
+      ["bottomSpotLP.minBaseFee", "Min base fee"],
+      ["bottomSpotLP.minTvl", "Min TVL"],
+      ["bottomSpotLP.maxTvl", "Max TVL"],
+      ["bottomSpotLP.minOrganic", "Min organic"],
+      ["bottomSpotLP.rsiExitThreshold", "RSI exit"],
+      ["bottomSpotLP.takeProfitFeePct", "Fee target %"],
+      ["bottomSpotLP.maxILPct", "Max IL %"],
+      ["bottomSpotLP.maxBottomSpotPositions", "Max bottom pos"],
+    ],
   };
 
   function buildSettingsMenu(section = "quick", preset = "custom") {
@@ -1170,6 +1364,9 @@ if (isTTY) {
     const dryRun = process.env.DRY_RUN === "true" ? "on" : "off";
     const st = config.chartIndicators;
     const supState = st.enabled ? `ON (${st.stPeriod}/${st.stMultiplier}, ${st.interval})` : "OFF";
+    const bottomState = config.bottomSpotLP?.enabled
+      ? `ON (${config.bottomSpotLP.minDumpPct}% dump)`
+      : "OFF";
     const settings = menuSections[section] || menuSections.quick;
 
     const text = [
@@ -1179,6 +1376,7 @@ if (isTTY) {
       `Deploy: ${config.management.deployAmountSol} SOL | MaxPos: ${config.risk.maxPositions} | Gas: ${config.management.gasReserve}`,
       `TP/SL: ${config.management.takeProfitFeePct}% / ${config.management.stopLossPct}% | Trailing: ${trailing}`,
       `Bins range: [${config.strategy.minBinsBelow}–${config.strategy.maxBinsBelow}] | Sup: ${supState} | Dry run: ${dryRun}`,
+      `Bottom Spot: ${bottomState}`,
       `PvP: ${config.screening.avoidPvpSymbols ? "detect" : "OFF"}${config.screening.blockPvpSymbols ? " + block" : ""}`,
       "",
       `${settings.length} editable settings. Tap a value to edit.`,
@@ -1188,6 +1386,7 @@ if (isTTY) {
       ["quick", "screen", "risk"],
       ["strategy", "manage", "exits"],
       ["schedule", "llm", "indicators"],
+      ["bottom"],
     ].map((row) => row.map((id) => ({
       text: `${id === section ? "✓ " : ""}${id[0].toUpperCase()}${id.slice(1)}`,
       callback_data: `menu:${id}:${preset}`,

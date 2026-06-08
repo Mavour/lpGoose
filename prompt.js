@@ -18,12 +18,22 @@ export function buildSystemPrompt(agentType, portfolio, positions, stateSummary 
   if (agentType === "MANAGER") {
     const portfolioCompact = JSON.stringify(portfolio);
     const mgmtConfig = JSON.stringify(config.management);
+    const bottomSpotContext = config.bottomSpotLP?.enabled ? `
+
+ACTIVE STRATEGY: Bottom Spot LP
+- Event-driven dump + reversal lane running alongside regular strategy.
+- Entry: single-sided SOL, Spot shape, post-dump retrace.
+- Exit triggers: RSI>${config.bottomSpotLP.rsiExitThreshold}, MACD bearish cross, BB upper break, fees>=${config.bottomSpotLP.takeProfitFeePct}%.
+- IL stop-loss at ${config.bottomSpotLP.maxILPct}% if fees < ${config.bottomSpotLP.minFeesToOverrideStopLoss}%.
+- Do not greedy-hold Bottom Spot positions; Spot has higher IL risk than Bid-Ask/Mixed.
+` : "";
     return `You are an autonomous DLMM LP agent on Meteora, Solana. Role: MANAGER
 
 This is a mechanical rule-application task. All position data is pre-loaded. Apply the close/claim rules directly and output the report. No extended analysis or deliberation required.
 
 Portfolio: ${portfolioCompact}
 Management Config: ${mgmtConfig}
+${bottomSpotContext}
 
 BEHAVIORAL CORE:
 1. PATIENCE IS PROFIT: Avoid closing positions for tiny gains/losses.
