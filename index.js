@@ -310,7 +310,7 @@ export async function runManagementCycle({ silent = false } = {}) {
         try {
           const candles = await fetchKlineGMGN(
             p.base_mint,
-            config.chartIndicators.interval || config.screening.timeframe || "5m",
+            config.bottomSpotLP.interval || config.chartIndicators.interval || "1m",
             80,
           );
           const tracked = getTrackedPosition(p.position);
@@ -617,7 +617,7 @@ async function tryBottomSpotDeploy(passing, prePositions, preBalance) {
     try {
       const candles = await fetchKlineGMGN(
         mint,
-        config.chartIndicators.interval || config.screening.timeframe || "5m",
+        cfg.interval || config.chartIndicators.interval || "1m",
         Math.max(60, cfg.athLookbackCandles + 10),
       );
       const evaluation = await strategy.shouldDeploy(candles, [pool]);
@@ -1344,10 +1344,14 @@ if (isTTY) {
       ["bottomSpotLP.deployAmountSol", "Deploy SOL"],
       ["bottomSpotLP.minDumpPct", "Min dump %"],
       ["bottomSpotLP.minRetracePct", "Min retrace %"],
+      ["bottomSpotLP.interval", "Interval"],
+      ["bottomSpotLP.athLookbackCandles", "Lookback candles"],
       ["bottomSpotLP.rangePct", "Range %"],
       ["bottomSpotLP.minBaseFee", "Min base fee"],
       ["bottomSpotLP.minTvl", "Min TVL"],
       ["bottomSpotLP.maxTvl", "Max TVL"],
+      ["bottomSpotLP.minVolume", "Min volume"],
+      ["bottomSpotLP.minFeeActiveTvlRatio", "Min fee/TVL"],
       ["bottomSpotLP.minOrganic", "Min organic"],
       ["bottomSpotLP.rsiExitThreshold", "RSI exit"],
       ["bottomSpotLP.takeProfitFeePct", "Fee target %"],

@@ -7,6 +7,8 @@ const DEFAULT_MIN_RETRACE_PCT = 5;
 const DEFAULT_MIN_BASE_FEE = 2.0;
 const DEFAULT_MIN_TVL = 10_000;
 const DEFAULT_MAX_TVL = 150_000;
+const DEFAULT_MIN_VOLUME = 10_000;
+const DEFAULT_MIN_FEE_ACTIVE_TVL_RATIO = 0.5;
 const DEFAULT_MIN_ORGANIC = 65;
 const DEFAULT_RANGE_PCT = -45;
 const MIN_RANGE_PCT = -55;
@@ -26,6 +28,8 @@ const DEFAULTS = {
   minBaseFee: DEFAULT_MIN_BASE_FEE,
   minTvl: DEFAULT_MIN_TVL,
   maxTvl: DEFAULT_MAX_TVL,
+  minVolume: DEFAULT_MIN_VOLUME,
+  minFeeActiveTvlRatio: DEFAULT_MIN_FEE_ACTIVE_TVL_RATIO,
   minOrganic: DEFAULT_MIN_ORGANIC,
   rangePct: DEFAULT_RANGE_PCT,
   minDumpPct: DEFAULT_MIN_DUMP_PCT,
@@ -65,6 +69,14 @@ function feeOf(pool) {
 
 function tvlOf(pool) {
   return safeNumber(pool?.active_tvl ?? pool?.tvl ?? pool?.liquidity);
+}
+
+function volumeOf(pool) {
+  return safeNumber(pool?.volume_window ?? pool?.volume ?? pool?.volume_24h);
+}
+
+function feeTvlOf(pool) {
+  return safeNumber(pool?.fee_active_tvl_ratio ?? pool?.fee_tvl_ratio);
 }
 
 function organicOf(pool) {
@@ -157,6 +169,8 @@ export function selectBestPool(pools, config = {}) {
     for (const pool of pools) {
       const fee = feeOf(pool);
       const tvl = tvlOf(pool);
+      const volume = volumeOf(pool);
+      const feeTvl = feeTvlOf(pool);
       const organic = organicOf(pool);
       const name = pool?.name || poolAddressOf(pool) || "unknown";
 
@@ -170,6 +184,17 @@ export function selectBestPool(pools, config = {}) {
       }
       if (tvl > cfg.maxTvl) {
         logBottom("debug", `[BottomSpotLP] Reject ${name}: tvl ${tvl} > ${cfg.maxTvl}`);
+        continue;
+      }
+      if (cfg.minVolume > 0 && (volume == null || volume < cfg.minVolume)) {
+        logBottom("debug", `[BottomSpotLP] Reject ${name}: volume ${volume} < ${cfg.minVolume}`);
+        continue;
+      }
+      if (cfg.minFeeActiveTvlRatio > 0 && (feeTvl == null || feeTvl < cfg.minFeeActiveTvlRatio)) {
+        logBottom(
+          "debug",
+          `[BottomSpotLP] Reject ${name}: fee/TVL ${feeTvl} < ${cfg.minFeeActiveTvlRatio}`,
+        );
         continue;
       }
       if (organic == null || organic < cfg.minOrganic) {
@@ -422,10 +447,13 @@ export class BottomSpotLPStrategy {
         bin_step: pool.bin_step,
         base_fee: feeOf(pool),
         fee_tvl_ratio: pool.fee_active_tvl_ratio,
+        volume: volumeOf(pool),
         volatility: pool.volatility,
         organic_score: organicOf(pool),
         base_mint: pool.base?.mint,
         signal_snapshot: {
+          bottom_spot_lp: true,
+          strategy_tag: "bottom_spot_lp",
           strategy: "bottom_spot_lp",
           lowerPrice: binRange.lowerPrice,
           upperPrice: binRange.upperPrice,
