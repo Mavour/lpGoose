@@ -19,7 +19,7 @@ import {
   syncOpenPositions,
 } from "../state.js";
 import { recordPerformance } from "../lessons.js";
-import { isPoolOnCooldown, setTokenCloseCooldown } from "../pool-memory.js";
+import { getPoolCooldown, setTokenCloseCooldown } from "../pool-memory.js";
 import { normalizeMint } from "./wallet.js";
 import { getWalletPnl } from "../pnl-fetcher.js";
 
@@ -124,9 +124,15 @@ export async function deployPosition({
     );
   const activeBinsAbove = bins_above ?? 0;
 
-  if (isPoolOnCooldown(pool_address)) {
-    log("deploy", `Pool ${pool_address.slice(0, 8)} is on cooldown — skipping`);
-    return { success: false, error: "Pool is on cooldown (recently closed). Try again later." };
+  const poolCooldown = getPoolCooldown(pool_address);
+  if (poolCooldown) {
+    log("deploy", `Pool ${pool_address.slice(0, 8)} is on cooldown until ${poolCooldown.cooldown_until} (${poolCooldown.remaining_seconds}s left) - skipping`);
+    return {
+      success: false,
+      error: `Pool is on cooldown until ${poolCooldown.cooldown_until} (${poolCooldown.remaining_seconds}s left).`,
+      cooldown_until: poolCooldown.cooldown_until,
+      cooldown_remaining_seconds: poolCooldown.remaining_seconds,
+    };
   }
 
   if (process.env.DRY_RUN === "true") {

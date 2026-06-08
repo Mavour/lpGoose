@@ -75,7 +75,7 @@ export const config = {
     whaleGuardEnabled:     u.whaleGuardEnabled     ?? true,
     whaleGuardMinDropUsd:  u.whaleGuardMinDropUsd  ?? 25_000,
     whaleGuardMinDropPct:  u.whaleGuardMinDropPct  ?? 25,
-    whaleGuardCooldownMin: u.whaleGuardCooldownMin ?? 60,
+    whaleGuardCooldownMin: u.whaleGuardCooldownMin ?? 30,
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD
     solMode:               u.solMode               ?? false,
   },

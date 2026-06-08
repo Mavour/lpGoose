@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "fs";
-import { getTokenCloseCooldown, setTokenCloseCooldown } from "../pool-memory.js";
+import {
+  getPoolCooldown,
+  getTokenCloseCooldown,
+  isPoolOnCooldown,
+  setTokenCloseCooldown,
+} from "../pool-memory.js";
 
 const file = "./pool-memory.json";
 const backup = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
@@ -28,6 +33,17 @@ try {
 
   assert.equal(explicitCooldown.duration_minutes, 2);
   assert.ok(new Date(explicitCooldown.cooldown_until).getTime() > beforeExplicit);
+
+  const poolFile = JSON.parse(fs.readFileSync(file, "utf8"));
+  poolFile.TestPoolAddress = {
+    name: "TEST-SOL",
+    cooldown_until: new Date(Date.now() + 60_000).toISOString(),
+  };
+  fs.writeFileSync(file, JSON.stringify(poolFile, null, 2));
+  assert.equal(isPoolOnCooldown("TestPoolAddress"), true);
+  const poolCooldown = getPoolCooldown("TestPoolAddress");
+  assert.ok(poolCooldown.remaining_seconds > 0);
+  assert.ok(poolCooldown.remaining_seconds <= 60);
 
   console.log("Pool memory cooldown tests passed");
 } finally {

@@ -85,6 +85,7 @@
   "trailingTriggerPct": 3,
   "trailingDropPct": 1.5,
   "solMode": false,
+  "whaleGuardCooldownMin": 30,
 
   "managementIntervalMin": 10,
   "screeningIntervalMin": 30,

@@ -111,11 +111,21 @@ export function recordPoolDeploy(poolAddress, deployData) {
 }
 
 export function isPoolOnCooldown(poolAddress) {
-  if (!poolAddress) return false;
+  return getPoolCooldown(poolAddress) != null;
+}
+
+export function getPoolCooldown(poolAddress) {
+  if (!poolAddress) return null;
   const db = load();
   const entry = db[poolAddress];
-  if (!entry?.cooldown_until) return false;
-  return new Date(entry.cooldown_until) > new Date();
+  if (!entry?.cooldown_until) return null;
+  const remainingMs = new Date(entry.cooldown_until).getTime() - Date.now();
+  if (remainingMs <= 0) return null;
+  return {
+    cooldown_until: entry.cooldown_until,
+    remaining_ms: remainingMs,
+    remaining_seconds: Math.ceil(remainingMs / 1000),
+  };
 }
 
 export function setTokenCloseCooldown({
