@@ -179,6 +179,13 @@ const toolMap = {
       managementModel: ["llm", "managementModel"],
       screeningModel: ["llm", "screeningModel"],
       generalModel: ["llm", "generalModel"],
+      // chart indicators
+      chartIndicatorInterval: ["chartIndicators", "interval"],
+      chartIndicatorEntryInterval: ["chartIndicators", "entryInterval"],
+      chartIndicatorExitInterval: ["chartIndicators", "exitInterval"],
+      entryInterval: ["chartIndicators", "entryInterval"],
+      exitInterval: ["chartIndicators", "exitInterval"],
+      exitOnBearishFlip: ["chartIndicators", "exitOnBearishFlip"],
       // strategy
       strategy: ["strategy", "strategy"],
       minBinsBelow: ["strategy", "minBinsBelow"],
@@ -407,7 +414,7 @@ async function runSafetyChecks(name, args) {
         const { confirmEntrySupertrendBreak } = await import("./chart-indicators.js");
         const stCheck = await confirmEntrySupertrendBreak({
           mint: baseMintForSt,
-          interval: cc.interval || "5m",
+          interval: cc.entryInterval || cc.interval || "5m",
           period: cc.stPeriod || 10,
           multiplier: cc.stMultiplier || 3,
         }).catch(() => null);

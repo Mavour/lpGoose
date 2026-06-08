@@ -279,7 +279,7 @@ export async function runManagementCycle({ silent = false } = {}) {
         if (!checksByMint.has(p.base_mint)) {
           checksByMint.set(p.base_mint, confirmExitSupertrendFlip({
             mint: p.base_mint,
-            interval: config.chartIndicators.interval || "5m",
+            interval: config.chartIndicators.exitInterval || config.chartIndicators.interval || "15m",
             period: config.chartIndicators.stPeriod || 10,
             multiplier: config.chartIndicators.stMultiplier || 3,
           }).catch((error) => ({ triggered: false, error: error.message })));

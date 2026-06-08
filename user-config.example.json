@@ -94,5 +94,17 @@
 
   "telegramChatId": "",
   "hiveMindUrl": "",
-  "hiveMindApiKey": ""
+  "hiveMindApiKey": "",
+
+  "chartIndicators": {
+    "enabled": true,
+    "entryPreset": "supertrend_break",
+    "stPeriod": 10,
+    "stMultiplier": 3,
+    "interval": "5m",
+    "entryInterval": "5m",
+    "exitInterval": "15m",
+    "failOpen": false,
+    "exitOnBearishFlip": true
+  }
 }

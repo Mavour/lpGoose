@@ -346,7 +346,7 @@ export async function getTopCandidates({ limit = 10 } = {}) {
         if (!mint) return Promise.resolve({ confirmed: true, direction: "neutral", reason: "no mint" });
         return confirmEntrySupertrendBreak({
           mint,
-          interval: cc.interval || "5m",
+          interval: cc.entryInterval || cc.interval || "5m",
           period: cc.stPeriod || 10,
           multiplier: cc.stMultiplier || 3,
         });

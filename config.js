@@ -87,6 +87,8 @@ export const config = {
     stPeriod:      u.chartIndicators?.stPeriod      ?? 10,
     stMultiplier:  u.chartIndicators?.stMultiplier  ?? 3,
     interval:      u.chartIndicators?.interval      ?? "5m",
+    entryInterval: u.chartIndicators?.entryInterval ?? u.chartIndicators?.interval ?? "5m",
+    exitInterval:  u.chartIndicators?.exitInterval  ?? "15m",
     failOpen:      u.chartIndicators?.failOpen      ?? false,
     exitOnBearishFlip: u.chartIndicators?.exitOnBearishFlip ?? false,
   },
