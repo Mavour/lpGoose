@@ -21,6 +21,7 @@ import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { config, reloadScreeningThresholds } from "../config.js";
+import { getMinimumConfidenceDeployAmount } from "../confidence.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -169,6 +170,11 @@ const toolMap = {
       deployAmountSol: ["management", "deployAmountSol"],
       gasReserve: ["management", "gasReserve"],
       positionSizePct: ["management", "positionSizePct"],
+      confidenceEnabled: ["confidence", "enabled"],
+      confidenceFullThreshold: ["confidence", "fullThreshold"],
+      confidenceSkipThreshold: ["confidence", "skipThreshold"],
+      confidenceHalfMultiplier: ["confidence", "halfMultiplier"],
+      smartWalletMaxAgeMinutes: ["confidence", "smartWalletMaxAgeMinutes"],
       // risk
       maxPositions: ["risk", "maxPositions"],
       maxDeployAmount: ["risk", "maxDeployAmount"],
@@ -472,7 +478,10 @@ async function runSafetyChecks(name, args) {
         };
       }
 
-      const minDeploy = Math.max(0.1, config.management.deployAmountSol);
+      const minDeploy = getMinimumConfidenceDeployAmount(
+        config.management.deployAmountSol,
+        config.confidence
+      );
       if (amountY < minDeploy) {
         return {
           pass: false,

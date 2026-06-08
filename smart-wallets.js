@@ -87,9 +87,17 @@ export async function checkSmartWalletsOnPool({ pool_address }) {
     })
   );
 
-  const inPool = results
-    .filter((r) => r.positions.some((p) => p.pool === pool_address))
-    .map((r) => ({ name: r.wallet.name, category: r.wallet.category, address: r.wallet.address }));
+  const inPool = results.flatMap((r) => {
+    const position = r.positions.find((p) => p.pool === pool_address);
+    if (!position) return [];
+    return [{
+      name: r.wallet.name,
+      category: r.wallet.category,
+      address: r.wallet.address,
+      position: position.position,
+      age_minutes: position.age_minutes,
+    }];
+  });
 
   return {
     pool: pool_address,

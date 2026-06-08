@@ -80,6 +80,14 @@ export const config = {
     solMode:               u.solMode               ?? false,
   },
 
+  confidence: {
+    enabled: u.confidenceEnabled ?? true,
+    fullThreshold: u.confidenceFullThreshold ?? 70,
+    skipThreshold: u.confidenceSkipThreshold ?? 40,
+    halfMultiplier: u.confidenceHalfMultiplier ?? 0.5,
+    smartWalletMaxAgeMinutes: u.smartWalletMaxAgeMinutes ?? 60,
+  },
+
   // ─── Chart Indicators (Supertrend Entry Gate) ───
   chartIndicators: {
     enabled:       u.chartIndicators?.enabled       ?? true,

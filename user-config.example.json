@@ -12,6 +12,11 @@
   "maxDeployAmount": 50,
   "gasReserve": 0.2,
   "positionSizePct": 0.35,
+  "confidenceEnabled": true,
+  "confidenceFullThreshold": 70,
+  "confidenceSkipThreshold": 40,
+  "confidenceHalfMultiplier": 0.5,
+  "smartWalletMaxAgeMinutes": 60,
 
   "strategy": "bid_ask",
   "minBinsBelow": 30,

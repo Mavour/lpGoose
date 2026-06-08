@@ -21,6 +21,7 @@ import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
 import { BottomSpotLPStrategy } from "./strategies/index.js";
 import { fetchKlineGMGN } from "./tools/chart-indicators.js";
+import { getConfidenceSizing, selectBestConfidenceCandidate } from "./confidence.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -717,7 +718,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
       _screeningBusy = false;
       return null;
     }
-    const minRequired = config.management.deployAmountSol + config.management.gasReserve;
+    const minimumMultiplier = config.confidence.enabled
+      ? config.confidence.halfMultiplier
+      : 1;
+    const minRequired = (config.management.deployAmountSol * minimumMultiplier) + config.management.gasReserve;
     if (preBalance.sol < minRequired) {
       log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
       _screeningBusy = false;
@@ -790,10 +794,26 @@ export async function runScreeningCycle({ silent = false } = {}) {
     );
 
     // ─── Auto-deploy: pick best candidate and deploy directly (no LLM involvement) ───
-    const indexed = passing.map((c, i) => ({ ...c, idx: i, activeBin: activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value?.binId : null }));
-    const best = indexed.sort((a, b) => (b.pool.fee_active_tvl_ratio ?? 0) - (a.pool.fee_active_tvl_ratio ?? 0))[0];
+    const indexed = passing.map((c, i) => ({
+      ...c,
+      idx: i,
+      activeBin: activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value?.binId : null,
+    }));
+    const best = selectBestConfidenceCandidate(indexed, config.confidence);
 
-    const { pool, sw, n, ti, activeBin, idx: bestIdx } = best;
+    const { pool, sw, n, ti, activeBin, idx: bestIdx, confidence } = best;
+    const sizing = getConfidenceSizing(confidence.total, deployAmount, config.confidence);
+    if (sizing.action === "skip") {
+      screenReport = [
+        `SKIPPED: ${pool.name}`,
+        `Confidence: ${confidence.total}% (< ${config.confidence.skipThreshold}%)`,
+        `Volatility score: ${confidence.volatility_score}/40`,
+        `Fee/Active TVL score: ${confidence.fee_active_tvl_score}/40`,
+        `Smart wallet score: ${confidence.smart_wallet_score}/20`,
+      ].join("\n");
+      log("screening", `${pool.name} skipped - confidence ${confidence.total}% below ${config.confidence.skipThreshold}%`);
+      return screenReport;
+    }
     const volatility = pool.volatility ?? 5;
 
     const bins_below = Math.round(
@@ -803,7 +823,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     const deployResult = await deployPosition({
       pool_address: pool.pool,
-      amount_sol: deployAmount,
+      amount_sol: sizing.amount,
       strategy: config.strategy.strategy,
       bins_below,
       bins_above: 0,
@@ -833,7 +853,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       ].filter(Boolean).join(" | ");
 
       const rejectedStr = passing.length > 1
-        ? indexed.filter((_, i) => i !== bestIdx).map(c => `${c.pool.name} (fee_tvl=${c.pool.fee_active_tvl_ratio ?? "?"}%)`).join("; ")
+        ? indexed.filter(c => c.idx !== bestIdx).map(c => `${c.pool.name} (fee_tvl=${c.pool.fee_active_tvl_ratio ?? "?"}%)`).join("; ")
         : "N/A — single candidate.";
 
       const thesis = n?.narrative
@@ -845,7 +865,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
         `${pool.pool}`,
         ``,
         `Allocation`,
-        `Amount: ${deployAmount} SOL`,
+        `Amount: ${sizing.amount} SOL (${sizing.action === "full" ? "full" : "half"} size)`,
+        `Confidence: ${confidence.total}%`,
+        `Volatility score: ${confidence.volatility_score}/40`,
+        `Fee/Active TVL score: ${confidence.fee_active_tvl_score}/40`,
+        `Smart wallet score: ${confidence.smart_wallet_score}/20 (${confidence.recent_smart_wallets.length} within ${config.confidence.smartWalletMaxAgeMinutes}m)`,
         `Strategy: ${config.strategy.strategy}`,
         `Active bin: ${activeBin ?? "?"}`,
         `Range: ${minPrice} → ${maxPrice} SOL`,
@@ -874,7 +898,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         thesis,
         ``,
         `Why Deployed`,
-        `Best candidate by fee yield. All configured hard gates passed.`,
+        `Best candidate by confidence score. All configured hard gates passed.`,
         ``,
         `Rejected: ${rejectedStr}`,
       ].filter(Boolean).join("\n");
@@ -1148,10 +1172,19 @@ if (isTTY) {
     const cfg = fs.existsSync(USER_CONFIG_PATH)
       ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
       : {};
+    const confidenceFields = {
+      "confidence.enabled": "confidenceEnabled",
+      "confidence.fullThreshold": "confidenceFullThreshold",
+      "confidence.skipThreshold": "confidenceSkipThreshold",
+      "confidence.halfMultiplier": "confidenceHalfMultiplier",
+      "confidence.smartWalletMaxAgeMinutes": "smartWalletMaxAgeMinutes",
+    };
     if (key.startsWith("bottomSpotLP.")) {
       const field = key.split(".")[1];
       cfg.bottomSpotLP = cfg.bottomSpotLP || {};
       cfg.bottomSpotLP[field] = value;
+    } else if (confidenceFields[key]) {
+      cfg[confidenceFields[key]] = value;
     } else if (config.chartIndicators && key in config.chartIndicators) {
       cfg.chartIndicators = cfg.chartIndicators || {};
       cfg.chartIndicators[key] = value;
@@ -1170,6 +1203,10 @@ if (isTTY) {
     reloadScreeningThresholds();
     if (config.screening && key in config.screening) config.screening[key] = value;
     if (config.management && key in config.management) config.management[key] = value;
+    if (confidenceFields[key]) {
+      const field = key.split(".")[1];
+      config.confidence[field] = value;
+    }
     if (config.schedule && key in config.schedule) {
       config.schedule[key] = value;
       stopCronJobs();
@@ -1241,6 +1278,10 @@ if (isTTY) {
       const field = key.split(".")[1];
       return config.bottomSpotLP?.[field] ?? "?";
     }
+    if (key.startsWith("confidence.")) {
+      const field = key.split(".")[1];
+      return config.confidence?.[field] ?? "?";
+    }
     if (key in config.risk) return config.risk[key];
     if (key in config.screening) return config.screening[key];
     if (key in config.management) return config.management[key];
@@ -1306,6 +1347,13 @@ if (isTTY) {
       ["positionSizePct", "Position size %"],
       ["autoSwapAfterClaim", "Auto swap"],
       ["minVolumeToRebalance", "Min vol rebalance"],
+    ],
+    confidence: [
+      ["confidence.enabled", "Confidence enabled"],
+      ["confidence.fullThreshold", "Full threshold"],
+      ["confidence.skipThreshold", "Skip threshold"],
+      ["confidence.halfMultiplier", "Half multiplier"],
+      ["confidence.smartWalletMaxAgeMinutes", "Smart wallet age"],
     ],
     exits: [
       ["takeProfitFeePct", "Take profit %"],
@@ -1389,7 +1437,8 @@ if (isTTY) {
     const sectionRows = [
       ["quick", "screen", "risk"],
       ["strategy", "manage", "exits"],
-      ["schedule", "llm", "indicators"],
+      ["confidence", "schedule", "indicators"],
+      ["llm"],
       ["bottom"],
     ].map((row) => row.map((id) => ({
       text: `${id === section ? "✓ " : ""}${id[0].toUpperCase()}${id.slice(1)}`,
