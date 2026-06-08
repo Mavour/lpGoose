@@ -29,6 +29,9 @@ function load() {
 }
 
 function save(data) {
+  data.lessons ||= [];
+  data.performance ||= [];
+  data.proposals ||= [];
   fs.writeFileSync(LESSONS_FILE, JSON.stringify(data, null, 2));
 }
 
@@ -120,11 +123,11 @@ export async function recordPerformance(perf) {
 
   // Evolve thresholds every 5 closed positions
   if (data.performance.length % MIN_EVOLVE_POSITIONS === 0) {
-    const { config, reloadScreeningThresholds } = await import("./config.js");
+    const { config } = await import("./config.js");
     const result = evolveThresholds(data.performance, config);
     if (result?.changes && Object.keys(result.changes).length > 0) {
-      reloadScreeningThresholds();
-      log("evolve", `Auto-evolved thresholds: ${JSON.stringify(result.changes)}`);
+      await notifyLearningProposal(result.proposal);
+      log("evolve", `Learning proposal created: ${JSON.stringify(result.changes)}`);
     }
 
     // Darwinian signal weight recalculation
@@ -206,16 +209,221 @@ function derivLesson(perf) {
 // ─── Adaptive Threshold Evolution ──────────────────────────────
 
 /**
- * Analyze closed position performance and evolve screening thresholds.
- * Writes changes to user-config.json and returns a summary.
+ * Analyze closed position performance and propose threshold changes.
+ * This never writes config or mutates runtime parameters; Telegram approval
+ * applies the final change.
  *
  * @param {Array}  perfData - Array of performance records (from lessons.json)
  * @param {Object} config   - Live config object (mutated in place)
  * @returns {{ changes: Object, rationale: Object } | null}
  */
 export function evolveThresholds(perfData, config) {
-  // Disabled: all screening is fully deterministic with no historical bias
-  return null;
+  if (!config.learning?.enabled) return null;
+
+  const minPositions = config.learning.minClosedPositions ?? MIN_EVOLVE_POSITIONS;
+  if (!Array.isArray(perfData) || perfData.length < minPositions) return null;
+
+  const data = load();
+  const cooldownHours = config.learning.proposalCooldownHours ?? 24;
+  const cutoff = Date.now() - cooldownHours * 60 * 60 * 1000;
+  const recentProposal = (data.proposals || []).some((p) => {
+    const created = new Date(p.created_at || 0).getTime();
+    return p.status === "pending" || created >= cutoff;
+  });
+  if (recentProposal) return null;
+
+  const recent = perfData.slice(-Math.max(minPositions, 10));
+  const metrics = summarizePerformance(recent);
+  const candidates = [];
+
+  if (metrics.oorLosses >= 2 && metrics.avgRangeEfficiency < 45) {
+    const currentMin = Number(config.strategy?.minBinsBelow ?? 30);
+    const currentMax = Number(config.strategy?.maxBinsBelow ?? 55);
+    candidates.push({
+      key: "minBinsBelow",
+      value: clamp(Math.ceil(currentMin * 1.15), currentMin + 1, 80),
+      reason: `${metrics.oorLosses}/${metrics.count} recent closes had poor range efficiency; widen downside range.`,
+    });
+    candidates.push({
+      key: "maxBinsBelow",
+      value: clamp(Math.ceil(currentMax * 1.15), currentMax + 1, 100),
+      reason: `Average range efficiency is ${metrics.avgRangeEfficiency.toFixed(1)}%; current bin budget may be too tight.`,
+    });
+  }
+
+  if (metrics.lowYieldLosses >= 2) {
+    const current = Number(config.screening?.minFeeActiveTvlRatio ?? 0.05);
+    candidates.push({
+      key: "minFeeActiveTvlRatio",
+      value: round(clamp(current * 1.25, current + 0.01, 1), 3),
+      reason: `${metrics.lowYieldLosses}/${metrics.count} recent closes were low-yield or volume-collapse exits.`,
+    });
+  }
+
+  if (metrics.lossRate >= 60 && metrics.avgPnlPct < 0) {
+    const current = Number(config.management?.positionSizePct ?? 0.35);
+    candidates.push({
+      key: "positionSizePct",
+      value: round(clamp(current * 0.8, 0.05, current - 0.01), 3),
+      reason: `Recent loss rate is ${metrics.lossRate.toFixed(0)}% with avg PnL ${metrics.avgPnlPct.toFixed(2)}%; reduce risk per position.`,
+    });
+  }
+
+  if (metrics.winRate >= 65 && metrics.avgRangeEfficiency > 65 && metrics.avgPnlPct > 1) {
+    const current = Number(config.management?.positionSizePct ?? 0.35);
+    candidates.push({
+      key: "positionSizePct",
+      value: round(clamp(current * 1.1, current + 0.01, 0.5), 3),
+      reason: `Recent win rate is ${metrics.winRate.toFixed(0)}% with strong in-range efficiency; cautious size increase is justified.`,
+    });
+  }
+
+  const changes = {};
+  const rationale = {};
+  for (const candidate of candidates) {
+    if (Object.keys(changes).length >= (config.learning.maxChangesPerProposal ?? 3)) break;
+    const current = getConfigValue(config, candidate.key);
+    if (current === undefined || Object.is(current, candidate.value)) continue;
+    changes[candidate.key] = candidate.value;
+    rationale[candidate.key] = `${JSON.stringify(current)} -> ${JSON.stringify(candidate.value)}. ${candidate.reason}`;
+  }
+
+  if (Object.keys(changes).length === 0) return null;
+
+  const proposal = createLearningProposal({
+    changes,
+    rationale,
+    metrics,
+    source: "evolveThresholds",
+  });
+
+  return { changes, rationale, metrics, proposal };
+}
+
+function summarizePerformance(records) {
+  const mapped = records.map((r) => {
+    const pnlPct = Number(r.pnl_pct ?? 0);
+    const rangeEfficiency = Number(r.range_efficiency ?? 0);
+    const reason = String(r.close_reason || "").toLowerCase();
+    return { pnlPct, rangeEfficiency, reason };
+  });
+
+  const count = mapped.length;
+  const losses = mapped.filter((r) => r.pnlPct < 0).length;
+  const wins = mapped.filter((r) => r.pnlPct > 0).length;
+  const oorLosses = mapped.filter((r) =>
+    r.pnlPct < 0 && (r.rangeEfficiency < 30 || r.reason.includes("range") || r.reason.includes("oor"))
+  ).length;
+  const lowYieldLosses = mapped.filter((r) =>
+    r.reason.includes("yield") || r.reason.includes("volume") || r.reason.includes("fee")
+  ).length;
+
+  return {
+    count,
+    losses,
+    wins,
+    lossRate: count ? (losses / count) * 100 : 0,
+    winRate: count ? (wins / count) * 100 : 0,
+    avgPnlPct: count ? mapped.reduce((s, r) => s + r.pnlPct, 0) / count : 0,
+    avgRangeEfficiency: count ? mapped.reduce((s, r) => s + r.rangeEfficiency, 0) / count : 0,
+    oorLosses,
+    lowYieldLosses,
+  };
+}
+
+function createLearningProposal({ changes, rationale, metrics, source }) {
+  const data = load();
+  data.proposals ||= [];
+
+  const proposal = {
+    id: `lp_${Date.now()}`,
+    status: "pending",
+    source,
+    changes,
+    rationale,
+    metrics,
+    created_at: new Date().toISOString(),
+  };
+
+  data.proposals.push(proposal);
+  save(data);
+  return proposal;
+}
+
+export function listLearningProposals({ status = "pending", limit = 10 } = {}) {
+  const data = load();
+  let proposals = data.proposals || [];
+  if (status && status !== "all") proposals = proposals.filter((p) => p.status === status);
+  return proposals.slice(-limit);
+}
+
+export function getLearningProposal(id) {
+  const data = load();
+  return (data.proposals || []).find((p) => p.id === id) || null;
+}
+
+export function markLearningProposal(id, status, note = "") {
+  const data = load();
+  data.proposals ||= [];
+  const proposal = data.proposals.find((p) => p.id === id);
+  if (!proposal) return null;
+  proposal.status = status;
+  proposal.resolved_at = new Date().toISOString();
+  if (note) proposal.note = note;
+  save(data);
+  return proposal;
+}
+
+export function formatLearningProposal(proposal) {
+  if (!proposal) return "Learning proposal not found.";
+  const lines = [
+    "Learning proposal",
+    `ID: ${proposal.id}`,
+    `Status: ${proposal.status}`,
+    "",
+    "Changes:",
+  ];
+  for (const [key, value] of Object.entries(proposal.changes || {})) {
+    lines.push(`- ${key}: ${JSON.stringify(value)}`);
+    if (proposal.rationale?.[key]) lines.push(`  ${proposal.rationale[key]}`);
+  }
+  if (proposal.metrics) {
+    lines.push("");
+    lines.push(`Recent sample: ${proposal.metrics.count} closes | win ${proposal.metrics.winRate?.toFixed?.(0) ?? "?"}% | loss ${proposal.metrics.lossRate?.toFixed?.(0) ?? "?"}% | avg PnL ${proposal.metrics.avgPnlPct?.toFixed?.(2) ?? "?"}%`);
+  }
+  return lines.join("\n").slice(0, 3500);
+}
+
+async function notifyLearningProposal(proposal) {
+  if (!proposal) return;
+  try {
+    const { isEnabled, sendKeyboard } = await import("./telegram.js");
+    if (!isEnabled()) return;
+    await sendKeyboard(formatLearningProposal(proposal), [
+      [
+        { text: "APPROVE", callback_data: `learn_approve:${proposal.id}` },
+        { text: "REJECT", callback_data: `learn_reject:${proposal.id}` },
+      ],
+    ]);
+  } catch (e) {
+    log("evolve_warn", `Failed to send learning proposal: ${e.message}`);
+  }
+}
+
+function getConfigValue(config, key) {
+  for (const section of ["risk", "screening", "management", "schedule", "llm", "strategy"]) {
+    if (config[section] && key in config[section]) return config[section][key];
+  }
+  return undefined;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function round(value, decimals = 2) {
+  const m = 10 ** decimals;
+  return Math.round(value * m) / m;
 }
 
 // ─── Manual Lessons ────────────────────────────────────────────

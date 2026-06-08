@@ -116,6 +116,13 @@ export const config = {
     generalModel:    u.generalModel    ?? process.env.LLM_MODEL ?? "openrouter/healer-alpha",
   },
 
+  learning: {
+    enabled: u.learning?.enabled ?? u.learningEnabled ?? true,
+    minClosedPositions: u.learning?.minClosedPositions ?? u.learningMinClosedPositions ?? 5,
+    proposalCooldownHours: u.learning?.proposalCooldownHours ?? u.learningProposalCooldownHours ?? 24,
+    maxChangesPerProposal: u.learning?.maxChangesPerProposal ?? u.learningMaxChangesPerProposal ?? 3,
+  },
+
   // ─── Common Token Mints ────────────────
   tokens: {
     SOL:  "So11111111111111111111111111111111111111112",

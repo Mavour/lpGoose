@@ -572,7 +572,13 @@ switch (subcommand) {
     if (!result) {
       out({ evolved: false, reason: `Need at least 5 closed positions (have ${perfData.length})` });
     } else {
-      out({ evolved: Object.keys(result.changes).length > 0, changes: result.changes, rationale: result.rationale });
+      out({
+        evolved: Object.keys(result.changes).length > 0,
+        approval_required: true,
+        proposal_id: result.proposal?.id,
+        changes: result.changes,
+        rationale: result.rationale,
+      });
     }
     break;
   }

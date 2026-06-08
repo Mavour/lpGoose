@@ -10,7 +10,7 @@ import { getMyPositions, closePosition, claimFees, getActiveBin, deployPosition 
 import { getWalletBalances, swapToken } from "./tools/wallet.js";
 import { evaluateScreeningGate, getTopCandidates } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
-import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
+import { evolveThresholds, formatLearningProposal, getLearningProposal, getPerformanceSummary, listLearningProposals, markLearningProposal } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, sendKeyboard, editKeyboard, answerCallback, notifyClose, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
@@ -1304,6 +1304,40 @@ if (isTTY) {
       return;
     }
 
+    if (type === "learn_approve" || type === "learn_reject") {
+      const id = a;
+      const proposal = getLearningProposal(id);
+      if (!proposal) {
+        await answerCallback(query.id, "Proposal not found");
+        return;
+      }
+      if (proposal.status !== "pending") {
+        await editKeyboard(chatId, messageId, formatLearningProposal(proposal), []);
+        await answerCallback(query.id, `Already ${proposal.status}`);
+        return;
+      }
+
+      if (type === "learn_reject") {
+        const rejected = markLearningProposal(id, "rejected", "Rejected from Telegram");
+        await editKeyboard(chatId, messageId, formatLearningProposal(rejected), []);
+        await answerCallback(query.id, "Rejected");
+        return;
+      }
+
+      try {
+        for (const [key, value] of Object.entries(proposal.changes || {})) {
+          await applyTelegramConfig(key, value);
+        }
+        const approved = markLearningProposal(id, "approved", "Approved from Telegram");
+        await editKeyboard(chatId, messageId, formatLearningProposal(approved), []);
+        await answerCallback(query.id, "Approved and applied");
+      } catch (e) {
+        await answerCallback(query.id, "Apply failed");
+        await sendMessage(`Learning proposal apply failed: ${e.message}`);
+      }
+      return;
+    }
+
     await answerCallback(query.id);
   }
 
@@ -1367,6 +1401,22 @@ if (isTTY) {
       } catch (e) {
         await sendMessage(`Error reading config: ${e.message}`);
       }
+      return;
+    }
+
+    if (text === "/learning") {
+      const proposals = listLearningProposals({ status: "pending", limit: 5 });
+      if (proposals.length === 0) {
+        await sendMessage("No pending learning proposals.");
+        return;
+      }
+      const latest = proposals[proposals.length - 1];
+      await sendKeyboard(formatLearningProposal(latest), [
+        [
+          { text: "APPROVE", callback_data: `learn_approve:${latest.id}` },
+          { text: "REJECT", callback_data: `learn_reject:${latest.id}` },
+        ],
+      ]);
       return;
     }
 
@@ -1669,12 +1719,11 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
         if (!result || Object.keys(result.changes).length === 0) {
           console.log("\nNo threshold changes needed — current settings already match performance data.\n");
         } else {
-          reloadScreeningThresholds();
-          console.log("\nThresholds evolved:");
+          console.log("\nLearning proposal created:");
           for (const [key, val] of Object.entries(result.changes)) {
             console.log(`  ${key}: ${result.rationale[key]}`);
           }
-          console.log("\nSaved to user-config.json. Applied immediately.\n");
+          console.log(`\nProposal ${result.proposal?.id || ""} is pending Telegram approval.\n`);
         }
       });
       return;
