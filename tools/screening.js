@@ -10,21 +10,16 @@ const DATAPI_JUP = "https://datapi.jup.ag/v1";
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
 
 // ─── PvP (same-symbol rival) detection constants ───
-const PVP_SHORTLIST_LIMIT = 2;     // Only score-check top 2 pools
-const PVP_RIVAL_LIMIT = 2;         // Max 2 rival tokens to check per pool
-const PVP_MIN_ACTIVE_TVL = 5_000;  // Rival's Meteora pool must have >= $5k TVL
-const PVP_MIN_HOLDERS = 500;       // Rival token must have >= 500 holders
-const PVP_MIN_GLOBAL_FEES_SOL = 30; // Rival must have generated >= 30 SOL in fees
+const PVP_COPYCAT_AGE_GAP_MS = 24 * 60 * 60 * 1000;
 
 function normalizeSymbol(symbol) {
   return String(symbol || "").trim().toUpperCase();
 }
 
-function scoreCandidate(pool) {
-  const feeTvl = Number(pool.fee_active_tvl_ratio || 0);
-  const volume = Number(pool.volume_window || 0);
-  const holders = Number(pool.holders || 0);
-  return feeTvl * 1000 + volume / 100 + holders / 100;
+function clearPvpRival(pool) {
+  delete pool.pvp_rival_name;
+  delete pool.pvp_rival_mint;
+  delete pool.pvp_rival_created_at;
 }
 
 async function searchAssetsBySymbol(symbol) {
@@ -34,63 +29,115 @@ async function searchAssetsBySymbol(symbol) {
   return Array.isArray(data) ? data : [data];
 }
 
-async function findRivalPool(mint) {
-  const url = `https://dlmm.datapi.meteora.ag/pools?query=${encodeURIComponent(mint)}&sort_by=${encodeURIComponent("tvl:desc")}&filter_by=${encodeURIComponent(`tvl>${PVP_MIN_ACTIVE_TVL}`)}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`rival pool search ${res.status}`);
-  const data = await res.json();
-  const pools = Array.isArray(data?.data) ? data.data : [];
-  return pools.find((pool) => pool?.token_x?.address === mint || pool?.token_y?.address === mint) || null;
+function setPvpUnverified(pool, reason) {
+  clearPvpRival(pool);
+  pool.is_pvp = false;
+  pool.pvp_risk = "unknown";
+  pool.pvp_symbol = pool.base?.symbol || null;
+  pool.pvp_check_status = "unverified";
+  pool.pvp_check_reason = reason;
+  return pool;
 }
 
-async function enrichPvpRisk(pools) {
+export function evaluatePvpAssets(pool, assets) {
+  const symbol = normalizeSymbol(pool.base?.symbol);
+  const ownMint = pool.base?.mint;
+  pool.pvp_symbol = pool.base?.symbol || symbol || null;
+
+  if (!symbol) return setPvpUnverified(pool, "token symbol unavailable");
+  if (!ownMint) return setPvpUnverified(pool, "token mint unavailable");
+  if (!Array.isArray(assets)) return setPvpUnverified(pool, "Jupiter asset response invalid");
+
+  const matching = assets.filter((asset) =>
+    asset?.id && normalizeSymbol(asset?.symbol) === symbol
+  );
+  const ownAsset = matching.find((asset) => asset.id === ownMint);
+  if (!ownAsset) return setPvpUnverified(pool, `mint ${ownMint} not found in Jupiter symbol search`);
+
+  const ownCreatedAt = Date.parse(ownAsset.createdAt);
+  if (!Number.isFinite(ownCreatedAt)) {
+    return setPvpUnverified(pool, `createdAt unavailable for mint ${ownMint}`);
+  }
+
+  const rivals = matching.filter((asset) => asset.id !== ownMint);
+  const invalidRival = rivals.find((asset) => !Number.isFinite(Date.parse(asset.createdAt)));
+  if (invalidRival) {
+    return setPvpUnverified(pool, `createdAt unavailable for rival mint ${invalidRival.id}`);
+  }
+
+  const olderRivals = rivals
+    .map((asset) => ({ asset, createdAt: Date.parse(asset.createdAt) }))
+    .filter(({ createdAt }) => createdAt < ownCreatedAt - PVP_COPYCAT_AGE_GAP_MS)
+    .sort((a, b) => a.createdAt - b.createdAt);
+
+  if (olderRivals.length > 0) {
+    const { asset: rival, createdAt } = olderRivals[0];
+    pool.is_pvp = true;
+    pool.pvp_risk = "high";
+    pool.pvp_rival_name = rival.name || pool.pvp_symbol;
+    pool.pvp_rival_mint = rival.id;
+    pool.pvp_rival_created_at = new Date(createdAt).toISOString();
+    pool.pvp_check_status = "copycat";
+    pool.pvp_check_reason = `older same-symbol mint created ${pool.pvp_rival_created_at}`;
+    return pool;
+  }
+
+  pool.is_pvp = false;
+  pool.pvp_risk = "low";
+  clearPvpRival(pool);
+  pool.pvp_check_status = "verified";
+  pool.pvp_check_reason = "no same-symbol mint is more than 24 hours older";
+  return pool;
+}
+
+export async function checkPoolPvpRisk(pool, { searchAssets = searchAssetsBySymbol } = {}) {
+  const symbol = normalizeSymbol(pool?.base?.symbol);
+  if (!pool || !symbol || !pool.base?.mint) {
+    return setPvpUnverified(pool || {}, !symbol ? "token symbol unavailable" : "token mint unavailable");
+  }
+
+  try {
+    return evaluatePvpAssets(pool, await searchAssets(symbol));
+  } catch (error) {
+    return setPvpUnverified(pool, `Jupiter asset search failed: ${error.message}`);
+  }
+}
+
+export function getPvpBlockReason(pool) {
+  if (pool?.pvp_check_status === "unverified") {
+    return `unverified: ${pool.pvp_check_reason || "unknown reason"}`;
+  }
+  if (pool?.is_pvp) {
+    return `copycat of ${pool.pvp_rival_name || pool.pvp_rival_mint}, older mint created ${pool.pvp_rival_created_at}`;
+  }
+  return null;
+}
+
+export async function enrichPvpRisk(pools, { searchAssets = searchAssetsBySymbol } = {}) {
   if (!Array.isArray(pools) || pools.length === 0) return;
 
-  const shortlist = [...pools]
-    .sort((a, b) => scoreCandidate(b) - scoreCandidate(a))
-    .slice(0, PVP_SHORTLIST_LIMIT);
-
-  if (shortlist.length === 0) return;
-
   const symbolCache = new Map();
-
-  await Promise.all(shortlist.map(async (pool) => {
+  await Promise.all(pools.map(async (pool) => {
     const symbol = normalizeSymbol(pool.base?.symbol);
-    const ownMint = pool.base?.mint;
-    if (!symbol || !ownMint) return;
-
-    let assets = symbolCache.get(symbol);
-    if (!assets) {
-      assets = await searchAssetsBySymbol(symbol).catch(() => []);
-      symbolCache.set(symbol, assets);
+    if (!symbol || !pool.base?.mint) {
+      setPvpUnverified(pool, !symbol ? "token symbol unavailable" : "token mint unavailable");
+      return;
     }
 
-    const rivalAssets = assets
-      .filter((asset) => normalizeSymbol(asset?.symbol) === symbol && asset?.id && asset.id !== ownMint)
-      .sort((a, b) => Number(b?.liquidity || 0) - Number(a?.liquidity || 0))
-      .slice(0, PVP_RIVAL_LIMIT);
+    if (!symbolCache.has(symbol)) {
+      symbolCache.set(symbol, searchAssets(symbol));
+    }
 
-    for (const rival of rivalAssets) {
-      const rivalHolders = Number(rival?.holderCount || 0);
-      const rivalFees = Number(rival?.fees || 0);
+    try {
+      evaluatePvpAssets(pool, await symbolCache.get(symbol));
+    } catch (error) {
+      setPvpUnverified(pool, `Jupiter asset search failed: ${error.message}`);
+    }
 
-      if (rivalHolders < PVP_MIN_HOLDERS || rivalFees < PVP_MIN_GLOBAL_FEES_SOL) continue;
-
-      const rivalPool = await findRivalPool(rival.id).catch(() => null);
-      if (!rivalPool) continue;
-
-      pool.is_pvp = true;
-      pool.pvp_risk = "high";
-      pool.pvp_symbol = pool.base?.symbol || symbol;
-      pool.pvp_rival_name = rival?.name || pool.pvp_symbol;
-      pool.pvp_rival_mint = rival.id;
-      pool.pvp_rival_pool = rivalPool.address;
-      pool.pvp_rival_tvl = Math.round(Number(rivalPool.tvl || 0));
-      pool.pvp_rival_holders = rivalHolders;
-      pool.pvp_rival_fees = Number(rivalFees.toFixed(2));
-
-      log("screening", `PVP guard: ${pool.name} has active rival ${pool.pvp_rival_name} (${rival.id.slice(0, 8)}) — tvl=$${pool.pvp_rival_tvl} holders=${pool.pvp_rival_holders} fees=${pool.pvp_rival_fees} SOL`);
-      break;
+    if (pool.pvp_check_status === "copycat") {
+      log("screening", `PVP guard: ${pool.name} (${pool.base.mint.slice(0, 8)}) is a copycat of ${pool.pvp_rival_name} (${pool.pvp_rival_mint.slice(0, 8)}), created ${pool.pvp_rival_created_at}`);
+    } else if (pool.pvp_check_status === "unverified") {
+      log("screening", `PVP guard: symbol=${pool.base.symbol} mint=${pool.base.mint} unverified - ${pool.pvp_check_reason}`);
     }
   }));
 }
@@ -382,14 +429,14 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   }
 
   // ─── PvP (same-symbol rival) detection — run after hard gates so all final candidates are checked ───
-  if (config.screening.avoidPvpSymbols && gated.length > 0) {
+  if ((config.screening.avoidPvpSymbols || config.screening.blockPvpSymbols) && gated.length > 0) {
     await enrichPvpRisk(gated);
 
     if (config.screening.blockPvpSymbols) {
       const before = gated.length;
-      const pvpRemoved = gated.filter((p) => p.is_pvp);
-      pvpRemoved.forEach((p) => log("screening", `PVP hard filter: dropped ${p.name} — rival ${p.pvp_rival_name}`));
-      gated.splice(0, gated.length, ...gated.filter((p) => !p.is_pvp));
+      const pvpRemoved = gated.filter((p) => p.is_pvp || p.pvp_check_status === "unverified");
+      pvpRemoved.forEach((p) => log("screening", `PVP hard filter: dropped symbol=${p.base?.symbol || "unknown"} mint=${p.base?.mint || "unknown"} - ${getPvpBlockReason(p)}`));
+      gated.splice(0, gated.length, ...gated.filter((p) => !p.is_pvp && p.pvp_check_status !== "unverified"));
       if (gated.length < before) {
         log("screening", `PVP hard filter removed ${before - gated.length} pool(s)`);
       }
@@ -414,6 +461,11 @@ export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
       `close_cooldown: token ${pool.base.mint.slice(0, 8)} blocked until ${closeCooldown.cooldown_until}`,
       `close_cooldown: ${closeCooldown.pool_name || pool.base.mint.slice(0, 8)} until ${closeCooldown.cooldown_until}`
     );
+  }
+
+  if (s.blockPvpSymbols) {
+    const pvpBlockReason = getPvpBlockReason(pool);
+    if (pvpBlockReason) return fail(`pvp ${pvpBlockReason}`);
   }
 
   const memoryRisk = getMemoryRisk(pool.pool);
@@ -452,10 +504,6 @@ export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
   if (s.athFilterPct != null && pool.price_vs_ath_pct != null) {
     const threshold = 100 + s.athFilterPct;
     if (pool.price_vs_ath_pct > threshold) return fail(`price_vs_ath ${pool.price_vs_ath_pct}% > limit ${threshold}%`);
-  }
-
-  if (s.blockPvpSymbols && pool.is_pvp) {
-    return fail(`pvp rival: ${pool.pvp_rival_name} (tvl=$${pool.pvp_rival_tvl})`);
   }
 
   return { pass: true, memoryRisk: memoryRisk?.reason || null };

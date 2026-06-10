@@ -1,4 +1,4 @@
-import { discoverPools, getPoolDetail, getTopCandidates } from "./screening.js";
+import { checkPoolPvpRisk, discoverPools, getPoolDetail, getPvpBlockReason, getTopCandidates } from "./screening.js";
 import {
   getActiveBin,
   deployPosition,
@@ -412,6 +412,23 @@ async function runSafetyChecks(name, args) {
         return { pass: false, reason: `fee_tvl ${liveFeeTvl}% < hard minimum ${minFeeActiveTvlRatio}%` };
       }
       const liveBaseMint = livePool.token_x?.address || livePool.mint_x || livePool.base_mint || null;
+
+      if (config.screening.blockPvpSymbols) {
+        const pvpPool = {
+          pool: args.pool_address,
+          name: livePool.name || args.pool_name || args.pool_address,
+          base: {
+            symbol: livePool.token_x?.symbol || args.base_symbol || null,
+            mint: args.base_mint || liveBaseMint,
+          },
+        };
+        await checkPoolPvpRisk(pvpPool);
+        const reason = getPvpBlockReason(pvpPool);
+        if (reason) {
+          log("safety_block", `PVP deploy guard: blocked symbol=${pvpPool.base.symbol || "unknown"} mint=${pvpPool.base.mint || "unknown"} - ${reason}`);
+          return { pass: false, reason: `PVP hard block: ${reason}` };
+        }
+      }
 
       // Supertrend gate: re-check at deploy time (fresh data via GMGN)
       const baseMintForSt = args.base_mint || liveBaseMint;

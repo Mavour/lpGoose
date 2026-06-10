@@ -12,6 +12,7 @@
     "start": "node index.js",
     "dev": "DRY_RUN=true node index.js",
     "test:screen": "node test/test-screening.js",
+    "test:pvp": "node test/test-pvp-detection.js",
     "test:agent": "DRY_RUN=true node test/test-agent.js",
     "postinstall": "node scripts/patch-anchor.js"
   },
