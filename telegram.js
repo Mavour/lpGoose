@@ -338,6 +338,32 @@ export async function notifyOutOfRange({ pair, minutesOOR }) {
   );
 }
 
+export async function notifySupertrendWarning({
+  pair,
+  interval,
+  pnlPct,
+  feesEarnedSol,
+  feesEarnedUsd,
+  inRange,
+  minutesOOR,
+}) {
+  const rangeStatus = inRange
+    ? "IN RANGE"
+    : `OUT OF RANGE${minutesOOR != null ? ` (${escapeHtml(minutesOOR)}m)` : ""}`;
+  const fees = config.management.solMode
+    ? `SOL ${fmtSol(feesEarnedSol ?? 0)} ($${fmtUsd(feesEarnedUsd ?? 0)})`
+    : `$${fmtUsd(feesEarnedUsd ?? 0)}`;
+
+  await sendHTML(
+    `<b>Supertrend Warning - ${escapeHtml(pair)}</b>\n\n` +
+    `Fresh bearish flip: ${escapeHtml(interval || "?")}\n` +
+    `PnL: ${escapeHtml(pnlPct == null ? "?" : `${Number(pnlPct).toFixed(2)}%`)}\n` +
+    `Fees: ${fees}\n` +
+    `Range: ${rangeStatus}\n\n` +
+    `<b>Position remains open.</b> Normal SL/TP and risk rules still apply.`
+  );
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }

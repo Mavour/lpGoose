@@ -12,7 +12,7 @@ import { evaluateScreeningGate, getTopCandidates } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
 import { evolveThresholds, formatLearningProposal, getLearningProposal, getPerformanceSummary, listLearningProposals, markLearningProposal } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
-import { startPolling, stopPolling, sendMessage, sendHTML, sendKeyboard, editKeyboard, answerCallback, notifyClose, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
+import { startPolling, stopPolling, sendMessage, sendHTML, sendKeyboard, editKeyboard, answerCallback, notifyClose, notifyOutOfRange, notifySupertrendWarning, isEnabled as telegramEnabled } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, updatePoolTvl, getPoolTvl } from "./state.js";
 import { getActiveStrategy, setActiveStrategy } from "./strategy-library.js";
@@ -76,6 +76,7 @@ let _managementBusy = false; // prevents overlapping management cycles
 let _screeningBusy = false;  // prevents overlapping screening cycles
 let _screeningLastTriggered = 0; // epoch ms — prevents management from spamming screening
 const _autoCloseCoordinator = new PositionCloseCoordinator();
+const _supertrendWarningCandles = new Map();
 
 /** Strip <think>...</think> reasoning blocks that some models leak into output */
 function stripThink(text) {
@@ -136,7 +137,12 @@ async function evaluateAutoExit(position) {
   const coreExit = updatePnlAndCheckExits(position.position, position, config.management);
   if (coreExit) return coreExit;
 
-  if (config.chartIndicators.enabled && config.chartIndicators.exitOnBearishFlip && position.base_mint) {
+  if (
+    config.chartIndicators.enabled &&
+    config.chartIndicators.exitOnBearishFlip &&
+    position.strategy !== "bottom_spot_lp" &&
+    position.base_mint
+  ) {
     try {
       const { confirmExitSupertrendFlip } = await import("./tools/chart-indicators.js");
       const result = await confirmExitSupertrendFlip({
@@ -146,10 +152,30 @@ async function evaluateAutoExit(position) {
         multiplier: config.chartIndicators.stMultiplier || 3,
       });
       if (result?.triggered) {
-        return { action: "SUPERTREND_EXIT", reason: result.reason };
+        const candleTime = result.signal?.candleTime;
+        const warningKey = position.position || position.pool;
+        if (warningKey && candleTime != null && _supertrendWarningCandles.get(warningKey) !== candleTime) {
+          _supertrendWarningCandles.set(warningKey, candleTime);
+          log("state", `Supertrend warning for ${position.pair}: ${result.reason}; position remains open`);
+          if (telegramEnabled()) {
+            notifySupertrendWarning({
+              pair: position.pair,
+              interval: result.signal?.interval,
+              pnlPct: position.pnl_pct,
+              feesEarnedSol: position.fees_earned_sol,
+              feesEarnedUsd:
+                (position.collected_fees_true_usd || 0) +
+                (position.unclaimed_fees_true_usd || 0),
+              inRange: position.in_range,
+              minutesOOR: position.minutes_out_of_range,
+            }).catch((error) => {
+              log("telegram_error", `Supertrend warning failed: ${error.message}`);
+            });
+          }
+        }
       }
     } catch (error) {
-      log("cron_warn", `Supertrend exit check skipped for ${position.pair}: ${error.message}`);
+      log("cron_warn", `Supertrend warning check skipped for ${position.pair}: ${error.message}`);
     }
   }
 

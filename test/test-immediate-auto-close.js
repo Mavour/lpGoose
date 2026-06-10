@@ -120,5 +120,7 @@ const indexSource = fs.readFileSync(path.join(repoRoot, "index.js"), "utf8");
 assert.match(indexSource, /closeTasks\.push\(executeAutoClose\(p, exit, "poller"\)\)/);
 assert.doesNotMatch(indexSource, /Poll-triggered management/);
 assert.doesNotMatch(indexSource, /_pollTriggeredAt/);
+assert.doesNotMatch(indexSource, /action:\s*"SUPERTREND_EXIT"/);
+assert.match(indexSource, /notifySupertrendWarning\(/);
 
 console.log("Immediate auto-close tests passed");

@@ -1,6 +1,7 @@
 import assert from "assert";
 import {
   calcSupertrend,
+  closedCandlesOnly,
   requireFreshBearishFlip,
 } from "../tools/chart-indicators.js";
 
@@ -88,6 +89,18 @@ assert.equal(
   }).triggered,
   false,
   "bearish continuation does not repeatedly trigger exit",
+);
+
+const now = Date.UTC(2026, 5, 11, 5, 30, 0);
+const candleStarts = [
+  { time: Math.floor(Date.UTC(2026, 5, 11, 5, 0, 0) / 1000) },
+  { time: Math.floor(Date.UTC(2026, 5, 11, 5, 15, 0) / 1000) },
+  { time: Math.floor(Date.UTC(2026, 5, 11, 5, 30, 0) / 1000) },
+];
+assert.deepEqual(
+  closedCandlesOnly(candleStarts, "15m", now).map((item) => item.time),
+  candleStarts.slice(0, 2).map((item) => item.time),
+  "active 15m candle is excluded",
 );
 
 console.log("Supertrend tests passed");

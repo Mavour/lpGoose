@@ -27,6 +27,29 @@ function toGMGNInterval(interval) {
   return "5m";
 }
 
+function intervalToMs(interval) {
+  const normalized = toGMGNInterval(interval);
+  const value = Number.parseInt(normalized, 10);
+  if (normalized.endsWith("m")) return value * 60_000;
+  if (normalized.endsWith("h")) return value * 60 * 60_000;
+  if (normalized.endsWith("d")) return value * 24 * 60 * 60_000;
+  return 5 * 60_000;
+}
+
+function candleTimeMs(time) {
+  const value = Number(time);
+  if (!Number.isFinite(value)) return null;
+  return value < 1_000_000_000_000 ? value * 1000 : value;
+}
+
+export function closedCandlesOnly(candles, interval, now = Date.now()) {
+  const durationMs = intervalToMs(interval);
+  return (candles || []).filter((candle) => {
+    const startMs = candleTimeMs(candle.time);
+    return startMs != null && startMs + durationMs <= now;
+  });
+}
+
 export async function fetchKlineGMGN(mint, interval = "5m", limit = 298) {
   const apiKey = getGMGNKey();
   if (!apiKey) throw new Error("GMGN_API_KEY not set");
@@ -158,9 +181,17 @@ export function calcSupertrend(candles, period = 10, multiplier = 3) {
   };
 }
 
-export async function confirmSupertrendBreak({ mint, interval = "5m", limit = 298, period = 10, multiplier = 3 }) {
+export async function confirmSupertrendBreak({
+  mint,
+  interval = "5m",
+  limit = 298,
+  period = 10,
+  multiplier = 3,
+  closedOnly = false,
+}) {
   try {
-    const candles = await fetchKlineGMGN(mint, interval, limit);
+    const fetchedCandles = await fetchKlineGMGN(mint, interval, limit);
+    const candles = closedOnly ? closedCandlesOnly(fetchedCandles, interval) : fetchedCandles;
 
     if (candles.length < period + 1) {
       return { confirmed: false, direction: "neutral", reason: `Not enough candles: ${candles.length} < ${period + 1}` };
@@ -226,7 +257,7 @@ export async function confirmEntrySupertrendBreak({
 }
 
 export async function confirmExitSupertrendFlip({ mint, ...options } = {}) {
-  const result = await confirmSupertrendBreak({ mint, ...options });
+  const result = await confirmSupertrendBreak({ mint, ...options, closedOnly: true });
   return requireFreshBearishFlip(result);
 }
 
