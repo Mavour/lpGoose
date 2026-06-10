@@ -17,9 +17,11 @@ import {
   getTrackedPosition,
   minutesOutOfRange,
   syncOpenPositions,
+  updatePositionSnapshots,
 } from "../state.js";
 import { recordPerformance } from "../lessons.js";
 import { getPoolCooldown, setTokenCloseCooldown } from "../pool-memory.js";
+import { buildManualClosePerformance } from "../manual-close.js";
 import { normalizeMint } from "./wallet.js";
 import { getWalletPnl } from "../pnl-fetcher.js";
 
@@ -407,6 +409,7 @@ const POSITIONS_CACHE_TTL = 5 * 60_000; // 5 minutes
 let _positionsCache = null;
 let _positionsCacheAt = 0;
 let _positionsInflight = null; // deduplicates concurrent calls
+const _closingPositions = new Set();
 
 // ─── Fetch DLMM PnL API for all positions in a pool ────────────
 async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
@@ -432,6 +435,58 @@ async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
   } catch (e) {
     log("pnl_api", `Fetch error for pool ${poolAddress.slice(0, 8)}: ${e.message}`);
     return {};
+  }
+}
+
+async function fetchClosedPnlForPosition(poolAddress, positionAddress, walletAddress) {
+  const url = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${walletAddress}&status=closed&pageSize=50&page=1`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const entry = (data.positions || data.data || []).find((position) =>
+      (position.positionAddress || position.address || position.position) === positionAddress
+    );
+    if (!entry) return null;
+
+    return {
+      pnl_sol: numberOrNull(entry.pnlSol),
+      pnl_pct: config.management.solMode
+        ? numberOrNull(entry.pnlSolPctChange ?? entry.pnlPctChange)
+        : numberOrNull(entry.pnlPctChange),
+      pnl_usd: numberOrNull(entry.pnlUsd),
+      fees_earned_sol: numberOrNull(entry.allTimeFees?.total?.sol),
+      fees_earned_usd: numberOrNull(entry.allTimeFees?.total?.usd),
+      final_value_usd: numberOrNull(entry.allTimeWithdrawals?.total?.usd),
+      initial_value_usd: numberOrNull(entry.allTimeDeposits?.total?.usd),
+    };
+  } catch (error) {
+    log("manual_close_warn", `Closed PnL lookup failed for ${positionAddress}: ${error.message}`);
+    return null;
+  }
+}
+
+async function recordExternalClose(tracked, walletAddress) {
+  const closedPnl = await fetchClosedPnlForPosition(tracked.pool, tracked.position, walletAddress);
+  const performance = buildManualClosePerformance(tracked, closedPnl);
+
+  if (tracked.base_mint) {
+    setTokenCloseCooldown({
+      base_mint: tracked.base_mint,
+      pool_name: tracked.pool_name || tracked.pool.slice(0, 8),
+      position: tracked.position,
+      reason: "External/manual close detected",
+    });
+  }
+
+  if (!performance) {
+    log("manual_close_warn", `External close ${tracked.position} detected but no reliable PnL snapshot was available; performance not recorded`);
+    return;
+  }
+
+  const result = await recordPerformance(performance);
+  if (result?.recorded) {
+    log("manual_close", `Recorded external close for ${tracked.pool_name || tracked.pool}: pnl=${performance.pnl_sol ?? "?"} SOL source=${performance.pnl_source}`);
   }
 }
 
@@ -546,12 +601,22 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
             ? config.management.solMode ? (binData.pnlSol || 0) : (binData.pnlUsd || 0)
             : config.management.solMode ? (pool.pnlSol || 0) : (pool.pnl || 0)),
           pnl_true_usd:       parseFloat(binData?.pnlUsd || 0),
-          pnl_pct:            Math.round(parseFloat(binData
-            ? config.management.solMode ? (binData.pnlSolPctChange || 0) : (binData.pnlPctChange || 0)
-            : config.management.solMode ? (pool.pnlSolPctChange || 0) : (pool.pnlPctChange || 0)) * 10000) / 10000,
+          pnl_sol:            numberOrNull(binData?.pnlSol ?? pool.pnlSol),
+          pnl_pct:            roundOrNull(binData
+            ? config.management.solMode ? binData.pnlSolPctChange : binData.pnlPctChange
+            : config.management.solMode ? pool.pnlSolPctChange : pool.pnlPctChange, 4),
           unclaimed_fees_true_usd: (binData
             ? parseFloat(binData.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(binData.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)
             : parseFloat(pool.unclaimedFees || 0)),
+          fees_earned_sol: [
+            binData?.allTimeFees?.total?.sol,
+            binData?.unrealizedPnl?.unclaimedFeeTokenX?.amountSol,
+            binData?.unrealizedPnl?.unclaimedFeeTokenY?.amountSol,
+          ].some((value) => value != null)
+            ? parseFloat(binData?.allTimeFees?.total?.sol ?? 0)
+              + parseFloat(binData?.unrealizedPnl?.unclaimedFeeTokenX?.amountSol ?? 0)
+              + parseFloat(binData?.unrealizedPnl?.unclaimedFeeTokenY?.amountSol ?? 0)
+            : null,
           fee_per_tvl_24h:    Math.round(parseFloat(binData?.feePerTvl24h || pool.feePerTvl24h || 0) * 100) / 100,
           age_minutes:        binData?.createdAt ? Math.floor((Date.now() - binData.createdAt * 1000) / 60000) : ageFromState,
           minutes_out_of_range: minutesOutOfRange(positionAddress),
@@ -613,9 +678,18 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
     }
 
     const result = { wallet: walletAddress, total_positions: positions.length, positions };
-    syncOpenPositions(positions.map(p => p.position));
+    updatePositionSnapshots(positions);
+    const detectedClosures = syncOpenPositions(
+      positions.map(p => p.position),
+      { ignore_addresses: [..._closingPositions] }
+    );
     _positionsCache = result;
     _positionsCacheAt = Date.now();
+    if (detectedClosures.length > 0) {
+      await Promise.allSettled(
+        detectedClosures.map((tracked) => recordExternalClose(tracked, walletAddress))
+      );
+    }
     return result;
   } catch (error) {
     log("positions_error", `Portfolio fetch failed: ${error.stack || error.message}`);
@@ -753,6 +827,7 @@ export async function closePosition({ position_address, reason }) {
   }
 
   const tracked = getTrackedPosition(position_address);
+  _closingPositions.add(position_address);
 
   try {
     log("close", `Closing position: ${position_address}`);
@@ -1009,10 +1084,25 @@ export async function closePosition({ position_address, reason }) {
   } catch (error) {
     log("close_error", error.message);
     return { success: false, error: error.message };
+  } finally {
+    _closingPositions.delete(position_address);
   }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────
+function numberOrNull(value) {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function roundOrNull(value, decimals = 2) {
+  const number = numberOrNull(value);
+  if (number == null) return null;
+  const multiplier = 10 ** decimals;
+  return Math.round(number * multiplier) / multiplier;
+}
+
 async function lookupPoolForPosition(position_address, walletAddress) {
   // Check state registry first (fast path)
   const tracked = getTrackedPosition(position_address);

@@ -61,6 +61,13 @@ function save(data) {
  */
 export async function recordPerformance(perf) {
   const data = load();
+  data.performance ||= [];
+  data.lessons ||= [];
+
+  if (perf.position && data.performance.some((entry) => entry.position === perf.position)) {
+    log("lessons", `Skipped duplicate performance record for ${perf.position}`);
+    return { recorded: false, duplicate: true };
+  }
 
   // Migration: derive pnl_sol from USD data for old records that don't have it yet
   if (perf.pnl_sol == null && perf.amount_sol > 0 && perf.initial_value_usd > 0) {
@@ -81,7 +88,7 @@ export async function recordPerformance(perf) {
   // Guard against API settle errors: extreme loss + high in-range efficiency is contradictory
   if (pnl_pct <= -90 && range_efficiency >= 80 && (!perf.close_reason || !perf.close_reason.includes("stop loss"))) {
     log("lessons_warn", `Skipped suspicious PnL for ${perf.pool_name || perf.pool}: pnl=${pnl_pct.toFixed(1)}%, range_eff=${range_efficiency.toFixed(0)}%, reason=${perf.close_reason} — likely API settle error`);
-    return;
+    return { recorded: false, suspicious: true };
   }
 
   const entry = {
@@ -142,6 +149,7 @@ export async function recordPerformance(perf) {
 
   // Fire-and-forget sync to hive mind (if enabled)
   import("./hive-mind.js").then(m => m.syncToHive()).catch(() => {});
+  return { recorded: true, entry };
 }
 
 /**

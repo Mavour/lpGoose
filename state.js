@@ -232,6 +232,37 @@ export function getTrackedPosition(position_address) {
 }
 
 /**
+ * Persist the latest observable PnL for open positions so an external close
+ * can still be recorded after the position disappears from on-chain queries.
+ */
+export function updatePositionSnapshots(positions) {
+  if (!Array.isArray(positions) || positions.length === 0) return;
+  const state = load();
+  let changed = false;
+
+  for (const snapshot of positions) {
+    const pos = state.positions[snapshot.position];
+    if (!pos || pos.closed) continue;
+
+    pos.base_mint = snapshot.base_mint || pos.base_mint || null;
+    pos.last_snapshot = {
+      captured_at: new Date().toISOString(),
+      pnl_pct: snapshot.pnl_pct ?? null,
+      pnl_sol: snapshot.pnl_sol ?? null,
+      pnl_usd: snapshot.pnl_true_usd ?? snapshot.pnl_usd ?? null,
+      fees_earned_sol: snapshot.fees_earned_sol ?? null,
+      fees_earned_usd: (snapshot.collected_fees_true_usd || 0) + (snapshot.unclaimed_fees_true_usd || 0),
+      final_value_usd: snapshot.total_value_true_usd ?? null,
+      in_range: snapshot.in_range ?? null,
+      age_minutes: snapshot.age_minutes ?? null,
+    };
+    changed = true;
+  }
+
+  if (changed) save(state);
+}
+
+/**
  * Summarize state for the agent system prompt.
  */
 export function getStateSummary() {
@@ -435,14 +466,16 @@ export function setLastBriefingDate() {
  */
 const SYNC_GRACE_MS = 5 * 60_000; // don't auto-close positions deployed < 5 min ago
 
-export function syncOpenPositions(active_addresses) {
+export function syncOpenPositions(active_addresses, { ignore_addresses = [] } = {}) {
   const state = load();
   const activeSet = new Set(active_addresses);
+  const ignoredSet = new Set(ignore_addresses);
+  const detectedClosures = [];
   let changed = false;
 
   for (const posId in state.positions) {
     const pos = state.positions[posId];
-    if (pos.closed || activeSet.has(posId)) continue;
+    if (pos.closed || activeSet.has(posId) || ignoredSet.has(posId)) continue;
 
     // Grace period: newly deployed positions may not be indexed yet
     const deployedAt = pos.deployed_at ? new Date(pos.deployed_at).getTime() : 0;
@@ -453,10 +486,20 @@ export function syncOpenPositions(active_addresses) {
 
     pos.closed = true;
     pos.closed_at = new Date().toISOString();
-    pos.notes.push(`Auto-closed during state sync (not found on-chain)`);
+    pos.close_source = "external";
+    pos.notes ||= [];
+    pos.notes.push(`External/manual close detected during state sync (not found on-chain)`);
+    pushEvent(state, {
+      action: "close",
+      position: posId,
+      pool_name: pos.pool_name || pos.pool,
+      reason: "external/manual close detected",
+    });
+    detectedClosures.push(structuredClone(pos));
     changed = true;
-    log("state", `Position ${posId} auto-closed (missing from on-chain data)`);
+    log("state", `Position ${posId} external/manual close detected (missing from on-chain data)`);
   }
 
   if (changed) save(state);
+  return detectedClosures;
 }
