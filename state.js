@@ -355,16 +355,29 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
 
   if (changed) save(state);
 
+  const pnlSuspect = currentPnlPct != null
+    && currentPnlPct <= -90
+    && pos.amount_sol
+    && (positionData.total_value_usd ?? 0) > 0.01;
+
   // ── Stop loss ──────────────────────────────────────────────────
-  if (currentPnlPct != null && mgmtConfig.stopLossPct != null && currentPnlPct <= mgmtConfig.stopLossPct) {
+  if (!pnlSuspect && currentPnlPct != null && mgmtConfig.stopLossPct != null && currentPnlPct <= mgmtConfig.stopLossPct) {
     return {
       action: "STOP_LOSS",
       reason: `Stop loss: PnL ${currentPnlPct.toFixed(2)}% <= ${mgmtConfig.stopLossPct}%`,
     };
   }
 
+  // ── Fixed take profit ───────────────────────────────────────────
+  if (!pnlSuspect && currentPnlPct != null && mgmtConfig.takeProfitFeePct != null && currentPnlPct >= mgmtConfig.takeProfitFeePct) {
+    return {
+      action: "TAKE_PROFIT",
+      reason: `Take profit: PnL ${currentPnlPct.toFixed(2)}% >= ${mgmtConfig.takeProfitFeePct}%`,
+    };
+  }
+
   // ── Trailing TP ────────────────────────────────────────────────
-  if (pos.trailing_active) {
+  if (!pnlSuspect && pos.trailing_active && currentPnlPct != null) {
     const dropFromPeak = pos.peak_pnl_pct - currentPnlPct;
     if (dropFromPeak >= mgmtConfig.trailingDropPct) {
       return {
@@ -372,6 +385,19 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
         reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${mgmtConfig.trailingDropPct}%)`,
       };
     }
+  }
+
+  // ── Pumped far above range ─────────────────────────────────────
+  if (
+    positionData.active_bin != null
+    && positionData.upper_bin != null
+    && mgmtConfig.outOfRangeBinsToClose != null
+    && positionData.active_bin > positionData.upper_bin + mgmtConfig.outOfRangeBinsToClose
+  ) {
+    return {
+      action: "PUMPED_ABOVE_RANGE",
+      reason: `Pumped above range: active bin ${positionData.active_bin} > upper ${positionData.upper_bin} + ${mgmtConfig.outOfRangeBinsToClose}`,
+    };
   }
 
   // ── Out of range too long ──────────────────────────────────────
@@ -389,7 +415,8 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     fee_per_tvl_24h != null &&
     mgmtConfig.minFeePerTvl24h != null &&
     fee_per_tvl_24h < mgmtConfig.minFeePerTvl24h &&
-    (age_minutes == null || age_minutes >= minAgeForYieldCheck)
+    age_minutes != null &&
+    age_minutes >= minAgeForYieldCheck
   ) {
     return {
       action: "LOW_YIELD",

@@ -14,6 +14,7 @@
     "test:screen": "node test/test-screening.js",
     "test:pvp": "node test/test-pvp-detection.js",
     "test:manual-close": "node test/test-manual-close.js",
+    "test:auto-close": "node test/test-immediate-auto-close.js",
     "test:agent": "DRY_RUN=true node test/test-agent.js",
     "postinstall": "node scripts/patch-anchor.js"
   },

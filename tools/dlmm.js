@@ -911,11 +911,10 @@ export async function closePosition({ position_address, reason }) {
     log("close", `SUCCESS txs: ${txHashes.join(", ")}`);
     // Wait for RPC to reflect withdrawn balances before returning — prevents
     // agent from seeing zero balance when attempting post-close swap
-    await new Promise(r => setTimeout(r, 5000));
     _positionsCacheAt = 0;
 
     let closedConfirmed = false;
-    for (let attempt = 0; attempt < 4; attempt++) {
+    for (let attempt = 0; attempt < 8; attempt++) {
       try {
         const refreshed = await getMyPositions({ force: true, silent: true });
         const stillOpen = refreshed?.positions?.some((p) => p.position === position_address);
@@ -923,11 +922,11 @@ export async function closePosition({ position_address, reason }) {
           closedConfirmed = true;
           break;
         }
-        log("close_warn", `Position ${position_address} still appears open after close txs (attempt ${attempt + 1}/4)`);
+        log("close_warn", `Position ${position_address} still appears open after close txs (attempt ${attempt + 1}/8)`);
       } catch (e) {
-        log("close_warn", `Close verification failed (attempt ${attempt + 1}/4): ${e.message}`);
+        log("close_warn", `Close verification failed (attempt ${attempt + 1}/8): ${e.message}`);
       }
-      if (attempt < 3) await new Promise((r) => setTimeout(r, 3000));
+      if (attempt < 7) await new Promise((r) => setTimeout(r, 1000));
     }
 
     if (!closedConfirmed) {
@@ -988,7 +987,7 @@ export async function closePosition({ position_address, reason }) {
         } catch (e) {
           log("close_warn", `Closed PnL retry ${retry + 1}/3 failed: ${e.message}`);
         }
-        if (retry < 2) await new Promise(r => setTimeout(r, 10000));
+        if (retry < 2) await new Promise(r => setTimeout(r, 2000));
       }
       // Fallback to pre-close cache snapshot if closed API had no data
       if (finalValueUsd === 0) {

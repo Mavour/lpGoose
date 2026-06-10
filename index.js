@@ -22,6 +22,7 @@ import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
 import { BottomSpotLPStrategy } from "./strategies/index.js";
 import { fetchKlineGMGN } from "./tools/chart-indicators.js";
 import { getConfidenceSizing, selectBestConfidenceCandidate } from "./confidence.js";
+import { PositionCloseCoordinator } from "./position-close-coordinator.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -74,7 +75,7 @@ let _cronTasks = [];
 let _managementBusy = false; // prevents overlapping management cycles
 let _screeningBusy = false;  // prevents overlapping screening cycles
 let _screeningLastTriggered = 0; // epoch ms — prevents management from spamming screening
-let _pollTriggeredAt = 0; // epoch ms — cooldown for poller-triggered management
+const _autoCloseCoordinator = new PositionCloseCoordinator();
 
 /** Strip <think>...</think> reasoning blocks that some models leak into output */
 function stripThink(text) {
@@ -101,6 +102,132 @@ async function autoSwapBaseToSol(baseMint, context = "") {
 
   log("cron_warn", `Auto-swap failed: ${swapResult.error}`);
   return { swapped: false, token, error: swapResult.error };
+}
+
+async function evaluateAutoExit(position) {
+  if (config.management.whaleGuardEnabled) {
+    try {
+      const poolUrl = `https://pool-discovery-api.datapi.meteora.ag/pools?page_size=1&filter_by=${encodeURIComponent(`pool_address=${position.pool}`)}&timeframe=5m`;
+      const poolRes = await fetch(poolUrl);
+      if (poolRes.ok) {
+        const poolData = await poolRes.json();
+        const poolDetail = (poolData.data || [])[0];
+        if (poolDetail) {
+          const currentTvl = poolDetail.active_tvl ?? poolDetail.tvl ?? 0;
+          const previous = getPoolTvl(position.pool);
+          updatePoolTvl(position.pool, currentTvl);
+          if (previous) {
+            const dropUsd = previous.tvl - currentTvl;
+            const dropPct = previous.tvl > 0 ? (dropUsd / previous.tvl) * 100 : 0;
+            if (dropUsd >= config.management.whaleGuardMinDropUsd || dropPct >= config.management.whaleGuardMinDropPct) {
+              return {
+                action: "WHALE_EXIT",
+                reason: `Whale exit: TVL dropped $${dropUsd.toFixed(0)} (${dropPct.toFixed(1)}%)`,
+              };
+            }
+          }
+        }
+      }
+    } catch (error) {
+      log("cron_warn", `Whale check failed for ${position.pool.slice(0, 8)}: ${error.message}`);
+    }
+  }
+
+  const coreExit = updatePnlAndCheckExits(position.position, position, config.management);
+  if (coreExit) return coreExit;
+
+  if (config.chartIndicators.enabled && config.chartIndicators.exitOnBearishFlip && position.base_mint) {
+    try {
+      const { confirmExitSupertrendFlip } = await import("./tools/chart-indicators.js");
+      const result = await confirmExitSupertrendFlip({
+        mint: position.base_mint,
+        interval: config.chartIndicators.exitInterval || config.chartIndicators.interval || "15m",
+        period: config.chartIndicators.stPeriod || 10,
+        multiplier: config.chartIndicators.stMultiplier || 3,
+      });
+      if (result?.triggered) {
+        return { action: "SUPERTREND_EXIT", reason: result.reason };
+      }
+    } catch (error) {
+      log("cron_warn", `Supertrend exit check skipped for ${position.pair}: ${error.message}`);
+    }
+  }
+
+  if (config.bottomSpotLP?.enabled && position.strategy === "bottom_spot_lp" && position.base_mint) {
+    try {
+      const candles = await fetchKlineGMGN(
+        position.base_mint,
+        config.bottomSpotLP.interval || config.chartIndicators.interval || "1m",
+        80,
+      );
+      const tracked = getTrackedPosition(position.position);
+      const amountSol = tracked?.amount_sol || position.total_value_usd || 0;
+      const feesPct = amountSol > 0 ? ((position.unclaimed_fees_usd || 0) / amountSol) * 100 : 0;
+      const strategy = new BottomSpotLPStrategy(config.bottomSpotLP);
+      const decision = await strategy.evaluatePosition({
+        ...position,
+        upperPrice: tracked?.signal_snapshot?.upperPrice,
+        lowerPrice: tracked?.signal_snapshot?.lowerPrice,
+        ilPct: position.pnl_pct != null && position.pnl_pct < 0 ? Math.abs(position.pnl_pct) : 0,
+      }, candles, { pct: feesPct });
+      if (decision.action === "close") {
+        return { action: "BOTTOM_SPOT_EXIT", reason: `Bottom Spot: ${decision.reason}` };
+      }
+    } catch (error) {
+      log("bottom_spot_warn", `Exit check skipped for ${position.pair}: ${error.message}`);
+    }
+  }
+
+  return null;
+}
+
+async function executeAutoClose(position, exit, source) {
+  const locked = await _autoCloseCoordinator.run(position.position, async () => {
+    try {
+      log("close", `Immediate auto-close [${source}]: ${position.pair} - ${exit.reason}`);
+      const result = await closePosition({
+        position_address: position.position,
+        reason: exit.reason || exit.action || "auto_exit",
+      });
+
+      if (!(result.success || result.dry_run)) {
+        log("cron_error", `Auto-close failed for ${position.pair}: ${result.error || "unknown error"}`);
+        return result;
+      }
+
+      let autoSwap = null;
+      if (result.success && result.base_mint) {
+        autoSwap = await autoSwapBaseToSol(result.base_mint, `${source} auto-exit`).catch((error) => ({
+          swapped: false,
+          error: error.message,
+        }));
+      }
+
+      notifyClose({
+        pair: position.pair,
+        pnlUsd: result.pnl_usd ?? 0,
+        pnlPct: result.pnl_pct ?? 0,
+        pnlSol: result.pnl_sol,
+        feesEarnedUsd: result.fees_earned_usd,
+        feesEarnedSol: result.fees_earned_sol,
+        deployedSol: result.deployed_sol,
+        strategy: result.strategy,
+        holdMinutes: result.minutes_held,
+        reason: result.close_reason || exit.reason,
+      }).catch(() => {});
+
+      return { ...result, auto_swap: autoSwap };
+    } catch (error) {
+      log("cron_error", `Auto-close error for ${position.pair}: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+  });
+
+  if (!locked.acquired) {
+    log("close", `Duplicate ${source} close ignored for ${position.pair}`);
+    return { skipped: true, reason: "close already in progress" };
+  }
+  return locked.result;
 }
 
 async function runBriefing() {
@@ -161,99 +288,6 @@ export async function runManagementCycle({ silent = false } = {}) {
       return null;
     }
 
-    // Whale exit detection has top priority over regular management rules.
-    const whaleClosedPositions = new Set();
-    const whaleEmergencyPositions = new Set();
-    for (const p of config.management.whaleGuardEnabled ? positions : []) {
-      try {
-        const poolUrl = `https://pool-discovery-api.datapi.meteora.ag/pools?page_size=1&filter_by=${encodeURIComponent(`pool_address=${p.pool}`)}&timeframe=5m`;
-        const poolRes = await fetch(poolUrl);
-        if (!poolRes.ok) continue;
-        const poolData = await poolRes.json();
-        const poolDetail = (poolData.data || [])[0];
-        if (!poolDetail) continue;
-
-        const currentTvl = poolDetail.active_tvl ?? poolDetail.tvl ?? 0;
-        const prev = getPoolTvl(p.pool);
-
-        if (prev) {
-          const tvlDrop = prev.tvl - currentTvl;
-          const tvlDropPct = prev.tvl > 0 ? (tvlDrop / prev.tvl) * 100 : 0;
-
-          if (tvlDrop >= config.management.whaleGuardMinDropUsd || tvlDropPct >= config.management.whaleGuardMinDropPct) {
-            log("cron", `Whale exit detected: ${p.pair} - TVL dropped $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%)`);
-            const whaleReason = `WHALE EXIT: closed ${p.pair} - TVL drop $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%)`;
-            let closeSucceeded = false;
-            let lastCloseError = null;
-            for (let attempt = 1; attempt <= 3; attempt++) {
-              try {
-                const closeResult = await closePosition({ position_address: p.position, reason: whaleReason });
-                closeSucceeded = closeResult.success || closeResult.dry_run;
-                if (!closeSucceeded) {
-                  lastCloseError = closeResult.error || "unknown close failure";
-                  log("cron_error", `Whale exit close attempt ${attempt}/3 failed for ${p.pair}: ${lastCloseError}`);
-                  if (attempt < 3) await new Promise((r) => setTimeout(r, 3000));
-                  continue;
-                }
-
-                whaleClosedPositions.add(p.position);
-                if (closeResult.base_mint && closeResult.success) {
-                  await autoSwapBaseToSol(closeResult.base_mint, "whale exit").catch((e) =>
-                    log("cron_warn", `Whale exit swap failed: ${e.message}`)
-                  );
-                }
-                notifyClose({
-                  pair: p.pair,
-                  pnlUsd: closeResult.pnl_usd || 0,
-                  pnlPct: closeResult.pnl_pct || 0,
-                  pnlSol: closeResult.pnl_sol,
-                  feesEarnedUsd: closeResult.fees_earned_usd,
-                  feesEarnedSol: closeResult.fees_earned_sol,
-                  deployedSol: closeResult.deployed_sol,
-                  strategy: closeResult.strategy,
-                  holdMinutes: closeResult.minutes_held,
-                  reason: closeResult.close_reason || whaleReason,
-                }).catch(() => {});
-                sendMessage(`WHALE EXIT: ${p.pair} - TVL dropped $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%). Position closed.`).catch(() => {});
-                managementEvents.push(whaleReason);
-                break;
-              } catch (e) {
-                lastCloseError = e.message;
-                log("cron_error", `Whale exit close attempt ${attempt}/3 errored for ${p.pair}: ${e.message}`);
-                if (attempt < 3) await new Promise((r) => setTimeout(r, 3000));
-              }
-            }
-            if (!closeSucceeded) {
-              whaleEmergencyPositions.add(p.position);
-              const failMsg = `Whale exit close failed after 3 attempts for ${p.pair}: ${lastCloseError || "unknown error"}`;
-              log("cron_error", failMsg);
-              sendMessage(`WHALE EXIT CRITICAL: ${p.pair} TVL dropped $${tvlDrop.toFixed(0)} (${tvlDropPct.toFixed(1)}%), but close failed after 3 attempts: ${lastCloseError || "unknown error"}. Will retry next management cycle.`).catch(() => {});
-              managementEvents.push(failMsg);
-            }
-            continue;
-          }
-        }
-
-        updatePoolTvl(p.pool, currentTvl);
-      } catch (e) {
-        log("cron_warn", `Whale check failed for ${p.pool.slice(0, 8)}: ${e.message}`);
-      }
-    }
-
-    if (whaleClosedPositions.size > 0 || whaleEmergencyPositions.size > 0) {
-      positions = positions.filter((p) =>
-        !whaleClosedPositions.has(p.position) && !whaleEmergencyPositions.has(p.position)
-      );
-      if (positions.length === 0) {
-        mgmtReport = managementEvents.join("\n");
-        if (Date.now() - _screeningLastTriggered > screeningCooldownMs) {
-          log("cron", `Post-whale-exit: 0/${config.risk.maxPositions} positions - triggering screening`);
-          runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
-        }
-        return mgmtReport;
-      }
-    }
-
     // Snapshot + load pool memory
     const positionData = positions.map((p) => {
       recordPositionSnapshot(p.pool, p);
@@ -262,86 +296,13 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     // JS trailing TP check
     const exitMap = new Map();
-    for (const p of positionData) {
-      const exit = updatePnlAndCheckExits(p.position, p, config.management);
+    const exitResults = await Promise.all(positionData.map((p) => evaluateAutoExit(p)));
+    for (let i = 0; i < positionData.length; i++) {
+      const p = positionData[i];
+      const exit = exitResults[i];
       if (exit) {
-        exitMap.set(p.position, exit.reason);
+        exitMap.set(p.position, exit);
         log("state", `Exit alert for ${p.pair}: ${exit.reason}`);
-      }
-    }
-
-    // ── Deterministic rule checks (no LLM) ──────────────────────────
-    // action: CLOSE | CLAIM | STAY | INSTRUCTION (needs LLM)
-    if (config.chartIndicators.enabled && config.chartIndicators.exitOnBearishFlip) {
-      const { confirmExitSupertrendFlip } = await import("./tools/chart-indicators.js");
-      const checksByMint = new Map();
-      for (const p of positionData) {
-        if (exitMap.has(p.position) || !p.base_mint) continue;
-        if (!checksByMint.has(p.base_mint)) {
-          checksByMint.set(p.base_mint, confirmExitSupertrendFlip({
-            mint: p.base_mint,
-            interval: config.chartIndicators.exitInterval || config.chartIndicators.interval || "15m",
-            period: config.chartIndicators.stPeriod || 10,
-            multiplier: config.chartIndicators.stMultiplier || 3,
-          }).catch((error) => ({ triggered: false, error: error.message })));
-        }
-      }
-
-      const resultsByMint = new Map(
-        await Promise.all([...checksByMint.entries()].map(async ([mint, check]) => [mint, await check]))
-      );
-      for (const p of positionData) {
-        if (exitMap.has(p.position) || !p.base_mint) continue;
-        const result = resultsByMint.get(p.base_mint);
-        if (result?.triggered) {
-          exitMap.set(p.position, result.reason);
-          log("state", `Exit alert for ${p.pair}: ${result.reason}`);
-        } else if (result?.error) {
-          log("cron_warn", `Supertrend exit check skipped for ${p.pair}: ${result.error}`);
-        }
-      }
-    }
-
-    if (config.bottomSpotLP?.enabled) {
-      const bottomStrategy = new BottomSpotLPStrategy(config.bottomSpotLP);
-      for (const p of positionData) {
-        if (exitMap.has(p.position) || p.strategy !== "bottom_spot_lp" || !p.base_mint) {
-          continue;
-        }
-        try {
-          const candles = await fetchKlineGMGN(
-            p.base_mint,
-            config.bottomSpotLP.interval || config.chartIndicators.interval || "1m",
-            80,
-          );
-          const tracked = getTrackedPosition(p.position);
-          const amountSol = tracked?.amount_sol || p.total_value_usd || 0;
-          const feesPct = amountSol > 0
-            ? ((p.unclaimed_fees_usd || 0) / amountSol) * 100
-            : 0;
-          const decision = await bottomStrategy.evaluatePosition(
-            {
-              ...p,
-              upperPrice: tracked?.signal_snapshot?.upperPrice,
-              lowerPrice: tracked?.signal_snapshot?.lowerPrice,
-              ilPct: p.pnl_pct != null && p.pnl_pct < 0 ? Math.abs(p.pnl_pct) : 0,
-            },
-            candles,
-            { pct: feesPct },
-          );
-
-          if (decision.action === "close") {
-            exitMap.set(p.position, `bottom_spot_lp: ${decision.reason}`);
-            log("state", `Bottom Spot exit alert for ${p.pair}: ${decision.reason}`);
-          } else if (decision.action === "reposition") {
-            log(
-              "bottom_spot_warn",
-              `Reposition signal for ${p.pair}; holding until close/redeploy flow is added`,
-            );
-          }
-        } catch (e) {
-          log("bottom_spot_warn", `Exit check skipped for ${p.pair}: ${e.message}`);
-        }
       }
     }
 
@@ -349,7 +310,13 @@ export async function runManagementCycle({ silent = false } = {}) {
     for (const p of positionData) {
       // Hard exit — highest priority
       if (exitMap.has(p.position)) {
-        actionMap.set(p.position, { action: "CLOSE", rule: "exit", reason: exitMap.get(p.position) });
+        const exit = exitMap.get(p.position);
+        actionMap.set(p.position, {
+          ...exit,
+          action: "CLOSE",
+          exit_action: exit.action,
+          rule: "exit",
+        });
         continue;
       }
       // Instruction-set — pass to LLM, can't parse in JS
@@ -358,55 +325,6 @@ export async function runManagementCycle({ silent = false } = {}) {
         continue;
       }
 
-      // Sanity-check PnL against tracked initial deposit — API sometimes returns bad data
-      // giving -99% PnL which would incorrectly trigger stop loss
-      const tracked = getTrackedPosition(p.position);
-      const pnlSuspect = (() => {
-        if (p.pnl_pct == null) return false;
-        if (p.pnl_pct > -90) return false; // only flag extreme negatives
-        // Cross-check: if we have a tracked deposit and current value isn't near zero, it's bad data
-        if (tracked?.amount_sol && (p.total_value_usd ?? 0) > 0.01) {
-          log("cron_warn", `Suspect PnL for ${p.pair}: ${p.pnl_pct}% but position still has value — skipping PnL rules`);
-          return true;
-        }
-        return false;
-      })();
-
-      // Rule 1: stop loss
-      if (!pnlSuspect && p.pnl_pct != null && p.pnl_pct <= config.management.stopLossPct) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 1, reason: "stop loss" });
-        continue;
-      }
-      // Rule 2: take profit
-      if (!pnlSuspect && p.pnl_pct != null && p.pnl_pct >= config.management.takeProfitFeePct) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 2, reason: "take profit" });
-        continue;
-      }
-      // Rule 3: pumped far above range
-      if (p.active_bin != null && p.upper_bin != null &&
-          p.active_bin > p.upper_bin + config.management.outOfRangeBinsToClose) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 3, reason: "pumped far above range" });
-        continue;
-      }
-      // Rule 4: stale above range
-      if (p.active_bin != null && p.upper_bin != null &&
-          p.active_bin > p.upper_bin &&
-          (p.minutes_out_of_range ?? 0) >= config.management.outOfRangeWaitMinutes) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 4, reason: "OOR" });
-        continue;
-      }
-      // Rule 5: fee yield too low
-      if (p.fee_per_tvl_24h != null &&
-          p.fee_per_tvl_24h < config.management.minFeePerTvl24h &&
-          (p.age_minutes ?? 0) >= 60) {
-        actionMap.set(p.position, {
-          action: "CLOSE",
-          rule: 5,
-          reason: `Low yield: fee/TVL ${p.fee_per_tvl_24h}% < min ${config.management.minFeePerTvl24h}% (age: ${p.age_minutes ?? "?"}m)`,
-        });
-        continue;
-      }
-      // Claim rule
       if ((p.unclaimed_fees_usd ?? 0) >= config.management.minClaimAmount) {
         actionMap.set(p.position, { action: "CLAIM" });
         continue;
@@ -426,8 +344,7 @@ export async function runManagementCycle({ silent = false } = {}) {
       const statusLabel = act.action === "INSTRUCTION" ? "HOLD (instruction)" : act.action;
       let line = `**${p.pair}** | Age: ${p.age_minutes ?? "?"}m | Val: ${val} | Unclaimed: ${unclaimed} | PnL: ${formatDecimal(p.pnl_pct, 4)}% | Yield: ${formatDecimal(p.fee_per_tvl_24h, 2)}% | ${inRange} | ${statusLabel}`;
       if (p.instruction) line += `\nNote: "${p.instruction}"`;
-      if (act.action === "CLOSE" && act.rule === "exit") line += `\n⚡ Trailing TP: ${act.reason}`;
-      if (act.action === "CLOSE" && act.rule && act.rule !== "exit") line += `\nRule ${act.rule}: ${act.reason}`;
+      if (act.action === "CLOSE") line += `\nAuto-exit: ${act.reason}`;
       if (act.action === "CLAIM") line += `\n→ Claiming fees`;
       return line;
     });
@@ -459,46 +376,10 @@ export async function runManagementCycle({ silent = false } = {}) {
       const act = actionMap.get(p.position);
 
       if (act.action === "CLOSE") {
-        log("cron", `Deterministic close: ${p.pair} - ${act.reason}`);
-        try {
-          const closeResult = await closePosition({ position_address: p.position, reason: act.reason || "management_rule" });
-          const closeSucceeded = closeResult.success || closeResult.dry_run;
-          if (closeSucceeded) {
-            let suffix = "";
-            if (closeResult.base_mint && closeResult.success) {
-              try {
-                const swapResult = await autoSwapBaseToSol(closeResult.base_mint, "deterministic close");
-                if (swapResult.swapped) {
-                  suffix = " - auto-swapped to SOL";
-                } else if (swapResult.error) {
-                  suffix = ` - swap failed: ${swapResult.error}`;
-                }
-              } catch (swapErr) {
-                log("cron_warn", `Auto-swap error: ${swapErr.message}`);
-                suffix = ` - swap error: ${swapErr.message}`;
-              }
-            }
-            notifyClose({
-              pair: p.pair,
-              pnlUsd: closeResult.pnl_usd || 0,
-              pnlPct: closeResult.pnl_pct || 0,
-              pnlSol: closeResult.pnl_sol,
-              feesEarnedUsd: closeResult.fees_earned_usd,
-              feesEarnedSol: closeResult.fees_earned_sol,
-              deployedSol: closeResult.deployed_sol,
-              strategy: closeResult.strategy,
-              holdMinutes: closeResult.minutes_held,
-              reason: closeResult.close_reason || act.reason,
-            }).catch(() => {});
-            mgmtReport += `\n\nClosed ${p.pair} (${act.reason})${suffix}`;
-          } else {
-            log("cron_error", `Close failed for ${p.pair}: ${closeResult.error}`);
-            mgmtReport += `\n\nClose failed for ${p.pair}: ${closeResult.error}`;
-          }
-        } catch (closeErr) {
-          log("cron_error", `Close error for ${p.pair}: ${closeErr.message}`);
-          mgmtReport += `\n\nClose error for ${p.pair}: ${closeErr.message}`;
-        }
+        const closeResult = await executeAutoClose(p, act, "management");
+        mgmtReport += closeResult.success || closeResult.dry_run
+          ? `\n\nClosed ${p.pair} (${act.reason})`
+          : `\n\nClose failed for ${p.pair}: ${closeResult.error || closeResult.reason}`;
         continue;
       }
 
@@ -660,6 +541,11 @@ async function tryBottomSpotDeploy(passing, prePositions, preBalance) {
     currentPrice: selectedPool.signal.currentPrice,
   };
 
+  if (_autoCloseCoordinator.size > 0) {
+    log("bottom_spot", `Deploy skipped - ${_autoCloseCoordinator.size} priority close(s) in progress`);
+    return { deployed: false, report: "Bottom Spot deploy skipped while priority close is in progress." };
+  }
+
   const deployResult = await deployPosition(deployParams);
   const pool = selectedPool.pool;
   if (deployResult.success || deployResult.dry_run) {
@@ -702,6 +588,10 @@ async function tryBottomSpotDeploy(passing, prePositions, preBalance) {
 }
 
 export async function runScreeningCycle({ silent = false } = {}) {
+  if (_autoCloseCoordinator.size > 0) {
+    log("cron", `Screening skipped - ${_autoCloseCoordinator.size} priority close(s) in progress`);
+    return null;
+  }
   if (_screeningBusy) {
     log("cron", "Screening skipped — previous cycle still running");
     return null;
@@ -829,6 +719,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
       Math.min(config.strategy.maxBinsBelow, Math.max(config.strategy.minBinsBelow,
         config.strategy.minBinsBelow + (volatility / 5) * (config.strategy.maxBinsBelow - config.strategy.minBinsBelow)))
     );
+
+    if (_autoCloseCoordinator.size > 0) {
+      log("screening", `Deploy skipped - ${_autoCloseCoordinator.size} priority close(s) in progress`);
+      return "Deploy skipped while priority close is in progress.";
+    }
 
     const deployResult = await deployPosition({
       pool_address: pool.pool,
@@ -965,10 +860,10 @@ Summarize the current portfolio health, total fees earned, and performance of al
     await maybeRunMissedBriefing();
   }, { timezone: 'UTC' });
 
-  // Lightweight 30s PnL poller — updates trailing TP state between management cycles, no LLM
+  // Lightweight 30s poller — evaluates and directly executes deterministic auto-exits.
   let _pnlPollBusy = false;
   const pnlPollInterval = setInterval(async () => {
-    if (_managementBusy || _screeningBusy || _pnlPollBusy) return;
+    if (_pnlPollBusy) return;
     _pnlPollBusy = true;
     try {
       if (getTrackedPositions(true).length === 0) return;
@@ -983,26 +878,21 @@ Summarize the current portfolio health, total fees earned, and performance of al
       } catch {}
 
       if (!result?.positions?.length) return;
-      for (const p of result.positions) {
-        const exit = updatePnlAndCheckExits(p.position, p, config.management);
+      const closeTasks = [];
+      const exitResults = await Promise.all(result.positions.map((p) => evaluateAutoExit(p)));
+      for (let i = 0; i < result.positions.length; i++) {
+        const p = result.positions[i];
+        const exit = exitResults[i];
         const tp = getTrackedPosition(p.position);
         const trail = tp?.trailing_active ? "ON" : "OFF";
         const peak = tp?.peak_pnl_pct != null ? tp.peak_pnl_pct.toFixed(2) : "?";
         const range = p.in_range ? "IN" : `OOR ${p.minutes_out_of_range ?? 0}m`;
         log("pnl", `${p.pair} | PnL: ${p.pnl_pct != null ? (p.pnl_pct >= 0 ? "+" : "") + p.pnl_pct.toFixed(2) : "?"}% | Peak: ${peak}% | Trail: ${trail} | ${range} | Yield: ${p.fee_per_tvl_24h ?? "?"}%${exit ? ` | ⚡ ${exit.reason}` : ""}`);
         if (exit) {
-          const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
-          const sinceLastTrigger = Date.now() - _pollTriggeredAt;
-          if (sinceLastTrigger >= cooldownMs) {
-            _pollTriggeredAt = Date.now();
-            log("pnl", `⚡ ${p.pair} → TRAILING TRIGGERED: ${exit.reason} — triggering management`);
-            runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
-          } else {
-            log("pnl", `⚡ ${p.pair} → ${exit.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);
-          }
-          break;
+          closeTasks.push(executeAutoClose(p, exit, "poller"));
         }
       }
+      if (closeTasks.length > 0) await Promise.allSettled(closeTasks);
     } finally {
       _pnlPollBusy = false;
     }
