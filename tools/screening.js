@@ -20,6 +20,12 @@ function clearPvpRival(pool) {
   delete pool.pvp_rival_name;
   delete pool.pvp_rival_mint;
   delete pool.pvp_rival_created_at;
+  delete pool.pvp_rival_liquidity;
+  delete pool.pvp_rival_volume_24h;
+  delete pool.pvp_rival_holders;
+  delete pool.pvp_rival_pool;
+  delete pool.pvp_rival_tvl;
+  delete pool.pvp_rival_fee_tvl;
 }
 
 async function searchAssetsBySymbol(symbol) {
@@ -39,7 +45,131 @@ function setPvpUnverified(pool, reason) {
   return pool;
 }
 
-export function evaluatePvpAssets(pool, assets) {
+async function searchPoolsByMint(mint) {
+  const res = await fetch(`https://dlmm.datapi.meteora.ag/pools?query=${encodeURIComponent(mint)}`);
+  if (!res.ok) throw new Error(`Meteora pool search ${res.status}`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : (data.data || []);
+}
+
+async function fetchPoolQuality(poolAddress) {
+  const detail = await getPoolDetail({ pool_address: poolAddress, timeframe: config.screening.timeframe });
+  return {
+    pool: detail.pool_address,
+    active_tvl: numberOrNull(detail.active_tvl ?? detail.tvl),
+    volume_window: numberOrNull(detail.volume),
+    fee_active_tvl_ratio: numberOrNull(
+      detail.fee_active_tvl_ratio
+      ?? (Number(detail.active_tvl) > 0 ? (Number(detail.fee || 0) / Number(detail.active_tvl)) * 100 : null)
+    ),
+  };
+}
+
+function assetVolume24h(asset) {
+  const direct = numberOrNull(asset?.volume24h ?? asset?.volume_24h);
+  if (direct != null) return direct;
+  const buy = numberOrNull(asset?.stats24h?.buyVolume) ?? 0;
+  const sell = numberOrNull(asset?.stats24h?.sellVolume) ?? 0;
+  return buy + sell;
+}
+
+function poolAddressOf(rawPool) {
+  return rawPool?.address || rawPool?.pool_address || null;
+}
+
+function poolContainsMint(rawPool, mint) {
+  const mints = [
+    rawPool?.mint_x,
+    rawPool?.mint_y,
+    rawPool?.token_x?.address,
+    rawPool?.token_y?.address,
+  ].filter(Boolean);
+  return mints.includes(mint);
+}
+
+export async function assessEstablishedPvpRival(asset, {
+  searchPools = searchPoolsByMint,
+  getPoolQuality = fetchPoolQuality,
+  getPoolFees = getGmgnPoolFees,
+} = {}) {
+  const s = config.screening;
+  const liquidity = numberOrNull(asset?.liquidity);
+  const volume24h = assetVolume24h(asset);
+  const holders = numberOrNull(asset?.holderCount ?? asset?.holders);
+  const organic = numberOrNull(asset?.organicScore ?? asset?.organic_score);
+  const verified = asset?.isVerified === true || asset?.tags?.includes("verified");
+  const assetFeesSol = numberOrNull(asset?.fees);
+  const tokenFailures = [];
+
+  if (liquidity == null || liquidity < s.minTvl) tokenFailures.push(`liquidity ${liquidity ?? "unavailable"} < min ${s.minTvl}`);
+  if (volume24h < s.minVolume) tokenFailures.push(`volume24h ${volume24h} < min ${s.minVolume}`);
+  if (holders == null || holders < s.minHolders) tokenFailures.push(`holders ${holders ?? "unavailable"} < min ${s.minHolders}`);
+  if (!verified && (organic == null || organic < s.minOrganic)) {
+    tokenFailures.push(`organic ${organic ?? "unavailable"} < min ${s.minOrganic} and token is not verified`);
+  }
+
+  const rawPools = (await searchPools(asset.id)).filter((rawPool) => poolContainsMint(rawPool, asset.id));
+  const marketPool = asset?.graduatedPool || asset?.firstPool?.id || poolAddressOf(rawPools[0]);
+  if (!marketPool) {
+    return {
+      established: false,
+      reason: [...tokenFailures, "no active market pool found"].join("; "),
+      liquidity,
+      volume24h,
+      holders,
+    };
+  }
+
+  const poolsToCheck = rawPools
+    .sort((a, b) => Number(b?.liquidity || 0) - Number(a?.liquidity || 0))
+    .slice(0, 3);
+  const poolChecks = await Promise.all(poolsToCheck.map(async (rawPool) => {
+    const poolAddress = poolAddressOf(rawPool);
+    if (!poolAddress) return { pass: false, reason: "pool address unavailable" };
+    const [quality, fees] = await Promise.all([
+      getPoolQuality(poolAddress),
+      assetFeesSol != null
+        ? Promise.resolve({ pool_fees_sol: assetFeesSol })
+        : getPoolFees({ mint: asset.id, pool_address: poolAddress }),
+    ]);
+    const failures = [];
+    if (quality.active_tvl == null || quality.active_tvl < s.minTvl) failures.push(`tvl ${quality.active_tvl ?? "unavailable"} < min ${s.minTvl}`);
+    if (quality.volume_window == null || quality.volume_window < s.minVolume) failures.push(`volume ${quality.volume_window ?? "unavailable"} < min ${s.minVolume}`);
+    if (quality.fee_active_tvl_ratio == null || quality.fee_active_tvl_ratio < s.minFeeActiveTvlRatio) {
+      failures.push(`fee_tvl ${quality.fee_active_tvl_ratio ?? "unavailable"} < min ${s.minFeeActiveTvlRatio}`);
+    }
+    const poolFeesSol = numberOrNull(fees?.pool_fees_sol);
+    if (poolFeesSol == null || poolFeesSol < s.minTokenFeesSol) failures.push(`pool_fees ${poolFeesSol ?? "unavailable"} < min ${s.minTokenFeesSol}`);
+    return { ...quality, pool_fees_sol: poolFeesSol, pass: failures.length === 0, reason: failures.join("; ") };
+  }));
+
+  const validPool = poolChecks
+    .filter((check) => check.pass)
+    .sort((a, b) => (b.active_tvl || 0) - (a.active_tvl || 0))[0];
+  const bestReportedFees = validPool?.pool_fees_sol ?? assetFeesSol;
+  if (bestReportedFees == null || bestReportedFees < s.minTokenFeesSol) {
+    tokenFailures.push(`fees ${bestReportedFees ?? "unavailable"} SOL < min ${s.minTokenFeesSol} SOL`);
+  }
+  const established = tokenFailures.length === 0;
+  const aggregateFeeTvl = liquidity > 0 && bestReportedFees != null
+    ? (bestReportedFees / liquidity) * 100
+    : null;
+  return {
+    established,
+    reason: established
+      ? `market metrics meet established OG thresholds${validPool ? " with a qualifying Meteora pool" : ""}`
+      : tokenFailures.join("; "),
+    liquidity,
+    volume24h,
+    holders,
+    pool: validPool?.pool || marketPool,
+    tvl: validPool?.active_tvl ?? liquidity,
+    feeTvl: validPool?.fee_active_tvl_ratio ?? aggregateFeeTvl,
+    poolFeesSol: bestReportedFees,
+  };
+}
+
+export function evaluatePvpAssets(pool, assets, rivalAssessments = new Map()) {
   const symbol = normalizeSymbol(pool.base?.symbol);
   const ownMint = pool.base?.mint;
   pool.pvp_symbol = pool.base?.symbol || symbol || null;
@@ -70,15 +200,23 @@ export function evaluatePvpAssets(pool, assets) {
     .filter(({ createdAt }) => createdAt < ownCreatedAt - PVP_COPYCAT_AGE_GAP_MS)
     .sort((a, b) => a.createdAt - b.createdAt);
 
-  if (olderRivals.length > 0) {
-    const { asset: rival, createdAt } = olderRivals[0];
+  const establishedRivals = olderRivals.filter(({ asset }) => rivalAssessments.get(asset.id)?.established);
+  if (establishedRivals.length > 0) {
+    const { asset: rival, createdAt } = establishedRivals[0];
+    const assessment = rivalAssessments.get(rival.id);
     pool.is_pvp = true;
     pool.pvp_risk = "high";
     pool.pvp_rival_name = rival.name || pool.pvp_symbol;
     pool.pvp_rival_mint = rival.id;
     pool.pvp_rival_created_at = new Date(createdAt).toISOString();
+    pool.pvp_rival_liquidity = assessment.liquidity;
+    pool.pvp_rival_volume_24h = assessment.volume24h;
+    pool.pvp_rival_holders = assessment.holders;
+    pool.pvp_rival_pool = assessment.pool;
+    pool.pvp_rival_tvl = assessment.tvl;
+    pool.pvp_rival_fee_tvl = assessment.feeTvl;
     pool.pvp_check_status = "copycat";
-    pool.pvp_check_reason = `older same-symbol mint created ${pool.pvp_rival_created_at}`;
+    pool.pvp_check_reason = `established older same-symbol mint created ${pool.pvp_rival_created_at}`;
     return pool;
   }
 
@@ -86,20 +224,54 @@ export function evaluatePvpAssets(pool, assets) {
   pool.pvp_risk = "low";
   clearPvpRival(pool);
   pool.pvp_check_status = "verified";
-  pool.pvp_check_reason = "no same-symbol mint is more than 24 hours older";
+  pool.pvp_check_reason = olderRivals.length > 0
+    ? "older same-symbol mints exist but none qualify as an established OG"
+    : "no same-symbol mint is more than 24 hours older";
   return pool;
 }
 
-export async function checkPoolPvpRisk(pool, { searchAssets = searchAssetsBySymbol } = {}) {
+async function evaluatePvpWithEstablishedRivals(pool, assets, {
+  assessRival = assessEstablishedPvpRival,
+  assessmentCache = new Map(),
+} = {}) {
+  const preliminary = evaluatePvpAssets(pool, assets);
+  if (preliminary.pvp_check_status === "unverified") return preliminary;
+
+  const symbol = normalizeSymbol(pool.base?.symbol);
+  const ownAsset = assets.find((asset) => asset?.id === pool.base?.mint && normalizeSymbol(asset?.symbol) === symbol);
+  const ownCreatedAt = Date.parse(ownAsset.createdAt);
+  const olderRivals = assets
+    .filter((asset) =>
+      asset?.id
+      && asset.id !== ownAsset.id
+      && normalizeSymbol(asset.symbol) === symbol
+      && Date.parse(asset.createdAt) < ownCreatedAt - PVP_COPYCAT_AGE_GAP_MS
+    )
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+
+  const assessments = new Map();
+  await Promise.all(olderRivals.map(async (rival) => {
+    if (!assessmentCache.has(rival.id)) {
+      assessmentCache.set(rival.id, Promise.resolve().then(() => assessRival(rival)));
+    }
+    assessments.set(rival.id, await assessmentCache.get(rival.id));
+  }));
+  return evaluatePvpAssets(pool, assets, assessments);
+}
+
+export async function checkPoolPvpRisk(pool, {
+  searchAssets = searchAssetsBySymbol,
+  assessRival = assessEstablishedPvpRival,
+} = {}) {
   const symbol = normalizeSymbol(pool?.base?.symbol);
   if (!pool || !symbol || !pool.base?.mint) {
     return setPvpUnverified(pool || {}, !symbol ? "token symbol unavailable" : "token mint unavailable");
   }
 
   try {
-    return evaluatePvpAssets(pool, await searchAssets(symbol));
+    return await evaluatePvpWithEstablishedRivals(pool, await searchAssets(symbol), { assessRival });
   } catch (error) {
-    return setPvpUnverified(pool, `Jupiter asset search failed: ${error.message}`);
+    return setPvpUnverified(pool, `PvP verification failed: ${error.message}`);
   }
 }
 
@@ -113,10 +285,14 @@ export function getPvpBlockReason(pool) {
   return null;
 }
 
-export async function enrichPvpRisk(pools, { searchAssets = searchAssetsBySymbol } = {}) {
+export async function enrichPvpRisk(pools, {
+  searchAssets = searchAssetsBySymbol,
+  assessRival = assessEstablishedPvpRival,
+} = {}) {
   if (!Array.isArray(pools) || pools.length === 0) return;
 
   const symbolCache = new Map();
+  const assessmentCache = new Map();
   await Promise.all(pools.map(async (pool) => {
     const symbol = normalizeSymbol(pool.base?.symbol);
     if (!symbol || !pool.base?.mint) {
@@ -129,9 +305,26 @@ export async function enrichPvpRisk(pools, { searchAssets = searchAssetsBySymbol
     }
 
     try {
-      evaluatePvpAssets(pool, await symbolCache.get(symbol));
+      const assets = await symbolCache.get(symbol);
+      await evaluatePvpWithEstablishedRivals(pool, assets, { assessRival, assessmentCache });
+
+      const ownAsset = assets.find((asset) => asset?.id === pool.base.mint);
+      const ownCreatedAt = Date.parse(ownAsset?.createdAt);
+      for (const rival of assets.filter((asset) =>
+        asset?.id
+        && asset.id !== pool.base.mint
+        && normalizeSymbol(asset.symbol) === symbol
+        && Date.parse(asset.createdAt) < ownCreatedAt - PVP_COPYCAT_AGE_GAP_MS
+      )) {
+        const assessment = await assessmentCache.get(rival.id);
+        if (assessment?.established) {
+          log("screening", `PVP rival accepted: ${rival.name || symbol} (${rival.id.slice(0, 8)}) liquidity=$${assessment.liquidity ?? "?"} volume24h=$${assessment.volume24h ?? "?"} holders=${assessment.holders ?? "?"} pool=${assessment.pool || "?"} tvl=$${assessment.tvl ?? "?"} fee_tvl=${assessment.feeTvl ?? "?"}% fees=${assessment.poolFeesSol ?? "?"} SOL`);
+        } else {
+          log("screening", `PVP rival ignored: ${rival.name || symbol} (${rival.id.slice(0, 8)}) - ${assessment?.reason || "not established"}`);
+        }
+      }
     } catch (error) {
-      setPvpUnverified(pool, `Jupiter asset search failed: ${error.message}`);
+      setPvpUnverified(pool, `PvP verification failed: ${error.message}`);
     }
 
     if (pool.pvp_check_status === "copycat") {
