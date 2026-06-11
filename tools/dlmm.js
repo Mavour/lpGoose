@@ -23,7 +23,14 @@ import { recordPerformance } from "../lessons.js";
 import { getPoolCooldown, setTokenCloseCooldown } from "../pool-memory.js";
 import { buildManualClosePerformance } from "../manual-close.js";
 import { normalizeMint } from "./wallet.js";
-import { getWalletPnl, selectTrustedPnlPct } from "../pnl-fetcher.js";
+import {
+  calculateMeteoraPositionPnl,
+  calculatePnl,
+  fetchJupiterPrices,
+  fetchMeteoraPoolPnl,
+  fetchMeteoraPortfolio,
+  pnlNumber,
+} from "../pnl-fetcher.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
 // @meteora-ag/dlmm → @coral-xyz/anchor uses CJS directory imports
@@ -362,6 +369,7 @@ export async function deployPosition({
     log("deploy", `SUCCESS — ${txHashes.length} tx(s): ${txHashes[0]}${isMixed ? ` (${layerCount}/${isMixed ? 2 : 1} layers)` : ""}`);
 
     _positionsCacheAt = 0;
+    _pnlDiscoveryAt = 0;
     trackPosition({
       position: newPosition.publicKey.toString(),
       pool: pool_address,
@@ -422,11 +430,15 @@ export async function deployPosition({
   }
 }
 
-const POSITIONS_CACHE_TTL = 5 * 60_000; // 5 minutes
+const POSITIONS_CACHE_TTL = 5 * 60_000;
+const PNL_DISCOVERY_TTL = 30_000;
 
 let _positionsCache = null;
 let _positionsCacheAt = 0;
-let _positionsInflight = null; // deduplicates concurrent calls
+let _positionsInflight = null;
+let _pnlDiscovery = null;
+let _pnlDiscoveryAt = 0;
+const _pnlCostBasis = new Map();
 const _closingPositions = new Set();
 
 // ─── Fetch DLMM PnL API for all positions in a pool ────────────
@@ -509,29 +521,252 @@ async function recordExternalClose(tracked, walletAddress) {
 }
 
 // ─── Get Position PnL (Meteora API) ─────────────────────────────
+async function latestPositionSignature(positionAddress) {
+  const signatures = await getConnection().getSignaturesForAddress(
+    new PublicKey(positionAddress),
+    { limit: 1 }
+  );
+  return signatures[0]?.signature || null;
+}
+
+async function refreshPnlDiscovery(walletAddress, { force = false } = {}) {
+  if (!force && _pnlDiscovery && Date.now() - _pnlDiscoveryAt < PNL_DISCOVERY_TTL) {
+    return _pnlDiscovery;
+  }
+
+  const portfolio = await fetchMeteoraPortfolio(walletAddress);
+  const pools = Array.isArray(portfolio?.pools) ? portfolio.pools : [];
+  const fallbackMaps = await Promise.all(
+    pools.map((pool) => fetchMeteoraPoolPnl(pool.poolAddress, walletAddress))
+  );
+
+  for (let index = 0; index < pools.length; index++) {
+    const pool = pools[index];
+    const fallbackMap = fallbackMaps[index];
+    for (const positionAddress of pool.listPositions || []) {
+      const raw = fallbackMap.get(positionAddress);
+      if (!raw) throw new Error(`Meteora cost basis missing for ${positionAddress}`);
+      const previous = _pnlCostBasis.get(positionAddress);
+      _pnlCostBasis.set(positionAddress, {
+        poolAddress: pool.poolAddress,
+        raw,
+        signature: previous?.signature ?? null,
+      });
+    }
+  }
+
+  const openAddresses = new Set(pools.flatMap((pool) => pool.listPositions || []));
+  for (const address of _pnlCostBasis.keys()) {
+    if (!openAddresses.has(address)) _pnlCostBasis.delete(address);
+  }
+
+  _pnlDiscovery = { walletAddress, pools };
+  _pnlDiscoveryAt = Date.now();
+  return _pnlDiscovery;
+}
+
+async function refreshChangedCostBasis(discovery, walletAddress) {
+  const entries = discovery.pools.flatMap((pool) =>
+    (pool.listPositions || []).map((positionAddress) => ({ pool, positionAddress }))
+  );
+  const signatures = await Promise.allSettled(
+    entries.map(({ positionAddress }) => latestPositionSignature(positionAddress))
+  );
+  const changedPools = new Set();
+
+  for (let index = 0; index < entries.length; index++) {
+    if (signatures[index].status !== "fulfilled") continue;
+    const { pool, positionAddress } = entries[index];
+    const signature = signatures[index].value;
+    const cached = _pnlCostBasis.get(positionAddress);
+    if (cached?.signature && signature && cached.signature !== signature) {
+      changedPools.add(pool.poolAddress);
+    }
+    if (cached) cached.signature = signature;
+  }
+
+  await Promise.all([...changedPools].map(async (poolAddress) => {
+    const latest = await fetchMeteoraPoolPnl(poolAddress, walletAddress);
+    for (const [positionAddress, raw] of latest) {
+      const cached = _pnlCostBasis.get(positionAddress);
+      _pnlCostBasis.set(positionAddress, {
+        poolAddress,
+        raw,
+        signature: cached?.signature ?? null,
+      });
+    }
+  }));
+}
+
+function fallbackPosition(pool, positionAddress, raw) {
+  const tracked = getTrackedPosition(positionAddress);
+  const usd = calculateMeteoraPositionPnl(raw, "usd");
+  const sol = calculateMeteoraPositionPnl(raw, "sol");
+  const selected = config.management.solMode ? sol : usd;
+  const unclaimedUsd =
+    pnlNumber(raw?.unrealizedPnl?.unclaimedFeeTokenX?.usd) +
+    pnlNumber(raw?.unrealizedPnl?.unclaimedFeeTokenY?.usd);
+  const unclaimedSol =
+    pnlNumber(raw?.unrealizedPnl?.unclaimedFeeTokenX?.amountSol) +
+    pnlNumber(raw?.unrealizedPnl?.unclaimedFeeTokenY?.amountSol);
+
+  return {
+    position: positionAddress,
+    pool: pool.poolAddress,
+    pair: tracked?.pool_name || `${pool.tokenX}/${pool.tokenY}`,
+    base_mint: pool.tokenXMint,
+    lower_bin: raw.lowerBinId ?? tracked?.bin_range?.min ?? null,
+    upper_bin: raw.upperBinId ?? tracked?.bin_range?.max ?? null,
+    active_bin: raw.poolActiveBinId ?? null,
+    strategy: tracked?.strategy ?? null,
+    in_range: !raw.isOutOfRange,
+    unclaimed_fees_usd: config.management.solMode ? unclaimedSol : unclaimedUsd,
+    total_value_usd: config.management.solMode
+      ? pnlNumber(raw?.unrealizedPnl?.balancesSol)
+      : pnlNumber(raw?.unrealizedPnl?.balances),
+    total_value_true_usd: pnlNumber(raw?.unrealizedPnl?.balances),
+    collected_fees_usd: config.management.solMode
+      ? pnlNumber(raw?.allTimeFees?.total?.sol)
+      : pnlNumber(raw?.allTimeFees?.total?.usd),
+    collected_fees_true_usd: pnlNumber(raw?.allTimeFees?.total?.usd),
+    pnl_usd: selected.pnl,
+    pnl_true_usd: usd.pnl,
+    pnl_sol: sol.pnl,
+    pnl_pct: roundOrNull(selected.pnlPct, 4),
+    pnl_source: "meteora_fallback",
+    unclaimed_fees_true_usd: unclaimedUsd,
+    fees_earned_sol: pnlNumber(raw?.allTimeFees?.total?.sol) + unclaimedSol,
+    fee_per_tvl_24h: Math.round(pnlNumber(raw?.feePerTvl24h) * 100) / 100,
+    age_minutes: raw?.createdAt
+      ? Math.floor((Date.now() - raw.createdAt * 1000) / 60000)
+      : null,
+    minutes_out_of_range: minutesOutOfRange(positionAddress),
+    instruction: tracked?.instruction ?? null,
+  };
+}
+
+async function fetchOnChainPoolPositions(poolMeta, priceMap) {
+  const pool = await getPool(poolMeta.poolAddress);
+  const positionAddresses = poolMeta.listPositions || [];
+  const [activeBin, ...onChainPositions] = await Promise.all([
+    pool.getActiveBin(),
+    ...positionAddresses.map((address) => pool.getPosition(new PublicKey(address))),
+  ]);
+
+  const tokenXMint = pool.tokenX.publicKey.toString();
+  const tokenYMint = pool.tokenY.publicKey.toString();
+  if (tokenYMint !== config.tokens.SOL) {
+    throw new Error(`Unsupported non-SOL quote pool ${poolMeta.poolAddress}`);
+  }
+
+  const tokenXDecimals = pool.tokenX.mint.decimals;
+  const tokenYDecimals = pool.tokenY.mint.decimals;
+  const tokenXPriceSol = Number(pool.fromPricePerLamport(Number(activeBin.price)));
+  const tokenXPriceUsd = priceMap.get(tokenXMint);
+  const solPriceUsd = priceMap.get(tokenYMint);
+
+  return onChainPositions.map((position, index) => {
+    const positionAddress = positionAddresses[index];
+    const costBasis = _pnlCostBasis.get(positionAddress)?.raw;
+    if (!costBasis) throw new Error(`Cost basis unavailable for ${positionAddress}`);
+
+    const data = position.positionData;
+    if (!data.rewardOne.isZero() || !data.rewardTwo.isZero()) {
+      throw new Error(`Reward valuation requires Meteora fallback for ${positionAddress}`);
+    }
+
+    const amountX = pnlNumber(data.totalXAmount) / (10 ** tokenXDecimals);
+    const amountY = pnlNumber(data.totalYAmount) / (10 ** tokenYDecimals);
+    const feeX = pnlNumber(data.feeX) / (10 ** tokenXDecimals);
+    const feeY = pnlNumber(data.feeY) / (10 ** tokenYDecimals);
+    const balanceSol = amountX * tokenXPriceSol + amountY;
+    const claimableSol = feeX * tokenXPriceSol + feeY;
+    const solPnl = calculatePnl({
+      balance: balanceSol,
+      withdrawals: costBasis?.allTimeWithdrawals?.total?.sol,
+      claimableFees: claimableSol,
+      claimedFees: costBasis?.allTimeFees?.total?.sol,
+      deposits: costBasis?.allTimeDeposits?.total?.sol,
+    });
+
+    if (!Number.isFinite(tokenXPriceUsd) || !Number.isFinite(solPriceUsd)) {
+      throw new Error(`Jupiter price unavailable for ${positionAddress}`);
+    }
+    const balanceUsd = amountX * tokenXPriceUsd + amountY * solPriceUsd;
+    const claimableUsd = feeX * tokenXPriceUsd + feeY * solPriceUsd;
+    const usdPnl = calculatePnl({
+      balance: balanceUsd,
+      withdrawals: costBasis?.allTimeWithdrawals?.total?.usd,
+      claimableFees: claimableUsd,
+      claimedFees: costBasis?.allTimeFees?.total?.usd,
+      deposits: costBasis?.allTimeDeposits?.total?.usd,
+    });
+    const selected = config.management.solMode ? solPnl : usdPnl;
+    if (!Number.isFinite(selected.pnlPct)) {
+      throw new Error(`Invalid on-chain PnL for ${positionAddress}`);
+    }
+
+    const tracked = getTrackedPosition(positionAddress);
+    const inRange = activeBin.binId >= data.lowerBinId && activeBin.binId <= data.upperBinId;
+    return {
+      position: positionAddress,
+      pool: poolMeta.poolAddress,
+      pair: tracked?.pool_name || `${poolMeta.tokenX}/${poolMeta.tokenY}`,
+      base_mint: tokenXMint,
+      lower_bin: data.lowerBinId,
+      upper_bin: data.upperBinId,
+      active_bin: activeBin.binId,
+      strategy: tracked?.strategy ?? null,
+      in_range: inRange,
+      unclaimed_fees_usd: config.management.solMode ? claimableSol : claimableUsd,
+      total_value_usd: config.management.solMode ? balanceSol : balanceUsd,
+      total_value_true_usd: balanceUsd,
+      collected_fees_usd: config.management.solMode
+        ? pnlNumber(costBasis?.allTimeFees?.total?.sol)
+        : pnlNumber(costBasis?.allTimeFees?.total?.usd),
+      collected_fees_true_usd: pnlNumber(costBasis?.allTimeFees?.total?.usd),
+      pnl_usd: selected.pnl,
+      pnl_true_usd: usdPnl.pnl,
+      pnl_sol: solPnl.pnl,
+      pnl_pct: roundOrNull(selected.pnlPct, 4),
+      pnl_source: "rpc",
+      unclaimed_fees_true_usd: claimableUsd,
+      fees_earned_sol: pnlNumber(costBasis?.allTimeFees?.total?.sol) + claimableSol,
+      fee_per_tvl_24h: Math.round(pnlNumber(costBasis?.feePerTvl24h) * 100) / 100,
+      age_minutes: costBasis?.createdAt
+        ? Math.floor((Date.now() - costBasis.createdAt * 1000) / 60000)
+        : null,
+      minutes_out_of_range: minutesOutOfRange(positionAddress),
+      instruction: tracked?.instruction ?? null,
+    };
+  });
+}
+
 export async function getPositionPnl({ pool_address, position_address }) {
   pool_address = normalizeMint(pool_address);
   position_address = normalizeMint(position_address);
-  const walletAddress = getWallet().publicKey.toString();
   try {
-    const byAddress = await fetchDlmmPnlForPool(pool_address, walletAddress);
-    const p = byAddress[position_address];
-    if (!p) return { error: "Position not found in PnL API" };
+    const snapshot = await getMyPositions({ force: true, silent: true, liveOnly: true });
+    if (snapshot.stale) return { error: snapshot.error || "PnL snapshot is stale" };
+    const position = snapshot.positions.find((item) =>
+      item.position === position_address && item.pool === pool_address
+    );
+    if (!position) return { error: "Position not found in PnL snapshot" };
 
-    const unclaimedUsd    = parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0);
-    const currentValueUsd = parseFloat(p.unrealizedPnl?.balances || 0);
     return {
-      pnl_usd:           Math.round((p.pnlUsd ?? 0) * 100) / 100,
-      pnl_pct:           Math.round((p.pnlPctChange ?? 0) * 100) / 100,
-      current_value_usd: Math.round(currentValueUsd * 100) / 100,
-      unclaimed_fee_usd: Math.round(unclaimedUsd * 100) / 100,
-      all_time_fees_usd: Math.round(parseFloat(p.allTimeFees?.total?.usd || 0) * 100) / 100,
-      fee_per_tvl_24h:   Math.round(parseFloat(p.feePerTvl24h || 0) * 100) / 100,
-      in_range:    !p.isOutOfRange,
-      lower_bin:   p.lowerBinId      ?? null,
-      upper_bin:   p.upperBinId      ?? null,
-      active_bin:  p.poolActiveBinId ?? null,
-      age_minutes: p.createdAt ? Math.floor((Date.now() - p.createdAt * 1000) / 60000) : null,
+      pnl_usd: position.pnl_true_usd,
+      pnl_sol: position.pnl_sol,
+      pnl_pct: position.pnl_pct,
+      current_value_usd: position.total_value_true_usd,
+      unclaimed_fee_usd: position.unclaimed_fees_true_usd,
+      all_time_fees_usd: position.collected_fees_true_usd,
+      fee_per_tvl_24h: position.fee_per_tvl_24h,
+      in_range: position.in_range,
+      lower_bin: position.lower_bin,
+      upper_bin: position.upper_bin,
+      active_bin: position.active_bin,
+      age_minutes: position.age_minutes,
+      source: position.pnl_source,
     };
   } catch (error) {
     log("pnl_error", error.message);
@@ -540,7 +775,101 @@ export async function getPositionPnl({ pool_address, position_address }) {
 }
 
 // ─── Get My Positions ──────────────────────────────────────────
-export async function getMyPositions({ force = false, silent = false } = {}) {
+export async function getMyPositions({ force = false, silent = false, liveOnly = false } = {}) {
+  if (!force && !liveOnly && _positionsCache && Date.now() - _positionsCacheAt < POSITIONS_CACHE_TTL) {
+    return _positionsCache;
+  }
+  if (_positionsInflight) return _positionsInflight;
+
+  let walletAddress;
+  try {
+    walletAddress = getWallet().publicKey.toString();
+  } catch {
+    return { wallet: null, total_positions: 0, positions: [], error: "Wallet not configured" };
+  }
+
+  _positionsInflight = (async () => {
+    try {
+      const discovery = await refreshPnlDiscovery(walletAddress, {
+        force: force && !liveOnly,
+      });
+      await refreshChangedCostBasis(discovery, walletAddress);
+
+      let priceMap = new Map();
+      try {
+        priceMap = await fetchJupiterPrices(
+          discovery.pools.flatMap((pool) => [pool.tokenXMint, pool.tokenYMint])
+        );
+      } catch (error) {
+        log("pnl_price", `Jupiter price fetch failed: ${error.message}`);
+      }
+
+      const poolSnapshots = await Promise.all(discovery.pools.map(async (poolMeta) => {
+        try {
+          return await fetchOnChainPoolPositions(poolMeta, priceMap);
+        } catch (error) {
+          log("pnl_rpc_fallback", `${poolMeta.poolAddress.slice(0, 8)}: ${error.message}`);
+          const latest = await fetchMeteoraPoolPnl(poolMeta.poolAddress, walletAddress);
+          return (poolMeta.listPositions || []).map((positionAddress) => {
+            const raw = latest.get(positionAddress);
+            if (!raw) throw new Error(`Fallback PnL missing for ${positionAddress}`);
+            _pnlCostBasis.set(positionAddress, {
+              poolAddress: poolMeta.poolAddress,
+              raw,
+              signature: _pnlCostBasis.get(positionAddress)?.signature ?? null,
+            });
+            return fallbackPosition(poolMeta, positionAddress, raw);
+          });
+        }
+      }));
+
+      const positions = poolSnapshots.flat();
+      for (const position of positions) {
+        if (position.in_range) markInRange(position.position);
+        else markOutOfRange(position.position);
+      }
+
+      const result = {
+        wallet: walletAddress,
+        total_positions: positions.length,
+        positions,
+        source: positions.every((position) => position.pnl_source === "rpc")
+          ? "rpc"
+          : "rpc_with_meteora_fallback",
+        snapshot_at: Date.now(),
+      };
+      updatePositionSnapshots(positions);
+      const detectedClosures = syncOpenPositions(
+        positions.map((position) => position.position),
+        { ignore_addresses: [..._closingPositions] }
+      );
+      _positionsCache = result;
+      _positionsCacheAt = Date.now();
+      if (detectedClosures.length > 0) {
+        await Promise.allSettled(
+          detectedClosures.map((tracked) => recordExternalClose(tracked, walletAddress))
+        );
+      }
+      if (!silent) log("positions", `Fetched ${positions.length} position(s) via ${result.source}`);
+      return result;
+    } catch (error) {
+      log("positions_error", `PnL snapshot failed: ${error.stack || error.message}`);
+      if (_positionsCache) return { ..._positionsCache, stale: true, error: error.message };
+      return {
+        wallet: walletAddress,
+        total_positions: 0,
+        positions: [],
+        stale: true,
+        error: error.message,
+      };
+    } finally {
+      _positionsInflight = null;
+    }
+  })();
+  return _positionsInflight;
+}
+
+async function getMyPositionsLegacy({ force = false, silent = false } = {}) {
   if (!force && _positionsCache && Date.now() - _positionsCacheAt < POSITIONS_CACHE_TTL) {
     return _positionsCache;
   }
@@ -840,6 +1169,7 @@ export async function claimFees({ position_address }) {
     }
     log("claim", `SUCCESS txs: ${txHashes.join(", ")}`);
     _positionsCacheAt = 0; // invalidate cache after claim
+    _pnlDiscoveryAt = 0;
     recordClaim(position_address);
 
     return { success: true, position: position_address, txs: txHashes, base_mint: pool.lbPair.tokenXMint.toString() };
@@ -942,6 +1272,7 @@ export async function closePosition({ position_address, reason }) {
     // Wait for RPC to reflect withdrawn balances before returning — prevents
     // agent from seeing zero balance when attempting post-close swap
     _positionsCacheAt = 0;
+    _pnlDiscoveryAt = 0;
 
     let closedConfirmed = false;
     for (let attempt = 0; attempt < 8; attempt++) {

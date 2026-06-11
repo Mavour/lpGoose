@@ -302,6 +302,7 @@ async function maybeRunMissedBriefing() {
 function stopCronJobs() {
   for (const task of _cronTasks) task.stop();
   if (_cronTasks._pnlPollInterval) clearInterval(_cronTasks._pnlPollInterval);
+  if (_cronTasks._pnlSlowCheckInterval) clearInterval(_cronTasks._pnlSlowCheckInterval);
   _cronTasks = [];
 }
 
@@ -976,19 +977,25 @@ Summarize the current portfolio health, total fees earned, and performance of al
     _pnlPollBusy = true;
     try {
       if (getTrackedPositions(true).length === 0) return;
-      const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
+      const result = await getMyPositions({
+        force: true,
+        silent: true,
+        liveOnly: true,
+      }).catch(() => null);
 
-      // Write live cache for dashboard — gives it LPAgent-enriched data instantly
+      // Publish only a complete, current PnL snapshot.
       try {
-        if (result) {
+        if (result && !result.stale) {
           const cachePath = path.join(__dirname, 'live-positions-cache.json');
           fs.writeFileSync(cachePath, JSON.stringify({ updatedAt: Date.now(), positions: result.positions }));
         }
       } catch {}
 
-      if (!result?.positions?.length) return;
+      if (!result?.positions?.length || result.stale) return;
       const closeTasks = [];
-      const exitResults = await Promise.all(result.positions.map((p) => evaluateAutoExit(p)));
+      const exitResults = result.positions.map((p) =>
+        updatePnlAndCheckExits(p.position, p, config.management)
+      );
       for (let i = 0; i < result.positions.length; i++) {
         const p = result.positions[i];
         const exit = exitResults[i];
@@ -1005,11 +1012,32 @@ Summarize the current portfolio health, total fees earned, and performance of al
     } finally {
       _pnlPollBusy = false;
     }
-  }, 30_000);
+  }, Math.max(1_000, config.schedule.pnlPollIntervalMs));
+
+  let _pnlSlowCheckBusy = false;
+  const pnlSlowCheckInterval = setInterval(async () => {
+    if (_pnlSlowCheckBusy) return;
+    _pnlSlowCheckBusy = true;
+    try {
+      const result = await getMyPositions({ silent: true }).catch(() => null);
+      if (!result?.positions?.length || result.stale) return;
+      const exits = await Promise.all(result.positions.map((position) => evaluateAutoExit(position)));
+      const closeTasks = [];
+      for (let index = 0; index < result.positions.length; index++) {
+        if (exits[index]) {
+          closeTasks.push(executeAutoClose(result.positions[index], exits[index], "slow-poller"));
+        }
+      }
+      if (closeTasks.length > 0) await Promise.allSettled(closeTasks);
+    } finally {
+      _pnlSlowCheckBusy = false;
+    }
+  }, Math.max(3_000, config.schedule.pnlSlowCheckIntervalMs));
 
   _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog];
   // Store interval ref so stopCronJobs can clear it
   _cronTasks._pnlPollInterval = pnlPollInterval;
+  _cronTasks._pnlSlowCheckInterval = pnlSlowCheckInterval;
   log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
 }
 

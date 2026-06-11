@@ -1,24 +1,45 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { selectTrustedPnlPct } from "../pnl-fetcher.js";
+import {
+  calculateMeteoraPositionPnl,
+  calculatePnl,
+} from "../pnl-fetcher.js";
 import { updatePnlAndCheckExits } from "../state.js";
 
 const statePath = "./state.json";
 const originalState = fs.existsSync(statePath) ? fs.readFileSync(statePath, "utf8") : null;
 
 try {
-  assert.deepEqual(
-    selectTrustedPnlPct(11.1111, 0.15),
-    { value: 0.15, source: "meteora", rejected: true, differencePct: 10.9611 }
-  );
-  assert.deepEqual(
-    selectTrustedPnlPct(1.2, 0.9),
-    { value: 1.2, source: "lpagent", rejected: false, differencePct: 0.29999999999999993 }
-  );
-  assert.deepEqual(
-    selectTrustedPnlPct(null, -0.4),
-    { value: -0.4, source: "meteora", rejected: false }
-  );
+  assert.deepEqual(calculatePnl({
+    balance: 110,
+    withdrawals: 5,
+    claimableFees: 6,
+    claimedFees: 4,
+    deposits: 100,
+  }), {
+    balance: 110,
+    withdrawals: 5,
+    claimableFees: 6,
+    claimedFees: 4,
+    deposits: 100,
+    pnl: 25,
+    pnlPct: 25,
+  });
+
+  const apiPosition = {
+    unrealizedPnl: {
+      balances: "110",
+      balancesSol: "1.1",
+      unclaimedFeeTokenX: { usd: "2", amountSol: "0.02" },
+      unclaimedFeeTokenY: { usd: "3", amountSol: "0.03" },
+      unclaimedRewardTokenX: { usd: "1", amountSol: "0.01" },
+    },
+    allTimeWithdrawals: { total: { usd: "5", sol: "0.05" } },
+    allTimeFees: { total: { usd: "4", sol: "0.04" } },
+    allTimeDeposits: { total: { usd: "100", sol: "1" } },
+  };
+  assert.equal(calculateMeteoraPositionPnl(apiPosition, "usd").pnl, 25);
+  assert.ok(Math.abs(calculateMeteoraPositionPnl(apiPosition, "sol").pnl - 0.25) < 1e-12);
 
   fs.writeFileSync(statePath, JSON.stringify({
     positions: {

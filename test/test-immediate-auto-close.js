@@ -117,7 +117,18 @@ await Promise.all([
 assert.equal(maxConcurrent, 2);
 
 const indexSource = fs.readFileSync(path.join(repoRoot, "index.js"), "utf8");
+const configSource = fs.readFileSync(path.join(repoRoot, "config.js"), "utf8");
+const dlmmSource = fs.readFileSync(path.join(repoRoot, "tools", "dlmm.js"), "utf8");
 assert.match(indexSource, /closeTasks\.push\(executeAutoClose\(p, exit, "poller"\)\)/);
+assert.match(indexSource, /liveOnly:\s*true/);
+assert.match(indexSource, /pnlPollIntervalMs/);
+assert.match(indexSource, /pnlSlowCheckIntervalMs/);
+assert.match(indexSource, /updatePnlAndCheckExits\(p\.position, p, config\.management\)/);
+assert.match(indexSource, /if \(!result\?\.positions\?\.length \|\| result\.stale\) return/);
+assert.match(configSource, /pnlPollIntervalMs:\s+u\.pnlPollIntervalMs\s+\?\?\s+3_000/);
+assert.match(dlmmSource, /pnl_source:\s*"rpc"/);
+assert.match(dlmmSource, /pnl_source:\s*"meteora_fallback"/);
+assert.doesNotMatch(dlmmSource.split("async function getMyPositionsLegacy")[0], /getWalletPnl/);
 assert.doesNotMatch(indexSource, /Poll-triggered management/);
 assert.doesNotMatch(indexSource, /_pollTriggeredAt/);
 assert.doesNotMatch(indexSource, /action:\s*"SUPERTREND_EXIT"/);
