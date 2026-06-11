@@ -125,8 +125,8 @@ assert.equal(
     period: 3,
     multiplier: 1,
   }), { ath: 200, athFilterPct: -20 }).confirmed,
-  false,
-  "third bullish candle is rejected",
+  true,
+  "established bullish trend is accepted",
 );
 
 assert.equal(

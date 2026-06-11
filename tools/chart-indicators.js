@@ -294,7 +294,6 @@ export function requireFreshBullishBreak(result) {
 export function evaluateBullishEntry(result, {
   ath = null,
   athFilterPct = null,
-  maxBarsSinceBreak = 1,
 } = {}) {
   if (result?.error) return { ...result, confirmed: false, reason: result.reason || result.error };
 
@@ -309,16 +308,12 @@ export function evaluateBullishEntry(result, {
     Number.isFinite(Number(signal.close))
     && Number.isFinite(Number(signal.supertrend))
     && Number(signal.close) >= Number(signal.supertrend);
-  const withinEntryWindow =
-    Number.isInteger(barsSinceBreak)
-    && barsSinceBreak >= 0
-    && barsSinceBreak <= maxBarsSinceBreak;
 
-  if (!bullish || !aboveSupertrend || !withinEntryWindow) {
+  if (!bullish || !aboveSupertrend) {
     return {
       ...result,
       confirmed: false,
-      reason: `No recent bullish Supertrend break ${signal.interval} (barsSinceBreak=${barsSinceBreak ?? "none"}, dir=${signal.direction})`,
+      reason: `Supertrend is not bullish ${signal.interval} (dir=${signal.direction})`,
     };
   }
 
@@ -347,8 +342,8 @@ export function evaluateBullishEntry(result, {
   }
 
   const entryLabel = barsSinceBreak === 0
-    ? "Fresh bullish Supertrend break"
-    : "Bullish continuation 1 candle after break";
+    ? "Bullish Supertrend break"
+    : "Bullish Supertrend trend";
   const athLabel = priceVsAthPct == null
     ? ""
     : `, candle=${priceVsAthPct.toFixed(2)}% ATH`;

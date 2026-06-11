@@ -796,7 +796,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       poolFeesSource: pool.pool_fees_source,
       feeTimeframe: pool.pool_fees_timeframe,
       decision: "deploy",
-      reason: pool.supertrend_reason || "fresh bullish Supertrend break confirmed",
+      reason: pool.supertrend_reason || "bullish Supertrend confirmed",
     }));
 
     if (_autoCloseCoordinator.size > 0) {
