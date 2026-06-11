@@ -112,18 +112,33 @@ export async function deployPosition({
   organic_score,
   initial_value_usd,
   signal_snapshot,
-}) {
+  momentum,
+}, { manualRange = false } = {}) {
   pool_address = normalizeMint(pool_address);
-  const activeStrategy = strategy || config.strategy.strategy;
+  const usesExplicitRange = strategy_label === "bottom_spot_lp" || manualRange;
+  const activeStrategy = usesExplicitRange
+    ? (strategy || config.strategy.strategy)
+    : config.strategy.strategy;
   const trackedStrategy = strategy_label || activeStrategy;
 
-  const usesExplicitRange = strategy_label === "bottom_spot_lp";
+  if (!usesExplicitRange) {
+    if (!momentum?.valid || !Number.isFinite(Number(momentum.binsBelow))) {
+      throw new Error("Normal deploy requires a valid hardcoded momentum snapshot.");
+    }
+    const candleStartMs = Date.parse(momentum.latestCandleTime);
+    const candleAgeMinutes = Number.isFinite(candleStartMs)
+      ? (Date.now() - (candleStartMs + 5 * 60_000)) / 60_000
+      : Infinity;
+    if (candleAgeMinutes < 0 || candleAgeMinutes > config.momentum.maxCandleAgeMinutes) {
+      throw new Error(`Momentum snapshot is stale (${candleAgeMinutes.toFixed(2)} minutes).`);
+    }
+    if (Number(bins_below) !== Number(momentum.binsBelow) || Number(bins_above ?? 0) !== 0) {
+      throw new Error(`Momentum range enforcement failed: expected ${momentum.binsBelow} bins below and 0 above.`);
+    }
+  }
   const activeBinsBelow = usesExplicitRange
     ? Math.max(1, Math.min(1400, bins_below ?? config.strategy.minBinsBelow))
-    : Math.max(
-      config.strategy.minBinsBelow,
-      Math.min(config.strategy.maxBinsBelow, bins_below ?? config.strategy.minBinsBelow)
-    );
+    : Number(momentum.binsBelow);
   const activeBinsAbove = bins_above ?? 0;
 
   const poolCooldown = getPoolCooldown(pool_address);
@@ -148,6 +163,7 @@ export async function deployPosition({
       amount_x: amount_x || 0,
       amount_y: amount_y || amount_sol || 0,
       wide_range: totalBins > 69,
+      momentum: momentum || null,
     };
     if (activeStrategy === "mixed") {
       const ratio = config.strategy.mixedRatio || { bidask: 70, spot: 30 };
@@ -361,6 +377,7 @@ export async function deployPosition({
       active_bin: activeBin.binId,
       initial_value_usd,
       signal_snapshot,
+      momentum,
     });
 
     const actualBinStep = pool.lbPair.binStep;
@@ -387,6 +404,7 @@ export async function deployPosition({
       amount_x: finalAmountX,
       amount_y: finalAmountY,
       txs: txHashes,
+      momentum: momentum || null,
     };
 
     if (isMixed) {

@@ -1,8 +1,15 @@
 import { config } from "../config.js";
 import { isBlacklisted } from "../token-blacklist.js";
 import { isDevBlocked, getBlockedDevs } from "../dev-blocklist.js";
-import { log } from "../logger.js";
+import { log, logAction } from "../logger.js";
 import { getGmgnPoolFees } from "./gmgn.js";
+import {
+  calculateMomentum,
+  calculateWeakMomentumFallback,
+  fetchMomentumCandles,
+  formatMomentumLog,
+  validateMomentumCandles,
+} from "./momentum.js";
 import { getPoolMemory, getTokenCloseCooldown, isPoolOnCooldown } from "../pool-memory.js";
 
 const DATAPI_JUP = "https://datapi.jup.ag/v1";
@@ -470,10 +477,16 @@ export async function getTopCandidates({ limit = 10 } = {}) {
       const r = feeResults[i];
       if (r.status === "fulfilled" && r.value?.pool_fees_sol != null) {
         eligible[i].pool_fees_sol = r.value.pool_fees_sol;
-        eligible[i].pool_fees_source = "gmgn";
+        eligible[i].pool_fees_source = r.value.source;
+        eligible[i].pool_fees_timeframe = r.value.timeframe || null;
+        eligible[i].pool_fees_unit = "SOL";
       } else if (eligible[i].fee_window != null) {
         eligible[i].pool_fees_sol = eligible[i].fee_window;
         eligible[i].pool_fees_source = "meteora_fallback";
+        eligible[i].pool_fees_timeframe = config.screening.timeframe;
+        eligible[i].pool_fees_unit = "SOL";
+        const error = r.status === "fulfilled" ? r.value?.error : r.reason?.message;
+        log("screening_warn", `Pool fee fallback: ${eligible[i].name} source=meteora_fallback timeframe=${config.screening.timeframe} gmgn_error=${error || "pool fee unavailable"}`);
       }
     }
   }
@@ -579,46 +592,136 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   // ─── Supertrend entry gate (hard filter) ───
   if (gated.length > 0) {
     const cc = config.chartIndicators;
-    const { confirmEntrySupertrendBreak } = await import("./chart-indicators.js");
-    const stResults = await Promise.allSettled(
-      gated.map((p) => {
-        const mint = p.base?.mint;
-        if (!mint) return Promise.resolve({ confirmed: true, direction: "neutral", reason: "no mint" });
-        return confirmEntrySupertrendBreak({
+    const momentumConfig = config.momentum;
+    const { confirmSupertrendFromCandles } = await import("./chart-indicators.js");
+    const signalResults = await Promise.all(
+      gated.map(async (pool) => {
+        const mint = pool.base?.mint;
+        if (!mint) return { valid: false, reason: "missing_mint" };
+
+        const fetched = await fetchMomentumCandles({
           mint,
-          interval: cc.entryInterval || cc.interval || "5m",
+          maxRetries: momentumConfig.maxRetries,
+          retryDelayMs: momentumConfig.retryDelayMs,
+        });
+        if (!fetched.success) {
+          return {
+            valid: false,
+            reason: `${fetched.errorType}: ${fetched.error}`,
+            gmgnAttempt: fetched.attempt,
+          };
+        }
+
+        const validated = validateMomentumCandles(fetched.candles, {
+          maxCandleAgeMinutes: momentumConfig.maxCandleAgeMinutes,
+        });
+        if (!validated.valid) {
+          return {
+            valid: false,
+            reason: validated.reason,
+            momentum: validated,
+            gmgnAttempt: fetched.attempt,
+          };
+        }
+
+        const supertrend = confirmSupertrendFromCandles(validated.candles, {
+          interval: "5m",
           period: cc.stPeriod || 10,
           multiplier: cc.stMultiplier || 3,
         });
-      })
-    );
-    const before = gated.length;
-    const stPassed = [];
-    for (let i = 0; i < gated.length; i++) {
-      const r = stResults[i];
-      if (r.status === "fulfilled" && r.value.confirmed) {
-        gated[i].supertrend_direction = r.value.direction;
-        gated[i].supertrend_reason = r.value.reason;
-        stPassed.push(gated[i]);
-      } else if (r.status === "rejected" || r.value?.error) {
-        const errMsg = r.value?.error || (r.reason?.message || String(r.reason));
-        if (cc.failOpen !== false) {
-          log("screening_warn", `Supertrend gate error for ${gated[i].name}, fail-open allowing: ${errMsg}`);
-          if (errMsg.includes("GMGN") || errMsg.includes("401") || errMsg.includes("insufficient data")) {
-            import("../telegram.js").then(({ sendMessage }) => {
-              sendMessage(`⚠️ GMGN API error: ${errMsg.slice(0, 120)}`).catch(() => {});
-            }).catch(() => {});
-          }
-          stPassed.push(gated[i]);
-        } else {
-          log("screening", `Supertrend gate: dropped ${gated[i].name} — error (fail-closed): ${errMsg}`);
+        if (!supertrend.confirmed) {
+          return {
+            valid: true,
+            momentum: validated,
+            supertrend,
+            gmgnAttempt: fetched.attempt,
+          };
         }
-      } else {
-        log("screening", `Supertrend gate: dropped ${gated[i].name} — ${r.value?.reason}`);
+
+        let momentum = calculateMomentum({
+          candles: fetched.candles,
+          feeActiveTvlRatio: pool.fee_active_tvl_ratio,
+          minFeeActiveTvlRatio: config.screening.minFeeActiveTvlRatio,
+          volatility: pool.volatility,
+          strongThreshold: momentumConfig.strongThreshold,
+          strongMinBins: momentumConfig.strongMinBins,
+          strongMaxBins: momentumConfig.strongMaxBins,
+          weakMinBins: momentumConfig.weakMinBins,
+          weakMaxBins: momentumConfig.weakMaxBins,
+          maxCandleAgeMinutes: momentumConfig.maxCandleAgeMinutes,
+        });
+        if (!momentum.valid) {
+          momentum = calculateWeakMomentumFallback({
+            validatedCandles: validated,
+            volatility: pool.volatility,
+            weakMinBins: momentumConfig.weakMinBins,
+            weakMaxBins: momentumConfig.weakMaxBins,
+            reason: `supertrend_confirmed_momentum_fallback: ${momentum.reason}`,
+          });
+        }
+
+        return {
+          valid: true,
+          momentum,
+          supertrend,
+          gmgnAttempt: fetched.attempt,
+        };
+      }),
+    );
+
+    const before = gated.length;
+    const signalPassed = [];
+    for (let i = 0; i < gated.length; i++) {
+      const pool = gated[i];
+      const result = signalResults[i];
+      if (!result.valid || !result.supertrend.confirmed) {
+        const reason = result.valid ? result.supertrend.reason : result.reason;
+        const momentumSnapshot = result.momentum
+          ? { ...result.momentum, candles: undefined }
+          : null;
+        log("momentum", formatMomentumLog({
+          pool: pool.pool,
+          mint: pool.base?.mint,
+          result: result.momentum,
+          gmgnAttempt: result.gmgnAttempt,
+          poolFeesSol: pool.pool_fees_sol,
+          poolFeesSource: pool.pool_fees_source,
+          feeTimeframe: pool.pool_fees_timeframe,
+          decision: "skip",
+          reason,
+        }));
+        logAction({
+          tool: "momentum_gate",
+          args: { pool: pool.pool, mint: pool.base?.mint },
+          result: {
+            decision: "skip",
+            reason,
+            momentum: momentumSnapshot,
+            gmgn_attempt: result.gmgnAttempt,
+            pool_fees_sol: pool.pool_fees_sol,
+            pool_fees_source: pool.pool_fees_source,
+            pool_fees_timeframe: pool.pool_fees_timeframe,
+          },
+          success: false,
+        });
+        log("screening", `${result.valid ? "Supertrend" : "Momentum"} gate: dropped ${pool.name} - ${reason}`);
+        continue;
       }
+
+      pool.supertrend_direction = result.supertrend.direction;
+      pool.supertrend_reason = result.supertrend.reason;
+      pool.momentum = { ...result.momentum, candles: undefined };
+      Object.defineProperty(pool, "momentum_candles", {
+        value: result.momentum.candles,
+        enumerable: false,
+      });
+      pool.momentum_gmgn_attempt = result.gmgnAttempt;
+      signalPassed.push(pool);
     }
-    gated.splice(0, gated.length, ...stPassed);
-    if (gated.length < before) log("screening", `Supertrend gate removed ${before - gated.length} pool(s)`);
+    gated.splice(0, gated.length, ...signalPassed);
+    if (gated.length < before) {
+      log("screening", `Momentum/Supertrend gate removed ${before - gated.length} pool(s)`);
+    }
   }
 
   // ─── PvP (same-symbol rival) detection — run after hard gates so all final candidates are checked ───
@@ -674,6 +777,12 @@ export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
   if (pool.token_age_hours != null && s.minTokenAgeHours != null && pool.token_age_hours < s.minTokenAgeHours) return fail(`token age ${pool.token_age_hours}h < min ${s.minTokenAgeHours}h`);
   if (pool.token_age_hours != null && s.maxTokenAgeHours != null && pool.token_age_hours > s.maxTokenAgeHours) return fail(`token age ${pool.token_age_hours}h > max ${s.maxTokenAgeHours}h`);
   if (pool.pool_fees_sol == null) return fail("pool_fees unavailable");
+  if (!["gmgn_pool", "meteora_fallback"].includes(pool.pool_fees_source)) {
+    return fail(`pool_fees source unverified: ${pool.pool_fees_source || "missing"}`);
+  }
+  if (pool.pool_fees_unit !== "SOL") {
+    return fail(`pool_fees unit unverified: ${pool.pool_fees_unit || "missing"}`);
+  }
   if (pool.pool_fees_sol < s.minTokenFeesSol) return fail(`pool_fees ${pool.pool_fees_sol} SOL < min ${s.minTokenFeesSol} SOL`);
 
   const launchpad = tokenInfo?.launchpad ?? null;
@@ -768,6 +877,8 @@ function condensePool(p) {
     fee_window: round(p.fee),
     pool_fees_sol: null,
     pool_fees_source: null,
+    pool_fees_timeframe: null,
+    pool_fees_unit: null,
     volume_window: round(p.volume),
     // fee_active_tvl_ratio: display only — NOT sent to LLM for decision. Hard gate only.
     fee_active_tvl_ratio: p.fee_active_tvl_ratio > 0

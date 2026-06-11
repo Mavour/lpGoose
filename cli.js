@@ -447,7 +447,7 @@ switch (subcommand) {
       bins_below: flags["bins-below"] ? parseInt(flags["bins-below"]) : undefined,
       bins_above: flags["bins-above"] ? parseInt(flags["bins-above"]) : undefined,
       allow_duplicate_pool: argv.includes("--allow-duplicate-pool"),
-    }));
+    }, { manualRange: true }));
     break;
   }
 

@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { log } from "../logger.js";
 
 function getGMGNKey() {
-  return process.env.GMGN_API_KEY || "";
+  return process.env.GMGN_API_KEY || process.env.GMGN_API_TOKEN || "";
 }
 
 function toGMGNResolution(interval) {
@@ -181,6 +181,51 @@ export function calcSupertrend(candles, period = 10, multiplier = 3) {
   };
 }
 
+export function confirmSupertrendFromCandles(candles, {
+  interval = "5m",
+  period = 10,
+  multiplier = 3,
+} = {}) {
+  if (!candles || candles.length < period + 1) {
+    return { confirmed: false, direction: "neutral", reason: `Not enough candles: ${candles?.length ?? 0} < ${period + 1}` };
+  }
+
+  const st = calcSupertrend(candles, period, multiplier);
+  if (st.direction === "neutral") {
+    return { confirmed: false, direction: "neutral", reason: "Insufficient data for supertrend" };
+  }
+
+  const latest = candles[candles.length - 1];
+  const previous = candles[candles.length - 2];
+  const signal = {
+    interval,
+    candleTime: latest.time,
+    supertrend: st.value,
+    close: latest.close,
+    previousClose: previous?.close ?? null,
+    previousDirection: st.previousDirection,
+    direction: st.direction,
+    supertrendBreakUp: st.supertrendBreakUp,
+    supertrendBreakDown: st.supertrendBreakDown,
+  };
+
+  if (st.supertrendBreakUp || (st.direction === "bullish" && latest.close >= st.value)) {
+    return {
+      confirmed: true,
+      direction: st.direction,
+      reason: `${st.supertrendBreakUp ? "Bullish break" : "Bullish trend"} ${interval} (ST=${formatPrice(st.value)}, prevClose=${formatPrice(previous?.close)}, close=${formatPrice(latest.close)}, prevDir=${st.previousDirection}, dir=${st.direction})`,
+      signal,
+    };
+  }
+
+  return {
+    confirmed: false,
+    direction: st.direction,
+    reason: `Bearish trend ${interval} (ST=${formatPrice(st.value)}, prevClose=${formatPrice(previous?.close)}, close=${formatPrice(latest.close)}, prevDir=${st.previousDirection}, dir=${st.direction}) - wait for bullish close`,
+    signal,
+  };
+}
+
 export async function confirmSupertrendBreak({
   mint,
   interval = "5m",
@@ -193,56 +238,7 @@ export async function confirmSupertrendBreak({
     const fetchedCandles = await fetchKlineGMGN(mint, interval, limit);
     const candles = closedOnly ? closedCandlesOnly(fetchedCandles, interval) : fetchedCandles;
 
-    if (candles.length < period + 1) {
-      return { confirmed: false, direction: "neutral", reason: `Not enough candles: ${candles.length} < ${period + 1}` };
-    }
-
-    const st = calcSupertrend(candles, period, multiplier);
-
-    if (st.direction === "neutral") {
-      return { confirmed: false, direction: "neutral", reason: "Insufficient data for supertrend" };
-    }
-
-    const latest = candles[candles.length - 1];
-    const previous = candles[candles.length - 2];
-    const latestClose = latest.close;
-    const previousClose = previous?.close ?? null;
-    const signal = {
-      interval,
-      candleTime: latest.time,
-      supertrend: st.value,
-      close: latestClose,
-      previousClose,
-      previousDirection: st.previousDirection,
-      direction: st.direction,
-      supertrendBreakUp: st.supertrendBreakUp,
-      supertrendBreakDown: st.supertrendBreakDown,
-    };
-
-    if (st.supertrendBreakUp) {
-      return {
-        confirmed: true,
-        direction: st.direction,
-        reason: `Bullish break ${interval} (ST=${formatPrice(st.value)}, prevClose=${formatPrice(previousClose)}, close=${formatPrice(latestClose)}, prevDir=${st.previousDirection}, dir=${st.direction})`,
-        signal,
-      };
-    }
-
-    if (st.direction === "bullish" && latestClose >= st.value) {
-      return {
-        confirmed: true,
-        direction: st.direction,
-        reason: `Bullish trend ${interval} (ST=${formatPrice(st.value)}, prevClose=${formatPrice(previousClose)}, close=${formatPrice(latestClose)}, prevDir=${st.previousDirection}, dir=${st.direction})`,
-        signal,
-      };
-    }
-
-    return {
-      confirmed: false,
-      direction: st.direction,
-      reason: `Bearish trend ${interval} (ST=${formatPrice(st.value)}, prevClose=${formatPrice(previousClose)}, close=${formatPrice(latestClose)}, prevDir=${st.previousDirection}, dir=${st.direction}) - wait for bullish close`,
-      signal,
-    };
+    return confirmSupertrendFromCandles(candles, { interval, period, multiplier });
   } catch (e) {
     log("screening_warn", `GMGN supertrend error for ${mint?.slice(0, 8)}: ${e.message}`);
     return { confirmed: false, error: e.message };

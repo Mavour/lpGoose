@@ -5,7 +5,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { agentLoop } from "./agent.js";
-import { log } from "./logger.js";
+import { log, logAction } from "./logger.js";
 import { getMyPositions, closePosition, claimFees, getActiveBin, deployPosition } from "./tools/dlmm.js";
 import { getWalletBalances, swapToken } from "./tools/wallet.js";
 import { evaluateScreeningGate, getTopCandidates } from "./tools/screening.js";
@@ -23,6 +23,7 @@ import { BottomSpotLPStrategy } from "./strategies/index.js";
 import { fetchKlineGMGN } from "./tools/chart-indicators.js";
 import { getConfidenceSizing, selectBestConfidenceCandidate } from "./confidence.js";
 import { PositionCloseCoordinator } from "./position-close-coordinator.js";
+import { formatMomentumLog } from "./tools/momentum.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -30,6 +31,9 @@ const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
 log("startup", `Model: ${process.env.LLM_MODEL || "hermes-3-405b"}`);
+if (!process.env.GMGN_API_KEY && !process.env.GMGN_API_TOKEN) {
+  log("startup_warn", "GMGN credentials missing - normal auto-deploy will fail closed at the momentum gate.");
+}
 
 const TP_PCT = config.management.takeProfitFeePct;
 const DEPLOY = config.management.deployAmountSol;
@@ -739,19 +743,42 @@ export async function runScreeningCycle({ silent = false } = {}) {
       log("screening", `${pool.name} skipped - confidence ${confidence.total}% below ${config.confidence.skipThreshold}%`);
       return screenReport;
     }
-    const volatility = pool.volatility ?? 5;
-
-    const bins_below = Math.round(
-      Math.min(config.strategy.maxBinsBelow, Math.max(config.strategy.minBinsBelow,
-        config.strategy.minBinsBelow + (volatility / 5) * (config.strategy.maxBinsBelow - config.strategy.minBinsBelow)))
-    );
+    const momentum = pool.momentum;
+    if (!momentum?.valid) {
+      const reason = momentum?.reason || "momentum snapshot unavailable";
+      log("momentum", formatMomentumLog({
+        pool: pool.pool,
+        mint: pool.base?.mint,
+        result: momentum,
+        gmgnAttempt: pool.momentum_gmgn_attempt,
+        poolFeesSol: pool.pool_fees_sol,
+        poolFeesSource: pool.pool_fees_source,
+        feeTimeframe: pool.pool_fees_timeframe,
+        decision: "skip",
+        reason,
+      }));
+      return `Deploy skipped: ${reason}`;
+    }
+    const bins_below = momentum.binsBelow;
+    log("momentum", formatMomentumLog({
+      pool: pool.pool,
+      mint: pool.base?.mint,
+      result: momentum,
+      gmgnAttempt: pool.momentum_gmgn_attempt,
+      poolFeesSol: pool.pool_fees_sol,
+      poolFeesSource: pool.pool_fees_source,
+      feeTimeframe: pool.pool_fees_timeframe,
+      decision: "deploy",
+      reason: "all hard gates passed",
+    }));
 
     if (_autoCloseCoordinator.size > 0) {
       log("screening", `Deploy skipped - ${_autoCloseCoordinator.size} priority close(s) in progress`);
       return "Deploy skipped while priority close is in progress.";
     }
 
-    const deployResult = await deployPosition({
+    const deployStartedAt = Date.now();
+    const deployArgs = {
       pool_address: pool.pool,
       amount_sol: sizing.amount,
       strategy: config.strategy.strategy,
@@ -762,9 +789,24 @@ export async function runScreeningCycle({ silent = false } = {}) {
       fee_tvl_ratio: pool.fee_active_tvl_ratio,
       volatility: pool.volatility,
       organic_score: pool.organic_score,
+      momentum,
+      signal_snapshot: {
+        momentum,
+        pool_fees_sol: pool.pool_fees_sol,
+        pool_fees_source: pool.pool_fees_source,
+        pool_fees_timeframe: pool.pool_fees_timeframe,
+      },
+    };
+    const deployResult = await deployPosition(deployArgs);
+    logAction({
+      tool: "deploy_position",
+      args: deployArgs,
+      result: deployResult,
+      duration_ms: Date.now() - deployStartedAt,
+      success: deployResult?.success === true || deployResult?.dry_run === true,
     });
 
-    if (deployResult.success) {
+    if (deployResult.success || deployResult.dry_run) {
       const minPrice = deployResult.price_range?.min ?? "?";
       const maxPrice = deployResult.price_range?.max ?? "?";
       const downsidePct = minPrice !== "?" && maxPrice !== "?" ? ((minPrice / maxPrice - 1) * 100).toFixed(2) : "?";
@@ -791,7 +833,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         : "No narrative available.";
 
       screenReport = [
-        `DEPLOYED: ${pool.name}`,
+        `${deployResult.dry_run ? "DRY RUN" : "DEPLOYED"}: ${pool.name}`,
         `${pool.pool}`,
         ``,
         `Allocation`,
@@ -801,6 +843,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
         `Fee/Active TVL score: ${confidence.fee_active_tvl_score}/40`,
         `Smart wallet score: ${confidence.smart_wallet_score}/20 (${confidence.recent_smart_wallets.length} within ${config.confidence.smartWalletMaxAgeMinutes}m)`,
         `Strategy: ${config.strategy.strategy}`,
+        `Momentum: ${momentum.score ?? "N/A"} (${momentum.classification})`,
+        `Momentum bins: ${momentum.selectedBand.join("-")} -> ${momentum.binsBelow}`,
+        `Price 5m: ${momentum.priceChange5m.toFixed(2)}%`,
+        `Volume ratio: ${momentum.volumeRatio.toFixed(2)}x`,
         `Active bin: ${activeBin ?? "?"}`,
         `Range: ${minPrice} → ${maxPrice} SOL`,
         `Downside cover: ${downsidePct}%`,
@@ -808,7 +854,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         `Pool Quality`,
         `Fee tier: ${pool.fee_pct}%`,
         `Fee/TVL: ${feeTvlStr}`,
-        `Pool fees: ${feesSol} SOL${pool.pool_fees_source ? ` (${pool.pool_fees_source})` : ""}`,
+        `Pool fees: ${feesSol} SOL${pool.pool_fees_source ? ` (${pool.pool_fees_source}, ${pool.pool_fees_timeframe || "timeframe unknown"})` : ""}`,
         `Volume: $${pool.volume_window}`,
         `TVL: $${pool.active_tvl}`,
         `Volatility: ${pool.volatility}`,

@@ -20,8 +20,16 @@ import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-bla
 import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
-import { config, reloadScreeningThresholds } from "../config.js";
+import { config, reloadScreeningThresholds, computeDeployAmount } from "../config.js";
 import { getMinimumConfidenceDeployAmount } from "../confidence.js";
+import {
+  calculateMomentum,
+  calculateWeakMomentumFallback,
+  fetchMomentumCandles,
+  formatMomentumLog,
+  validateMomentumCandles,
+} from "./momentum.js";
+import { confirmSupertrendFromCandles } from "./chart-indicators.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -175,6 +183,14 @@ const toolMap = {
       confidenceSkipThreshold: ["confidence", "skipThreshold"],
       confidenceHalfMultiplier: ["confidence", "halfMultiplier"],
       smartWalletMaxAgeMinutes: ["confidence", "smartWalletMaxAgeMinutes"],
+      momentumStrongThreshold: ["momentum", "strongThreshold"],
+      momentumStrongMinBins: ["momentum", "strongMinBins"],
+      momentumStrongMaxBins: ["momentum", "strongMaxBins"],
+      momentumWeakMinBins: ["momentum", "weakMinBins"],
+      momentumWeakMaxBins: ["momentum", "weakMaxBins"],
+      momentumMaxCandleAgeMinutes: ["momentum", "maxCandleAgeMinutes"],
+      momentumMaxRetries: ["momentum", "maxRetries"],
+      momentumRetryDelayMs: ["momentum", "retryDelayMs"],
       // risk
       maxPositions: ["risk", "maxPositions"],
       maxDeployAmount: ["risk", "maxDeployAmount"],
@@ -270,7 +286,7 @@ const WRITE_TOOLS = new Set([
 /**
  * Execute a tool call with safety checks and logging.
  */
-export async function executeTool(name, args) {
+export async function executeTool(name, args, options = {}) {
   const startTime = Date.now();
 
   // Strip model artifacts like "<|channel|>commentary" appended to tool names
@@ -286,9 +302,16 @@ export async function executeTool(name, args) {
 
   // ─── Pre-execution safety checks ──────────
   if (WRITE_TOOLS.has(name)) {
-    const safetyCheck = await runSafetyChecks(name, args);
+    const safetyCheck = await runSafetyChecks(name, args, options);
     if (!safetyCheck.pass) {
       log("safety_block", `${name} blocked: ${safetyCheck.reason}`);
+      logAction({
+        tool: name,
+        args,
+        result: { blocked: true, reason: safetyCheck.reason },
+        duration_ms: Date.now() - startTime,
+        success: false,
+      });
       return {
         blocked: true,
         reason: safetyCheck.reason,
@@ -298,7 +321,9 @@ export async function executeTool(name, args) {
 
   // ─── Execute ──────────────────────────────
   try {
-    const result = await fn(args);
+    const result = name === "deploy_position"
+      ? await deployPosition(args, { manualRange: options.manualRange === true })
+      : await fn(args);
     const duration = Date.now() - startTime;
     const success = result?.success !== false && !result?.error;
 
@@ -387,9 +412,13 @@ export async function executeTool(name, args) {
 /**
  * Run safety checks before executing write operations.
  */
-async function runSafetyChecks(name, args) {
+async function runSafetyChecks(name, args, options = {}) {
   switch (name) {
     case "deploy_position": {
+      if (!options.manualRange) {
+        args.amount_y = config.management.deployAmountSol;
+        args.amount_sol = config.management.deployAmountSol;
+      }
       // Reject pools with bin_step out of configured range
       const minStep = config.screening.minBinStep;
       const maxStep = config.screening.maxBinStep;
@@ -413,6 +442,95 @@ async function runSafetyChecks(name, args) {
       }
       const liveBaseMint = livePool.token_x?.address || livePool.mint_x || livePool.base_mint || null;
 
+      if (!options.manualRange) {
+        if (!liveBaseMint) {
+          return { pass: false, reason: "Momentum validation requires a live base mint." };
+        }
+        const fetched = await fetchMomentumCandles({
+          mint: liveBaseMint,
+          maxRetries: config.momentum.maxRetries,
+          retryDelayMs: config.momentum.retryDelayMs,
+        });
+        if (!fetched.success) {
+          log("momentum", formatMomentumLog({
+            pool: args.pool_address,
+            mint: liveBaseMint,
+            gmgnAttempt: fetched.attempt,
+            poolFeesSol: livePool.fee,
+            poolFeesSource: "meteora_fallback",
+            feeTimeframe: config.screening.timeframe,
+            decision: "skip",
+            reason: `${fetched.errorType}: ${fetched.error}`,
+          }));
+          return { pass: false, reason: `Momentum data unavailable: ${fetched.error}` };
+        }
+
+        const validated = validateMomentumCandles(fetched.candles, {
+          maxCandleAgeMinutes: config.momentum.maxCandleAgeMinutes,
+        });
+        if (!validated.valid) {
+          return { pass: false, reason: `Momentum candle validation failed: ${validated.reason}` };
+        }
+
+        const stCheck = confirmSupertrendFromCandles(validated.candles, {
+          interval: "5m",
+          period: config.chartIndicators.stPeriod || 10,
+          multiplier: config.chartIndicators.stMultiplier || 3,
+        });
+        if (!stCheck.confirmed) {
+          return { pass: false, reason: `Supertrend not confirmed: ${stCheck.reason}` };
+        }
+
+        let momentum = calculateMomentum({
+          candles: fetched.candles,
+          feeActiveTvlRatio: liveFeeTvl,
+          minFeeActiveTvlRatio,
+          volatility: livePool.volatility,
+          strongThreshold: config.momentum.strongThreshold,
+          strongMinBins: config.momentum.strongMinBins,
+          strongMaxBins: config.momentum.strongMaxBins,
+          weakMinBins: config.momentum.weakMinBins,
+          weakMaxBins: config.momentum.weakMaxBins,
+          maxCandleAgeMinutes: config.momentum.maxCandleAgeMinutes,
+        });
+        if (!momentum.valid) {
+          momentum = calculateWeakMomentumFallback({
+            validatedCandles: validated,
+            volatility: livePool.volatility,
+            weakMinBins: config.momentum.weakMinBins,
+            weakMaxBins: config.momentum.weakMaxBins,
+            reason: `supertrend_confirmed_momentum_fallback: ${momentum.reason}`,
+          });
+        }
+
+        const momentumSnapshot = { ...momentum, candles: undefined };
+        args.strategy = config.strategy.strategy;
+        args.bins_below = momentum.binsBelow;
+        args.bins_above = 0;
+        args.base_mint = liveBaseMint;
+        args.volatility = momentum.volatility;
+        args.fee_tvl_ratio = liveFeeTvl;
+        args.momentum = momentumSnapshot;
+        args.signal_snapshot = {
+          ...(args.signal_snapshot || {}),
+          momentum: momentumSnapshot,
+          pool_fees_sol: livePool.fee ?? null,
+          pool_fees_source: "meteora_fallback",
+          pool_fees_timeframe: config.screening.timeframe,
+        };
+        log("momentum", formatMomentumLog({
+          pool: args.pool_address,
+          mint: liveBaseMint,
+          result: momentum,
+          gmgnAttempt: fetched.attempt,
+          poolFeesSol: livePool.fee,
+          poolFeesSource: "meteora_fallback",
+          feeTimeframe: config.screening.timeframe,
+          decision: "deploy",
+          reason: "tool deploy hard gates passed",
+        }));
+      }
+
       if (config.screening.blockPvpSymbols) {
         const pvpPool = {
           pool: args.pool_address,
@@ -431,7 +549,7 @@ async function runSafetyChecks(name, args) {
       }
 
       // Supertrend gate: re-check at deploy time (fresh data via GMGN)
-      const baseMintForSt = args.base_mint || liveBaseMint;
+      const baseMintForSt = options.manualRange ? (args.base_mint || liveBaseMint) : null;
       if (baseMintForSt) {
         const cc = config.chartIndicators;
         const { confirmEntrySupertrendBreak } = await import("./chart-indicators.js");
@@ -514,12 +632,30 @@ async function runSafetyChecks(name, args) {
 
       // Check SOL balance
       const balance = await getWalletBalances();
+      if (!options.manualRange) {
+        const deterministicAmount = computeDeployAmount(balance.sol);
+        args.amount_y = deterministicAmount;
+        args.amount_sol = deterministicAmount;
+      }
+      const finalAmountY = args.amount_y ?? args.amount_sol ?? 0;
+      if (finalAmountY < minDeploy) {
+        return {
+          pass: false,
+          reason: `Deterministic amount ${finalAmountY} SOL is below the minimum deploy amount (${minDeploy} SOL).`,
+        };
+      }
+      if (finalAmountY > config.risk.maxDeployAmount) {
+        return {
+          pass: false,
+          reason: `Deterministic amount ${finalAmountY} SOL exceeds maximum allowed per position (${config.risk.maxDeployAmount}).`,
+        };
+      }
       const gasReserve = config.management.gasReserve;
-      const minRequired = amountY + gasReserve;
+      const minRequired = finalAmountY + gasReserve;
       if (balance.sol < minRequired) {
         return {
           pass: false,
-          reason: `Insufficient SOL: have ${balance.sol} SOL, need ${minRequired} SOL (${amountY} deploy + ${gasReserve} gas reserve).`,
+          reason: `Insufficient SOL: have ${balance.sol} SOL, need ${minRequired} SOL (${finalAmountY} deploy + ${gasReserve} gas reserve).`,
         };
       }
 

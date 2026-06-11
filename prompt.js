@@ -115,7 +115,7 @@ POOL MEMORY: Informational only. Past performance is NOT used to filter or bias 
 
 DEPLOY RULES:
 - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT default to a smaller number.
-- bins_below = round(${config.strategy.minBinsBelow} + (volatility/5)*(${config.strategy.maxBinsBelow - config.strategy.minBinsBelow})) clamped to [${config.strategy.minBinsBelow},${config.strategy.maxBinsBelow}]. bins_above = 0.
+- Do not choose bins. Code hard-enforces momentum-based bins: score >= ${config.momentum.strongThreshold} uses ${config.momentum.strongMinBins}-${config.momentum.strongMaxBins}; otherwise ${config.momentum.weakMinBins}-${config.momentum.weakMaxBins}. bins_above is always 0.
 - STRATEGY: Fixed by user-config (current: ${config.strategy.strategy}). Agent does NOT change strategy. Mixed = 70% bidask + 30% spot auto-split.
 - Bin steps must be [${config.screening.minBinStep}-${config.screening.maxBinStep}].
 - Pick ONE pool. Deploy or explain why none qualify.

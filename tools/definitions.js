@@ -165,11 +165,11 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           },
           bins_below: {
             type: "number",
-            description: "Number of bins below active bin. If the user specifies a value, use it exactly. If they specify a % range (e.g. '-60% range'), convert using: bins = ceil(log(1 - pct) / log(1 + bin_step/10000)). Example: -60% range at bin_step 100 → ceil(log(0.40)/log(1.01)) = 92 bins. Otherwise use the volatility-based formula from the system prompt which draws from config minBinsBelow/maxBinsBelow. Max 1400 total."
+            description: "Ignored for agent/model deploys. Code computes bins from the hardcoded momentum selector. Explicit bins are only honored by the trusted manual CLI path."
           },
           bins_above: {
             type: "number",
-            description: "Number of bins above active bin. MUST be 0 for bid_ask strategy — placing bins above active bin defeats the purpose of bid-ask. Only set > 0 for spot/dual-sided strategies."
+            description: "Ignored for agent/model deploys. Normal deploys are hard-enforced to 0; explicit values are only honored by the trusted manual CLI path."
           },
           pool_name: { type: "string", description: "Human-readable pool name for record-keeping" },
           base_mint: { type: "string", description: "Base token mint address — used to prevent duplicate token exposure across pools" },

@@ -88,6 +88,17 @@ export const config = {
     smartWalletMaxAgeMinutes: u.smartWalletMaxAgeMinutes ?? 60,
   },
 
+  momentum: {
+    strongThreshold: u.momentumStrongThreshold ?? u.momentum?.strongThreshold ?? 70,
+    strongMinBins: u.momentumStrongMinBins ?? u.momentum?.strongMinBins ?? 40,
+    strongMaxBins: u.momentumStrongMaxBins ?? u.momentum?.strongMaxBins ?? 70,
+    weakMinBins: u.momentumWeakMinBins ?? u.momentum?.weakMinBins ?? 70,
+    weakMaxBins: u.momentumWeakMaxBins ?? u.momentum?.weakMaxBins ?? 150,
+    maxCandleAgeMinutes: u.momentumMaxCandleAgeMinutes ?? u.momentum?.maxCandleAgeMinutes ?? 10,
+    maxRetries: u.momentumMaxRetries ?? u.momentum?.maxRetries ?? 2,
+    retryDelayMs: u.momentumRetryDelayMs ?? u.momentum?.retryDelayMs ?? 500,
+  },
+
   // ─── Chart Indicators (Supertrend Entry Gate) ───
   chartIndicators: {
     enabled:       u.chartIndicators?.enabled       ?? true,
