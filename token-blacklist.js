@@ -23,6 +23,41 @@ function save(data) {
   fs.writeFileSync(BLACKLIST_FILE, JSON.stringify(data, null, 2));
 }
 
+export function parseBlacklistCommand(text) {
+  const input = String(text || "").trim();
+  if (/^\/?(?:list\s+blacklist|blacklist\s+list)$/i.test(input)) {
+    return { action: "list" };
+  }
+
+  const remove = input.match(/^\/?(?:remove\s+blacklist|unblacklist)\s+(\S+)$/i);
+  if (remove) {
+    return { action: "remove", target: remove[1] };
+  }
+
+  const add = input.match(/^\/?blacklist\s+(\S+)\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+(.+))?$/i);
+  if (add) {
+    return {
+      action: "add",
+      symbol: add[1],
+      mint: add[2],
+      reason: add[3]?.trim() || "Manually blacklisted from Telegram",
+    };
+  }
+
+  return null;
+}
+
+export function resolveBlacklistMint(target) {
+  if (!target) return null;
+  const db = load();
+  if (db[target]) return target;
+  const normalized = String(target).toUpperCase();
+  const matches = Object.entries(db)
+    .filter(([, info]) => String(info?.symbol || "").toUpperCase() === normalized)
+    .map(([mint]) => mint);
+  return matches.length === 1 ? matches[0] : null;
+}
+
 // ─── Check ─────────────────────────────────────────────────────
 
 /**

@@ -46,7 +46,7 @@ const INTENT_PATTERNS = [
   { intent: "lessons",     re: /\b(lesson|learned|teach|pin|unpin|clear lesson|what did you learn)\b/i },
 ];
 
-function getToolsForRole(agentType, goal = "") {
+export function getToolsForRole(agentType, goal = "") {
   if (agentType === "MANAGER")  return tools.filter(t => MANAGER_TOOLS.has(t.function.name));
   if (agentType === "SCREENER") return tools.filter(t => SCREENER_TOOLS.has(t.function.name));
 
@@ -58,8 +58,8 @@ function getToolsForRole(agentType, goal = "") {
     }
   }
 
-  // Fall back to all tools if no intent matched
-  if (matched.size === 0) return tools;
+  // Casual chat should not send the entire tool schema to the provider.
+  if (matched.size === 0) return [];
   return tools.filter(t => matched.has(t.function.name));
 }
 import { getWalletBalances } from "./tools/wallet.js";
@@ -132,17 +132,21 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       let usedModel = activeModel;
       // Force a tool call on step 0 for action intents — prevents the model from inventing deploy/close outcomes
       const ACTION_INTENTS = /\b(deploy|open|add liquidity|close|exit|withdraw|claim|swap|block|unblock)\b/i;
+      const availableTools = getToolsForRole(agentType, goal);
       const toolChoice = (step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) ? "required" : "auto";
 
       for (let attempt = 0; attempt < 3; attempt++) {
-        response = await client.chat.completions.create({
+        const request = {
           model: usedModel,
           messages,
-          tools: getToolsForRole(agentType, goal),
-          tool_choice: toolChoice,
           temperature: config.llm.temperature,
           max_tokens: maxOutputTokens ?? config.llm.maxTokens,
-        });
+        };
+        if (availableTools.length > 0) {
+          request.tools = availableTools;
+          request.tool_choice = toolChoice;
+        }
+        response = await client.chat.completions.create(request);
         if (response.choices?.length) break;
         const errCode = response.error?.code;
         if (errCode === 502 || errCode === 503 || errCode === 529) {

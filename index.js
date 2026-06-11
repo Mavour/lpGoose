@@ -24,6 +24,13 @@ import { fetchKlineGMGN } from "./tools/chart-indicators.js";
 import { getConfidenceSizing, selectBestConfidenceCandidate } from "./confidence.js";
 import { PositionCloseCoordinator } from "./position-close-coordinator.js";
 import { formatMomentumLog } from "./tools/momentum.js";
+import {
+  addToBlacklist,
+  listBlacklist,
+  parseBlacklistCommand,
+  removeFromBlacklist,
+  resolveBlacklistMint,
+} from "./token-blacklist.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -1610,6 +1617,46 @@ if (isTTY) {
       return;
     }
 
+    if (/^\/?(?:halo|hai|hi|hello)$/i.test(text.trim())) {
+      await sendMessage("Halo. Meridian aktif.");
+      return;
+    }
+
+    const blacklistCommand = parseBlacklistCommand(text);
+    if (blacklistCommand) {
+      try {
+        if (blacklistCommand.action === "add") {
+          const result = addToBlacklist(blacklistCommand);
+          await sendMessage(
+            result.already_blacklisted
+              ? `${result.symbol || blacklistCommand.symbol} is already blacklisted.\nMint: ${blacklistCommand.mint}`
+              : `Blacklisted ${blacklistCommand.symbol}.\nMint: ${blacklistCommand.mint}\nReason: ${blacklistCommand.reason}`
+          );
+          return;
+        }
+
+        if (blacklistCommand.action === "remove") {
+          const mint = resolveBlacklistMint(blacklistCommand.target);
+          if (!mint) {
+            await sendMessage(`Blacklist entry not found or symbol is ambiguous: ${blacklistCommand.target}`);
+            return;
+          }
+          const result = removeFromBlacklist({ mint });
+          await sendMessage(`Removed ${result.was?.symbol || mint} from blacklist.\nMint: ${mint}`);
+          return;
+        }
+
+        const entries = listBlacklist();
+        const lines = entries.blacklist.map((entry, index) =>
+          `${index + 1}. ${entry.symbol || "UNKNOWN"} ${entry.mint}\n${entry.reason || "No reason"}`
+        );
+        await sendMessage(lines.length ? `Blacklist:\n\n${lines.join("\n\n")}` : "Blacklist is empty.");
+      } catch (e) {
+        await sendMessage(`Blacklist command failed: ${e.message}`);
+      }
+      return;
+    }
+
     if (_managementBusy || _screeningBusy || busy) {
       if (_telegramQueue.length < 5) {
         _telegramQueue.push(text);
@@ -1762,12 +1809,11 @@ if (isTTY) {
 
     busy = true;
     try {
-      log("telegram", `Incoming: ${text}`);
       const hasCloseIntent = /\bclose\b|\bsell\b|\bexit\b|\bwithdraw\b/i.test(text);
       const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b|\badd liquidity\b/i.test(text);
       const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
       const agentModel = agentRole === "SCREENER" ? config.llm.screeningModel : config.llm.generalModel;
-      const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, agentRole, agentModel, null, { requireTool: true });
+      const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, agentRole, agentModel);
       appendHistory(text, content);
       await sendMessage(stripThink(content));
     } catch (e) {
