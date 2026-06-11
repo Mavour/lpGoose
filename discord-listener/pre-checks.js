@@ -168,19 +168,16 @@ async function poolFeesCheck(mint, poolAddress) {
 
   try {
     const gmgn = await getGmgnPoolFees({ mint, pool_address: poolAddress });
-    let poolFees = gmgn.pool_fees_sol;
-    let source = gmgn.source;
-
-    if (poolFees == null && poolAddress) {
-      const url = `https://pool-discovery-api.datapi.meteora.ag/pools?page_size=1&filter_by=${encodeURIComponent(`pool_address=${poolAddress}`)}&timeframe=5m`;
-      const res = await axios.get(url, { timeout: 8000 });
-      poolFees = res.data?.data?.[0]?.fee != null ? parseFloat(res.data.data[0].fee) : null;
-      source = poolFees != null ? "meteora_fallback" : source;
-    }
+    const poolFees = gmgn.pool_fees_sol;
+    const source = gmgn.source;
 
     if (poolFees == null) {
-      console.warn(`  [fees] No pool fee data for ${poolAddress || mint} - passing`);
-      return { pass: true, pool_fees_sol: null, pool_fees_source: source };
+      return {
+        pass: false,
+        reason: `verified GMGN pool fees unavailable: ${gmgn.error || "unknown error"}`,
+        pool_fees_sol: null,
+        pool_fees_source: source,
+      };
     }
     if (poolFees < minFeesSol) {
       return { pass: false, reason: `pool fees too low: ${poolFees.toFixed(2)} SOL < ${minFeesSol} SOL threshold` };

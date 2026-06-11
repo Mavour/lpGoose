@@ -3,6 +3,7 @@ import { isBlacklisted } from "../token-blacklist.js";
 import { isDevBlocked, getBlockedDevs } from "../dev-blocklist.js";
 import { log, logAction } from "../logger.js";
 import { getGmgnPoolFees } from "./gmgn.js";
+import { getPriceInfo } from "./okx.js";
 import {
   calculateMomentum,
   calculateWeakMomentumFallback,
@@ -15,6 +16,72 @@ import { getPoolMemory, getTokenCloseCooldown, isPoolOnCooldown } from "../pool-
 const DATAPI_JUP = "https://datapi.jup.ag/v1";
 
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
+
+export async function verifyLiveEntryGuards({ poolAddress, mint }, {
+  getPoolFees = getGmgnPoolFees,
+  getPrice = getPriceInfo,
+} = {}) {
+  if (!poolAddress || !mint) {
+    return { pass: false, reason: "live entry verification requires pool address and base mint" };
+  }
+
+  let fees;
+  try {
+    fees = await getPoolFees({ mint, pool_address: poolAddress });
+  } catch (error) {
+    return { pass: false, reason: `verified GMGN pool fees unavailable: ${error.message}` };
+  }
+  if (fees?.pool_fees_sol == null || !["gmgn_pool", "gmgn_token_total"].includes(fees.source)) {
+    return {
+      pass: false,
+      reason: `verified GMGN pool fees unavailable: ${fees?.error || "unknown error"}`,
+    };
+  }
+  if (fees.pool_fees_sol < config.screening.minTokenFeesSol) {
+    return {
+      pass: false,
+      reason: `pool_fees ${fees.pool_fees_sol} SOL < min ${config.screening.minTokenFeesSol} SOL`,
+    };
+  }
+
+  let price = null;
+  if (config.screening.athFilterPct != null) {
+    try {
+      price = await getPrice(mint);
+    } catch (error) {
+      if (fees.price_vs_ath_pct != null) {
+        price = {
+          price: fees.price,
+          ath: fees.ath,
+          price_vs_ath_pct: fees.price_vs_ath_pct,
+          source: "gmgn_token_info",
+        };
+      } else {
+        return { pass: false, reason: `ATH data unavailable: ${error.message}` };
+      }
+    }
+    if (price?.price_vs_ath_pct == null && fees.price_vs_ath_pct != null) {
+      price = {
+        price: fees.price,
+        ath: fees.ath,
+        price_vs_ath_pct: fees.price_vs_ath_pct,
+        source: "gmgn_token_info",
+      };
+    }
+    if (price?.price_vs_ath_pct == null) {
+      return { pass: false, reason: "ATH data unavailable while ATH filter is active" };
+    }
+    const threshold = 100 + config.screening.athFilterPct;
+    if (price.price_vs_ath_pct > threshold) {
+      return {
+        pass: false,
+        reason: `price_vs_ath ${price.price_vs_ath_pct}% > limit ${threshold}%`,
+      };
+    }
+  }
+
+  return { pass: true, fees, price };
+}
 
 // ─── PvP (same-symbol rival) detection constants ───
 const PVP_COPYCAT_AGE_GAP_MS = 24 * 60 * 60 * 1000;
@@ -480,13 +547,9 @@ export async function getTopCandidates({ limit = 10 } = {}) {
         eligible[i].pool_fees_source = r.value.source;
         eligible[i].pool_fees_timeframe = r.value.timeframe || null;
         eligible[i].pool_fees_unit = "SOL";
-      } else if (eligible[i].fee_window != null) {
-        eligible[i].pool_fees_sol = eligible[i].fee_window;
-        eligible[i].pool_fees_source = "meteora_fallback";
-        eligible[i].pool_fees_timeframe = config.screening.timeframe;
-        eligible[i].pool_fees_unit = "SOL";
+      } else {
         const error = r.status === "fulfilled" ? r.value?.error : r.reason?.message;
-        log("screening_warn", `Pool fee fallback: ${eligible[i].name} source=meteora_fallback timeframe=${config.screening.timeframe} gmgn_error=${error || "pool fee unavailable"}`);
+        log("screening_warn", `GMGN fee unavailable: ${eligible[i].name} gmgn_error=${error || "fee unavailable"}; Meteora window fee is USD and cannot satisfy minTokenFeesSol`);
       }
     }
   }
@@ -553,7 +616,10 @@ export async function getTopCandidates({ limit = 10 } = {}) {
       const threshold = 100 + athFilter; // e.g. -20 → threshold = 80 (price must be <= 80% of ATH)
       const before = eligible.length;
       eligible.splice(0, eligible.length, ...eligible.filter((p) => {
-        if (p.price_vs_ath_pct == null) return true; // no data → don't filter
+        if (p.price_vs_ath_pct == null) {
+          log("screening", `ATH filter: dropped ${p.name} - ATH data unavailable`);
+          return false;
+        }
         if (p.price_vs_ath_pct > threshold) {
           log("screening", `ATH filter: dropped ${p.name} — ${p.price_vs_ath_pct}% of ATH (limit: ${threshold}%)`);
           return false;
@@ -777,7 +843,7 @@ export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
   if (pool.token_age_hours != null && s.minTokenAgeHours != null && pool.token_age_hours < s.minTokenAgeHours) return fail(`token age ${pool.token_age_hours}h < min ${s.minTokenAgeHours}h`);
   if (pool.token_age_hours != null && s.maxTokenAgeHours != null && pool.token_age_hours > s.maxTokenAgeHours) return fail(`token age ${pool.token_age_hours}h > max ${s.maxTokenAgeHours}h`);
   if (pool.pool_fees_sol == null) return fail("pool_fees unavailable");
-  if (!["gmgn_pool", "meteora_fallback"].includes(pool.pool_fees_source)) {
+  if (!["gmgn_pool", "gmgn_token_total"].includes(pool.pool_fees_source)) {
     return fail(`pool_fees source unverified: ${pool.pool_fees_source || "missing"}`);
   }
   if (pool.pool_fees_unit !== "SOL") {
@@ -803,7 +869,8 @@ export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
   if (pool.is_wash) return fail("wash trading flagged");
   if (pool.is_rugpull) return fail("rugpull flagged");
 
-  if (s.athFilterPct != null && pool.price_vs_ath_pct != null) {
+  if (s.athFilterPct != null) {
+    if (pool.price_vs_ath_pct == null) return fail("price_vs_ath unavailable while ATH filter is active");
     const threshold = 100 + s.athFilterPct;
     if (pool.price_vs_ath_pct > threshold) return fail(`price_vs_ath ${pool.price_vs_ath_pct}% > limit ${threshold}%`);
   }
@@ -874,7 +941,7 @@ function condensePool(p) {
 
     // Core metrics (the numbers that matter)
     active_tvl: round(p.active_tvl),
-    fee_window: round(p.fee),
+    fee_window_usd: round(p.fee),
     pool_fees_sol: null,
     pool_fees_source: null,
     pool_fees_timeframe: null,

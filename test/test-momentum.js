@@ -9,7 +9,7 @@ import {
 import { confirmSupertrendFromCandles } from "../tools/chart-indicators.js";
 import { deployPosition } from "../tools/dlmm.js";
 import { getGmgnPoolFees } from "../tools/gmgn.js";
-import { evaluateScreeningGate } from "../tools/screening.js";
+import { evaluateScreeningGate, verifyLiveEntryGuards } from "../tools/screening.js";
 
 const FIVE_MINUTES = 5 * 60_000;
 const now = Date.UTC(2026, 5, 11, 6, 0, 0);
@@ -179,12 +179,12 @@ const logLine = formatMomentumLog({
   result: strong,
   gmgnAttempt: 1,
   poolFeesSol: 42,
-  poolFeesSource: "meteora_fallback",
+  poolFeesSource: "gmgn_pool",
   feeTimeframe: "30m",
   decision: "deploy",
   reason: "test",
 });
-assert.match(logLine, /pool_fees_source=meteora_fallback/);
+assert.match(logLine, /pool_fees_source=gmgn_pool/);
 assert.match(logLine, /final_bins_below=55/);
 
 const poolFee = await getGmgnPoolFees(
@@ -204,14 +204,19 @@ assert.deepEqual(poolFee, {
   pool_fees_sol: 42,
   source: "gmgn_pool",
   timeframe: "24h",
+  scope: "pool",
 });
 
 const tokenOnlyFee = await getGmgnPoolFees(
   { mint: "mint", pool_address: "TargetPool" },
-  { fetchData: async () => ({ data: { total_fees_sol: 999 } }) },
+  { fetchData: async () => ({ data: { total_fee: 57.64 } }) },
 );
-assert.equal(tokenOnlyFee.pool_fees_sol, null);
-assert.match(tokenOnlyFee.error, /requested pool/);
+assert.deepEqual(tokenOnlyFee, {
+  pool_fees_sol: 57.64,
+  source: "gmgn_token_total",
+  timeframe: "all_time",
+  scope: "token",
+});
 
 const gatePool = {
   pool: "FeeSourceTestPool",
@@ -238,11 +243,41 @@ assert.match(
   evaluateScreeningGate(gatePool, { tokenInfo: { launchpad: "pump.fun", audit: {} } }).reason,
   /source unverified/,
 );
-gatePool.pool_fees_source = "meteora_fallback";
+gatePool.pool_fees_source = "gmgn_pool";
 assert.equal(
   evaluateScreeningGate(gatePool, { tokenInfo: { launchpad: "pump.fun", audit: {} } }).pass,
   true,
 );
+gatePool.pool_fees_source = "gmgn_token_total";
+assert.equal(
+  evaluateScreeningGate(gatePool, { tokenInfo: { launchpad: "pump.fun", audit: {} } }).pass,
+  true,
+);
+gatePool.price_vs_ath_pct = null;
+assert.match(
+  evaluateScreeningGate(gatePool, { tokenInfo: { launchpad: "pump.fun", audit: {} } }).reason,
+  /price_vs_ath unavailable/,
+);
+
+const liveGuard = await verifyLiveEntryGuards(
+  { poolAddress: "TargetPool", mint: "mint" },
+  {
+    getPoolFees: async () => ({ pool_fees_sol: 57.64, source: "gmgn_pool", timeframe: "all" }),
+    getPrice: async () => ({ price_vs_ath_pct: 100, ath: 1 }),
+  },
+);
+assert.equal(liveGuard.pass, false);
+assert.match(liveGuard.reason, /price_vs_ath 100%/);
+
+const missingAthGuard = await verifyLiveEntryGuards(
+  { poolAddress: "TargetPool", mint: "mint" },
+  {
+    getPoolFees: async () => ({ pool_fees_sol: 57.64, source: "gmgn_pool" }),
+    getPrice: async () => null,
+  },
+);
+assert.equal(missingAthGuard.pass, false);
+assert.match(missingAthGuard.reason, /ATH data unavailable/);
 
 const originalDryRun = process.env.DRY_RUN;
 process.env.DRY_RUN = "true";

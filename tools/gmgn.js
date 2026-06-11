@@ -10,7 +10,8 @@ function gmgnHeaders() {
 async function fetchJson(path) {
   const base = (process.env.GMGN_API_BASE || DEFAULT_GMGN_BASE).replace(/\/$/, "");
   const separator = path.includes("?") ? "&" : "?";
-  const url = `${base}${path}${separator}timestamp=${Date.now()}&client_id=${crypto.randomUUID()}`;
+  const timestamp = Math.floor(Date.now() / 1000);
+  const url = `${base}${path}${separator}timestamp=${timestamp}&client_id=${crypto.randomUUID()}`;
   const res = await fetch(url, { headers: gmgnHeaders() });
   const text = await res.text();
   if (!res.ok) {
@@ -63,6 +64,27 @@ function feeValueOf(obj) {
   return null;
 }
 
+function tokenTotalFeeOf(obj) {
+  return toNumber(
+    obj?.total_fee
+    ?? obj?.totalFee
+    ?? obj?.total_fees_sol
+    ?? obj?.totalFeesSol
+  );
+}
+
+function withPriceContext(result, info) {
+  const price = toNumber(info?.price?.price ?? info?.price);
+  const ath = toNumber(info?.ath_price ?? info?.athPrice);
+  if (price == null || ath == null || ath <= 0) return result;
+  return {
+    ...result,
+    price,
+    ath,
+    price_vs_ath_pct: Number(((price / ath) * 100).toFixed(1)),
+  };
+}
+
 function findMatchingPool(root, poolAddress) {
   const target = poolAddress?.toLowerCase();
   if (!target || !root || typeof root !== "object") return null;
@@ -100,6 +122,15 @@ export async function getGmgnPoolFees({ mint, pool_address }, { fetchData = fetc
     const info = data?.data?.data || data?.data || data;
     const matchedPool = findMatchingPool(info, pool_address);
     if (!matchedPool) {
+      const tokenTotal = tokenTotalFeeOf(info);
+      if (tokenTotal != null) {
+        return withPriceContext({
+          pool_fees_sol: Number(tokenTotal.toFixed(2)),
+          source: "gmgn_token_total",
+          timeframe: "all_time",
+          scope: "token",
+        }, info);
+      }
       return {
         pool_fees_sol: null,
         source: null,
@@ -108,11 +139,12 @@ export async function getGmgnPoolFees({ mint, pool_address }, { fetchData = fetc
     }
     const value = feeValueOf(matchedPool);
     if (value != null) {
-      return {
+      return withPriceContext({
         pool_fees_sol: Number(value.toFixed(2)),
         source: "gmgn_pool",
         timeframe: matchedPool.timeframe || matchedPool.interval || null,
-      };
+        scope: "pool",
+      }, info);
     }
     return { pool_fees_sol: null, source: null, error: "pool fee not found in matching GMGN pool response" };
   } catch (e) {

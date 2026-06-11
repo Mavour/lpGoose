@@ -8,7 +8,7 @@ import { agentLoop } from "./agent.js";
 import { log, logAction } from "./logger.js";
 import { getMyPositions, closePosition, claimFees, getActiveBin, deployPosition } from "./tools/dlmm.js";
 import { getWalletBalances, swapToken } from "./tools/wallet.js";
-import { evaluateScreeningGate, getTopCandidates } from "./tools/screening.js";
+import { evaluateScreeningGate, getTopCandidates, verifyLiveEntryGuards } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
 import { evolveThresholds, formatLearningProposal, getLearningProposal, getPerformanceSummary, listLearningProposals, markLearningProposal } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
@@ -576,6 +576,25 @@ async function tryBottomSpotDeploy(passing, prePositions, preBalance) {
     return { deployed: false, report: "Bottom Spot deploy skipped while priority close is in progress." };
   }
 
+  const liveEntry = await verifyLiveEntryGuards({
+    poolAddress: selectedPool.pool.pool,
+    mint: selectedPool.pool.base?.mint,
+  });
+  if (!liveEntry.pass) {
+    log("bottom_spot", `Final live entry guard: dropped ${selectedPool.pool.name} - ${liveEntry.reason}`);
+    return {
+      deployed: false,
+      report: `Bottom Spot deploy skipped: ${liveEntry.reason}`,
+    };
+  }
+  deployParams.signal_snapshot = {
+    ...deployParams.signal_snapshot,
+    pool_fees_sol: liveEntry.fees.pool_fees_sol,
+    pool_fees_source: liveEntry.fees.source,
+    pool_fees_timeframe: liveEntry.fees.timeframe || null,
+    price_vs_ath_pct: liveEntry.price?.price_vs_ath_pct ?? null,
+  };
+
   const deployResult = await deployPosition(deployParams);
   const pool = selectedPool.pool;
   if (deployResult.success || deployResult.dry_run) {
@@ -777,6 +796,22 @@ export async function runScreeningCycle({ silent = false } = {}) {
       return "Deploy skipped while priority close is in progress.";
     }
 
+    const liveEntry = await verifyLiveEntryGuards({
+      poolAddress: pool.pool,
+      mint: pool.base?.mint,
+    });
+    if (!liveEntry.pass) {
+      log("screening", `Final live entry guard: dropped ${pool.name} - ${liveEntry.reason}`);
+      return `Deploy skipped: ${liveEntry.reason}`;
+    }
+    pool.pool_fees_sol = liveEntry.fees.pool_fees_sol;
+    pool.pool_fees_source = liveEntry.fees.source;
+    pool.pool_fees_timeframe = liveEntry.fees.timeframe || null;
+    if (liveEntry.price) {
+      pool.price_vs_ath_pct = liveEntry.price.price_vs_ath_pct;
+      pool.ath = liveEntry.price.ath;
+    }
+
     const deployStartedAt = Date.now();
     const deployArgs = {
       pool_address: pool.pool,
@@ -854,7 +889,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
         `Pool Quality`,
         `Fee tier: ${pool.fee_pct}%`,
         `Fee/TVL: ${feeTvlStr}`,
-        `Pool fees: ${feesSol} SOL${pool.pool_fees_source ? ` (${pool.pool_fees_source}, ${pool.pool_fees_timeframe || "timeframe unknown"})` : ""}`,
+        `${pool.pool_fees_source === "gmgn_token_total" ? "GMGN token total fees" : "Pool fees"}: ${feesSol} SOL${pool.pool_fees_source ? ` (${pool.pool_fees_source}, ${pool.pool_fees_timeframe || "timeframe unknown"})` : ""}`,
+        `Window fees: $${pool.fee_window_usd ?? "?"} (${config.screening.timeframe}, Meteora)`,
         `Volume: $${pool.volume_window}`,
         `TVL: $${pool.active_tvl}`,
         `Volatility: ${pool.volatility}`,

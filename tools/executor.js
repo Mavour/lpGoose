@@ -1,4 +1,4 @@
-import { checkPoolPvpRisk, discoverPools, getPoolDetail, getPvpBlockReason, getTopCandidates } from "./screening.js";
+import { checkPoolPvpRisk, discoverPools, getPoolDetail, getPvpBlockReason, getTopCandidates, verifyLiveEntryGuards } from "./screening.js";
 import {
   getActiveBin,
   deployPosition,
@@ -441,6 +441,13 @@ async function runSafetyChecks(name, args, options = {}) {
         return { pass: false, reason: `fee_tvl ${liveFeeTvl}% < hard minimum ${minFeeActiveTvlRatio}%` };
       }
       const liveBaseMint = livePool.token_x?.address || livePool.mint_x || livePool.base_mint || null;
+      const liveEntry = await verifyLiveEntryGuards({
+        poolAddress: args.pool_address,
+        mint: liveBaseMint,
+      });
+      if (!liveEntry.pass) {
+        return { pass: false, reason: `Live entry guard failed: ${liveEntry.reason}` };
+      }
 
       if (!options.manualRange) {
         if (!liveBaseMint) {
@@ -456,8 +463,8 @@ async function runSafetyChecks(name, args, options = {}) {
             pool: args.pool_address,
             mint: liveBaseMint,
             gmgnAttempt: fetched.attempt,
-            poolFeesSol: livePool.fee,
-            poolFeesSource: "meteora_fallback",
+            poolFeesSol: null,
+            poolFeesSource: null,
             feeTimeframe: config.screening.timeframe,
             decision: "skip",
             reason: `${fetched.errorType}: ${fetched.error}`,
@@ -514,18 +521,21 @@ async function runSafetyChecks(name, args, options = {}) {
         args.signal_snapshot = {
           ...(args.signal_snapshot || {}),
           momentum: momentumSnapshot,
-          pool_fees_sol: livePool.fee ?? null,
-          pool_fees_source: "meteora_fallback",
-          pool_fees_timeframe: config.screening.timeframe,
+          pool_fees_sol: liveEntry.fees.pool_fees_sol,
+          pool_fees_source: liveEntry.fees.source,
+          pool_fees_timeframe: liveEntry.fees.timeframe || null,
+          fee_window_usd: livePool.fee ?? null,
+          fee_window_timeframe: config.screening.timeframe,
+          price_vs_ath_pct: liveEntry.price?.price_vs_ath_pct ?? null,
         };
         log("momentum", formatMomentumLog({
           pool: args.pool_address,
           mint: liveBaseMint,
           result: momentum,
           gmgnAttempt: fetched.attempt,
-          poolFeesSol: livePool.fee,
-          poolFeesSource: "meteora_fallback",
-          feeTimeframe: config.screening.timeframe,
+          poolFeesSol: liveEntry.fees.pool_fees_sol,
+          poolFeesSource: liveEntry.fees.source,
+          feeTimeframe: liveEntry.fees.timeframe,
           decision: "deploy",
           reason: "tool deploy hard gates passed",
         }));
