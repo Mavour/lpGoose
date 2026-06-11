@@ -201,6 +201,7 @@ a{color:var(--accent);text-decoration:none}
 .data-table tbody tr{transition:background .12s}
 .data-table tbody tr:hover{background:var(--bg2)}
 .data-table tbody tr:first-child td{border-top:none}
+.history-reason{min-width:260px;white-space:normal!important;overflow-wrap:anywhere;line-height:1.45}
 .table-empty td{text-align:center;padding:36px 16px;color:var(--text3);font-size:.85rem}
 
 /* ─── mobile cards ─── */
@@ -212,6 +213,7 @@ a{color:var(--accent);text-decoration:none}
 .pos-card .row{display:flex;justify-content:space-between;align-items:center;padding:2px 0;gap:8px}
 .pos-card .label{color:var(--text3);font-size:.7rem;white-space:nowrap}
 .pos-card .value{font-family:var(--mono);font-size:.74rem;text-align:right;word-break:break-all}
+.pos-card .history-reason{min-width:0;max-width:75%;white-space:normal!important}
 .pos-card .pool-name{font-weight:600;font-size:.8rem;color:var(--text)}
 .pos-card .divider{height:1px;background:var(--border);margin:5px 0}
 
@@ -691,7 +693,7 @@ function renderHistory(list) {
     <td class="text-mono text-xs">${fmtHold(p.minutes_held)}</td>
     <td class="text-mono text-xs">${p.fees_earned_sol != null && p.fees_earned_sol !== 0 ? '◎'+p.fees_earned_sol : '-'}</td>
     <td>${rangeEffBadge(p.range_efficiency)}</td>
-    <td class="text-xs" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.close_reason||'-'}</td>
+    <td class="text-xs history-reason">${p.close_reason||'-'}</td>
   </tr>`).join('');
 
   document.getElementById('historyCards').innerHTML = pageItems.map(p => `<div class="pos-card">
@@ -703,7 +705,7 @@ function renderHistory(list) {
     <div class="row"><span class="label">Hold</span><span class="value text-xs">${fmtHold(p.minutes_held)}</span></div>
     <div class="row"><span class="label">Fees</span><span class="value">${p.fees_earned_sol != null && p.fees_earned_sol !== 0 ? '◎'+p.fees_earned_sol : '-'}</span></div>
     <div class="row"><span class="label">R.Eff</span><span>${rangeEffBadge(p.range_efficiency)}</span></div>
-    <div class="row"><span class="label">Reason</span><span class="value text-xs" style="max-width:200px">${p.close_reason||'-'}</span></div>
+    <div class="row"><span class="label">Reason</span><span class="value text-xs history-reason">${p.close_reason||'-'}</span></div>
   </div>`).join('');
 
   if (total > HISTORY_PER_PAGE) {
