@@ -640,7 +640,7 @@ export async function getTopCandidates({ limit = 10 } = {}) {
           };
         }
 
-        const supertrend = evaluateBullishEntry(confirmSupertrendFromCandles(validated.candles, {
+        const supertrend = evaluateBullishEntry(confirmSupertrendFromCandles(fetched.candles, {
           interval: "5m",
           period: cc.stPeriod || 10,
           multiplier: cc.stMultiplier || 3,

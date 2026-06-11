@@ -263,7 +263,7 @@ export async function confirmEntrySupertrendBreak({
   maxBarsSinceBreak = 1,
   ...options
 } = {}) {
-  const result = await confirmSupertrendBreak({ mint, ...options, closedOnly: true });
+  const result = await confirmSupertrendBreak({ mint, ...options });
   return evaluateBullishEntry(result, { ath, athFilterPct, maxBarsSinceBreak });
 }
 

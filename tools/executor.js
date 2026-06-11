@@ -480,7 +480,7 @@ async function runSafetyChecks(name, args, options = {}) {
           return { pass: false, reason: `Momentum candle validation failed: ${validated.reason}` };
         }
 
-        const stCheck = evaluateBullishEntry(confirmSupertrendFromCandles(validated.candles, {
+        const stCheck = evaluateBullishEntry(confirmSupertrendFromCandles(fetched.candles, {
           interval: "5m",
           period: config.chartIndicators.stPeriod || 10,
           multiplier: config.chartIndicators.stMultiplier || 3,

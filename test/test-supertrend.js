@@ -2,6 +2,7 @@ import assert from "assert";
 import {
   calcSupertrend,
   closedCandlesOnly,
+  confirmEntrySupertrendBreak,
   confirmSupertrendFromCandles,
   evaluateBullishEntry,
   requireFreshBullishBreak,
@@ -216,6 +217,50 @@ assert.deepEqual(
   closedCandlesOnly(candleStarts, "15m", now).map((item) => item.time),
   candleStarts.slice(0, 2).map((item) => item.time),
   "active 15m candle is excluded",
+);
+
+const originalFetch = globalThis.fetch;
+process.env.GMGN_API_KEY = "test-key";
+globalThis.fetch = async () => ({
+  ok: true,
+  json: async () => ({
+    data: {
+      list: [
+        ...Array.from({ length: 97 }, (_, index) => ({
+          time: 1_700_000_000 + index * 300,
+          open: 100,
+          high: 101,
+          low: 99,
+          close: 100,
+          volume: 1,
+        })),
+        ...bullishBreak.map((item, index) => ({
+          ...item,
+          time: 1_700_000_000 + (97 + index) * 300,
+        })),
+        {
+          time: Math.floor(Date.now() / 1000),
+          open: 101,
+          high: 102,
+          low: 79,
+          close: 80,
+          volume: 10,
+        },
+      ],
+    },
+  }),
+});
+const activeBearishEntry = await confirmEntrySupertrendBreak({
+  mint: "test-mint",
+  interval: "5m",
+  period: 3,
+  multiplier: 1,
+});
+globalThis.fetch = originalFetch;
+assert.equal(
+  activeBearishEntry.confirmed,
+  false,
+  "active bearish Supertrend blocks entry immediately",
 );
 
 console.log("Supertrend tests passed");
