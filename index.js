@@ -852,13 +852,6 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const feesSol = pool.pool_fees_sol ?? "?";
       const launchpad = ti?.launchpad ?? null;
 
-      const okxParts = [
-        pool.risk_level     != null ? `risk=${pool.risk_level}`               : null,
-        pool.bundle_pct     != null ? `bundle=${pool.bundle_pct}%`            : null,
-        pool.is_rugpull != null ? `rugpull=${pool.is_rugpull ? "Y" : "N"}` : null,
-        pool.is_wash != null ? `wash=${pool.is_wash ? "Y" : "N"}` : null,
-      ].filter(Boolean).join(" | ");
-
       const rejectedStr = passing.length > 1
         ? indexed.filter(c => c.idx !== bestIdx).map(c => `${c.pool.name} (fee_tvl=${c.pool.fee_active_tvl_ratio ?? "?"}%)`).join("; ")
         : "N/A — single candidate.";
@@ -904,7 +897,6 @@ export async function runScreeningCycle({ silent = false } = {}) {
         pool.token_age_hours != null ? `Token age: ${pool.token_age_hours}h` : null,
         launchpad ? `Launchpad: ${launchpad}` : null,
         `Smart wallets: ${sw?.in_pool?.length ?? 0} present`,
-        okxParts ? `okx: ${okxParts}` : null,
         ``,
         `Thesis`,
         thesis,
@@ -1338,7 +1330,6 @@ if (isTTY) {
       ["blockPvpSymbols", "PvP block"],
     ],
     risk: [
-      ["maxBundlePct", "Max bundle %"],
       ["whaleGuardEnabled", "Whale guard"],
       ["whaleGuardMinDropUsd", "Whale drop USD"],
       ["whaleGuardMinDropPct", "Whale drop %"],
@@ -1899,7 +1890,6 @@ Commands:
       console.log(`  maxTvl:               ${s.maxTvl}`);
       console.log(`  minVolume:            ${s.minVolume}`);
       console.log(`  minTokenFeesSol:      ${s.minTokenFeesSol}`);
-      console.log(`  maxBundlePct:         ${s.maxBundlePct}`);
       console.log(`  maxBotHoldersPct:     ${s.maxBotHoldersPct}`);
       console.log(`  maxTop10Pct:          ${s.maxTop10Pct}`);
       console.log(`  timeframe:            ${s.timeframe}`);

@@ -29,7 +29,7 @@ Meridian runs a **ReAct agent loop** — each cycle the LLM reasons over live da
 **Data sources:**
 - `@meteora-ag/dlmm` SDK — on-chain position data, active bin, deploy/close transactions
 - Meteora DLMM PnL API — position yield, fee accrual, PnL
-- OKX OnchainOS — smart money signals, token risk scoring
+- GMGN token info — total fees, current price, and ATH context
 - Pool screening API — fee/TVL ratios, volume, organic scores, holder counts
 - Jupiter API — token audit, mcap, launchpad, price stats
 
@@ -157,7 +157,7 @@ claude
 
 Two specialized sub-agents run inside Claude Code:
 
-**`screener`** — pool screening specialist. Invoke when you want to evaluate candidates, analyse token risk, or deploy a position. Has access to OKX smart money signals, full token audit pipeline, and all strategy logic.
+**`screener`** — pool screening specialist. Invoke when you want to evaluate candidates, analyse token risk, or deploy a position. Has access to the token audit pipeline, smart-wallet checks, and all strategy logic.
 
 **`manager`** — position management specialist. Invoke when reviewing open positions, assessing PnL, claiming fees, or closing positions.
 

@@ -3,7 +3,6 @@ import { isBlacklisted } from "../token-blacklist.js";
 import { isDevBlocked, getBlockedDevs } from "../dev-blocklist.js";
 import { log, logAction } from "../logger.js";
 import { getGmgnPoolFees } from "./gmgn.js";
-import { getPriceInfo } from "./okx.js";
 import {
   calculateMomentum,
   calculateWeakMomentumFallback,
@@ -19,7 +18,6 @@ const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
 
 export async function verifyLiveEntryGuards({ poolAddress, mint }, {
   getPoolFees = getGmgnPoolFees,
-  getPrice = getPriceInfo,
 } = {}) {
   if (!poolAddress || !mint) {
     return { pass: false, reason: "live entry verification requires pool address and base mint" };
@@ -46,21 +44,7 @@ export async function verifyLiveEntryGuards({ poolAddress, mint }, {
 
   let price = null;
   if (config.screening.athFilterPct != null) {
-    try {
-      price = await getPrice(mint);
-    } catch (error) {
-      if (fees.price_vs_ath_pct != null) {
-        price = {
-          price: fees.price,
-          ath: fees.ath,
-          price_vs_ath_pct: fees.price_vs_ath_pct,
-          source: "gmgn_token_info",
-        };
-      } else {
-        return { pass: false, reason: `ATH data unavailable: ${error.message}` };
-      }
-    }
-    if (price?.price_vs_ath_pct == null && fees.price_vs_ath_pct != null) {
+    if (fees.price_vs_ath_pct != null) {
       price = {
         price: fees.price,
         ath: fees.ath,
@@ -85,6 +69,16 @@ export async function verifyLiveEntryGuards({ poolAddress, mint }, {
 
 // ─── PvP (same-symbol rival) detection constants ───
 const PVP_COPYCAT_AGE_GAP_MS = 24 * 60 * 60 * 1000;
+
+export function dedupePoolsByAddress(pools) {
+  const seen = new Set();
+  return pools.filter((pool) => {
+    const address = pool?.pool;
+    if (!address || seen.has(address)) return false;
+    seen.add(address);
+    return true;
+  });
+}
 
 function normalizeSymbol(symbol) {
   return String(symbol || "").trim().toUpperCase();
@@ -451,7 +445,7 @@ export async function discoverPools({
 
   const data = await res.json();
 
-  const condensed = (data.data || []).map(condensePool);
+  const condensed = dedupePoolsByAddress((data.data || []).map(condensePool));
 
   // Hard-filter blacklisted tokens and blocked deployers (what pool discovery already gave us)
   let pools = condensed.filter((p) => {
@@ -547,6 +541,8 @@ export async function getTopCandidates({ limit = 10 } = {}) {
         eligible[i].pool_fees_source = r.value.source;
         eligible[i].pool_fees_timeframe = r.value.timeframe || null;
         eligible[i].pool_fees_unit = "SOL";
+        eligible[i].price_vs_ath_pct = r.value.price_vs_ath_pct ?? null;
+        eligible[i].ath = r.value.ath ?? null;
       } else {
         const error = r.status === "fulfilled" ? r.value?.error : r.reason?.message;
         log("screening_warn", `GMGN fee unavailable: ${eligible[i].name} gmgn_error=${error || "fee unavailable"}; Meteora window fee is USD and cannot satisfy minTokenFeesSol`);
@@ -565,51 +561,8 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     }
   }
 
-  // Enrich with OKX data — advanced info (risk/bundle/sniper) + ATH price (no API key required)
+  // Apply ATH data returned by the GMGN fee/token-info request.
   if (eligible.length > 0) {
-    const { getAdvancedInfo, getPriceInfo, getClusterList, getRiskFlags } = await import("./okx.js");
-    const okxResults = await Promise.allSettled(
-      eligible.map((p) => p.base?.mint
-        ? Promise.all([getAdvancedInfo(p.base.mint), getPriceInfo(p.base.mint), getClusterList(p.base.mint), getRiskFlags(p.base.mint)])
-        : Promise.resolve([null, null, [], null])
-      )
-    );
-    for (let i = 0; i < eligible.length; i++) {
-      const r = okxResults[i];
-      if (r.status !== "fulfilled") continue;
-      const [adv, price, clusters, risk] = r.value;
-      if (adv) {
-        eligible[i].risk_level      = adv.risk_level;
-        eligible[i].bundle_pct      = adv.bundle_pct;
-        eligible[i].sniper_pct      = adv.sniper_pct;
-        eligible[i].suspicious_pct  = adv.suspicious_pct;
-        eligible[i].smart_money_buy = adv.smart_money_buy;
-        eligible[i].dev_sold_all    = adv.dev_sold_all;
-        eligible[i].dex_boost       = adv.dex_boost;
-        eligible[i].dex_screener_paid = adv.dex_screener_paid;
-        if (adv.creator && !eligible[i].dev) eligible[i].dev = adv.creator;
-      }
-      if (risk) {
-        eligible[i].is_rugpull = risk.is_rugpull;
-        eligible[i].is_wash    = risk.is_wash;
-      }
-      if (price) {
-        eligible[i].price_vs_ath_pct = price.price_vs_ath_pct;
-        eligible[i].ath              = price.ath;
-      }
-      if (clusters?.length) {
-        // Surface KOL presence and top cluster trend for LLM
-        eligible[i].kol_in_clusters      = clusters.some((c) => c.has_kol);
-        eligible[i].top_cluster_trend    = clusters[0]?.trend ?? null;      // buy|sell|neutral
-        eligible[i].top_cluster_hold_pct = clusters[0]?.holding_pct ?? null;
-      }
-    }
-    // Wash trading hard filter — fake volume = misleading fee yield
-    eligible.splice(0, eligible.length, ...eligible.filter((p) => {
-      if (p.is_wash) { log("screening", `Risk filter: dropped ${p.name} — wash trading flagged`); return false; }
-      return true;
-    }));
-
     // ATH filter — drop pools where price is too close to ATH
     const athFilter = config.screening.athFilterPct;
     if (athFilter != null) {
@@ -629,17 +582,17 @@ export async function getTopCandidates({ limit = 10 } = {}) {
       if (eligible.length < before) log("screening", `ATH filter removed ${before - eligible.length} pool(s)`);
     }
 
-    // Drop any pools whose creator is on the dev blocklist (caught via advanced-info)
+    // Drop any pools whose creator was supplied by Pool Discovery or Jupiter.
     const before = eligible.length;
     const filtered = eligible.filter((p) => {
       if (p.dev && isDevBlocked(p.dev)) {
-        log("dev_blocklist", `Filtered blocked deployer (okx) ${p.dev.slice(0, 8)} token ${p.base?.symbol}`);
+        log("dev_blocklist", `Filtered blocked deployer ${p.dev.slice(0, 8)} token ${p.base?.symbol}`);
         return false;
       }
       return true;
     });
     eligible.splice(0, eligible.length, ...filtered);
-    if (eligible.length < before) log("dev_blocklist", `Filtered ${before - eligible.length} pool(s) via OKX creator check`);
+    if (eligible.length < before) log("dev_blocklist", `Filtered ${before - eligible.length} pool(s) via creator check`);
   }
 
   const gated = [];
@@ -863,11 +816,6 @@ export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
 
   const top10Pct = numberOrNull(tokenInfo?.audit?.top_holders_pct);
   if (top10Pct != null && s.maxTop10Pct != null && top10Pct > s.maxTop10Pct) return fail(`top10 ${top10Pct}% > max ${s.maxTop10Pct}%`);
-
-  if (pool.bundle_pct != null && s.maxBundlePct != null && pool.bundle_pct > s.maxBundlePct) return fail(`bundle ${pool.bundle_pct}% > max ${s.maxBundlePct}%`);
-
-  if (pool.is_wash) return fail("wash trading flagged");
-  if (pool.is_rugpull) return fail("rugpull flagged");
 
   if (s.athFilterPct != null) {
     if (pool.price_vs_ath_pct == null) return fail("price_vs_ath unavailable while ATH filter is active");

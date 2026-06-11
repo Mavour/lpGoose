@@ -9,7 +9,7 @@ import {
 import { confirmSupertrendFromCandles } from "../tools/chart-indicators.js";
 import { deployPosition } from "../tools/dlmm.js";
 import { getGmgnPoolFees } from "../tools/gmgn.js";
-import { evaluateScreeningGate, verifyLiveEntryGuards } from "../tools/screening.js";
+import { dedupePoolsByAddress, evaluateScreeningGate, verifyLiveEntryGuards } from "../tools/screening.js";
 
 const FIVE_MINUTES = 5 * 60_000;
 const now = Date.UTC(2026, 5, 11, 6, 0, 0);
@@ -232,9 +232,6 @@ const gatePool = {
   pool_fees_sol: 100,
   pool_fees_source: "token_total",
   pool_fees_unit: "SOL",
-  bundle_pct: 0,
-  is_wash: false,
-  is_rugpull: false,
   price_vs_ath_pct: 10,
   pvp_check_status: "verified",
   is_pvp: false,
@@ -262,22 +259,36 @@ assert.match(
 const liveGuard = await verifyLiveEntryGuards(
   { poolAddress: "TargetPool", mint: "mint" },
   {
-    getPoolFees: async () => ({ pool_fees_sol: 57.64, source: "gmgn_pool", timeframe: "all" }),
-    getPrice: async () => ({ price_vs_ath_pct: 100, ath: 1 }),
+    getPoolFees: async () => ({
+      pool_fees_sol: 57.64,
+      source: "gmgn_token_total",
+      timeframe: "all_time",
+      price: 0.95,
+      ath: 1,
+      price_vs_ath_pct: 95,
+    }),
   },
 );
 assert.equal(liveGuard.pass, false);
-assert.match(liveGuard.reason, /price_vs_ath 100%/);
+assert.match(liveGuard.reason, /price_vs_ath 95%/);
 
 const missingAthGuard = await verifyLiveEntryGuards(
   { poolAddress: "TargetPool", mint: "mint" },
   {
     getPoolFees: async () => ({ pool_fees_sol: 57.64, source: "gmgn_pool" }),
-    getPrice: async () => null,
   },
 );
 assert.equal(missingAthGuard.pass, false);
 assert.match(missingAthGuard.reason, /ATH data unavailable/);
+
+assert.deepEqual(
+  dedupePoolsByAddress([
+    { pool: "PoolA", name: "A" },
+    { pool: "PoolA", name: "A duplicate" },
+    { pool: "PoolB", name: "B" },
+  ]).map((pool) => pool.pool),
+  ["PoolA", "PoolB"],
+);
 
 const originalDryRun = process.env.DRY_RUN;
 process.env.DRY_RUN = "true";

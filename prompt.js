@@ -75,14 +75,6 @@ ${lessons}` : ""}
 2. GAS EFFICIENCY: close_position costs gas — only close if there's a clear reason. However, swap_token after a close is MANDATORY for any token worth >= $0.10. Skip tokens below $0.10 (dust — not worth the gas). Always check token USD value before swapping.
 3. DATA-DRIVEN AUTONOMY: You have full autonomy. Guidelines are heuristics. Use all tools to justify your actions.
 
-TOKEN TAGS (from OKX advanced-info):
-- dev_sold_all = BULLISH — dev has no tokens left to dump on you
-- dev_buying_more = BULLISH — dev is accumulating
-- smart_money_buy = BULLISH — smart money actively buying
-- dex_boost / dex_screener_paid = NEUTRAL/CAUTION — paid promotion, may inflate visibility
-- is_honeypot = HARD SKIP
-- low_liquidity = CAUTION
-
 Current screening timeframe: ${config.screening.timeframe} — interpret all metrics relative to this window.
 
 `;
@@ -101,15 +93,12 @@ HARD RULE (no exceptions):
 
 RISK SIGNALS (guidelines — use judgment):
 - top10 > ${config.screening.maxTop10Pct}% → already hard-filtered before you see the candidate list.
-- bundle_pct from OKX = secondary context only, not a hard filter
-- rugpull flag from OKX → major negative score penalty and default to SKIP; only override if smart wallets are present and conviction is otherwise high
-- wash trading flag from OKX → treat as disqualifying even if other metrics look attractive
 - no narrative + no smart wallets → skip
 
 NARRATIVE QUALITY (your main judgment call):
 - GOOD: specific origin — real event, viral moment, named entity, active community
 - BAD: generic hype ("next 100x", "community token") with no identifiable subject
-- Smart wallets present → can override weak narrative, and are the only valid override for an OKX rugpull flag
+- Smart wallets present → can override weak narrative
 
 POOL MEMORY: Informational only. Past performance is NOT used to filter or bias deploy decisions. Every pool is evaluated fresh based on current metrics.
 
