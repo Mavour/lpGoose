@@ -2,6 +2,8 @@ import assert from "assert";
 import {
   calcSupertrend,
   closedCandlesOnly,
+  confirmSupertrendFromCandles,
+  requireFreshBullishBreak,
   requireFreshBearishFlip,
 } from "../tools/chart-indicators.js";
 
@@ -71,6 +73,36 @@ assertLatest(
   bullishContinuation,
   { direction: "bullish", previousDirection: "bullish" },
   "bullish continuation after break",
+);
+
+assert.equal(
+  requireFreshBullishBreak(confirmSupertrendFromCandles(bullishBreak, {
+    interval: "5m",
+    period: 3,
+    multiplier: 1,
+  })).confirmed,
+  true,
+  "fresh bullish break confirms entry",
+);
+
+assert.equal(
+  requireFreshBullishBreak(confirmSupertrendFromCandles(bullishContinuation, {
+    interval: "5m",
+    period: 3,
+    multiplier: 1,
+  })).confirmed,
+  false,
+  "bullish continuation without a fresh break does not confirm entry",
+);
+
+assert.equal(
+  requireFreshBullishBreak(confirmSupertrendFromCandles(bearishBase, {
+    interval: "5m",
+    period: 3,
+    multiplier: 1,
+  })).confirmed,
+  false,
+  "bearish trend does not confirm entry",
 );
 
 assert.equal(

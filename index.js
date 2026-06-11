@@ -788,7 +788,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       poolFeesSource: pool.pool_fees_source,
       feeTimeframe: pool.pool_fees_timeframe,
       decision: "deploy",
-      reason: "all hard gates passed",
+      reason: pool.supertrend_reason || "fresh bullish Supertrend break confirmed",
     }));
 
     if (_autoCloseCoordinator.size > 0) {
@@ -827,6 +827,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
       momentum,
       signal_snapshot: {
         momentum,
+        supertrend_direction: pool.supertrend_direction,
+        supertrend_reason: pool.supertrend_reason,
         pool_fees_sol: pool.pool_fees_sol,
         pool_fees_source: pool.pool_fees_source,
         pool_fees_timeframe: pool.pool_fees_timeframe,

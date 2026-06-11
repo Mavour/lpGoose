@@ -612,7 +612,7 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   if (gated.length > 0) {
     const cc = config.chartIndicators;
     const momentumConfig = config.momentum;
-    const { confirmSupertrendFromCandles } = await import("./chart-indicators.js");
+    const { confirmSupertrendFromCandles, requireFreshBullishBreak } = await import("./chart-indicators.js");
     const signalResults = await Promise.all(
       gated.map(async (pool) => {
         const mint = pool.base?.mint;
@@ -643,11 +643,11 @@ export async function getTopCandidates({ limit = 10 } = {}) {
           };
         }
 
-        const supertrend = confirmSupertrendFromCandles(validated.candles, {
+        const supertrend = requireFreshBullishBreak(confirmSupertrendFromCandles(validated.candles, {
           interval: "5m",
           period: cc.stPeriod || 10,
           multiplier: cc.stMultiplier || 3,
-        });
+        }));
         if (!supertrend.confirmed) {
           return {
             valid: true,

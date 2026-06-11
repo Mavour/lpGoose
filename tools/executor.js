@@ -29,7 +29,7 @@ import {
   formatMomentumLog,
   validateMomentumCandles,
 } from "./momentum.js";
-import { confirmSupertrendFromCandles } from "./chart-indicators.js";
+import { confirmSupertrendFromCandles, requireFreshBullishBreak } from "./chart-indicators.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -478,11 +478,11 @@ async function runSafetyChecks(name, args, options = {}) {
           return { pass: false, reason: `Momentum candle validation failed: ${validated.reason}` };
         }
 
-        const stCheck = confirmSupertrendFromCandles(validated.candles, {
+        const stCheck = requireFreshBullishBreak(confirmSupertrendFromCandles(validated.candles, {
           interval: "5m",
           period: config.chartIndicators.stPeriod || 10,
           multiplier: config.chartIndicators.stMultiplier || 3,
-        });
+        }));
         if (!stCheck.confirmed) {
           return { pass: false, reason: `Supertrend not confirmed: ${stCheck.reason}` };
         }
@@ -520,6 +520,8 @@ async function runSafetyChecks(name, args, options = {}) {
         args.signal_snapshot = {
           ...(args.signal_snapshot || {}),
           momentum: momentumSnapshot,
+          supertrend_direction: stCheck.direction,
+          supertrend_reason: stCheck.reason,
           pool_fees_sol: liveEntry.fees.pool_fees_sol,
           pool_fees_source: liveEntry.fees.source,
           pool_fees_timeframe: liveEntry.fees.timeframe || null,
@@ -536,7 +538,7 @@ async function runSafetyChecks(name, args, options = {}) {
           poolFeesSource: liveEntry.fees.source,
           feeTimeframe: liveEntry.fees.timeframe,
           decision: "deploy",
-          reason: "tool deploy hard gates passed",
+          reason: stCheck.reason,
         }));
       }
 

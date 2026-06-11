@@ -249,12 +249,32 @@ export async function confirmEntrySupertrendBreak({
   mint,
   ...options
 } = {}) {
-  return confirmSupertrendBreak({ mint, ...options });
+  const result = await confirmSupertrendBreak({ mint, ...options, closedOnly: true });
+  return requireFreshBullishBreak(result);
 }
 
 export async function confirmExitSupertrendFlip({ mint, ...options } = {}) {
   const result = await confirmSupertrendBreak({ mint, ...options, closedOnly: true });
   return requireFreshBearishFlip(result);
+}
+
+export function requireFreshBullishBreak(result) {
+  if (result?.error) return { confirmed: false, error: result.error, reason: result.reason };
+  if (result?.signal?.supertrendBreakUp && result.direction === "bullish") {
+    return {
+      ...result,
+      confirmed: true,
+      reason: `Fresh bullish Supertrend break ${result.signal.interval}`,
+    };
+  }
+
+  return {
+    ...result,
+    confirmed: false,
+    reason: result?.signal
+      ? `No fresh bullish Supertrend break ${result.signal.interval} (prevDir=${result.signal.previousDirection}, dir=${result.signal.direction})`
+      : result?.reason || "Supertrend data unavailable",
+  };
 }
 
 export function requireFreshBearishFlip(result) {
