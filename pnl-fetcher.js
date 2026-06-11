@@ -29,6 +29,35 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+export function selectTrustedPnlPct(lpAgentPct, meteoraPct, maxDifferencePct = 5) {
+  const lpPct = lpAgentPct == null ? NaN : Number(lpAgentPct);
+  const referencePct = meteoraPct == null ? NaN : Number(meteoraPct);
+
+  if (!Number.isFinite(lpPct)) {
+    return { value: Number.isFinite(referencePct) ? referencePct : null, source: "meteora", rejected: false };
+  }
+  if (!Number.isFinite(referencePct)) {
+    return { value: lpPct, source: "lpagent", rejected: false };
+  }
+
+  const differencePct = Math.abs(lpPct - referencePct);
+  if (differencePct > maxDifferencePct) {
+    return {
+      value: referencePct,
+      source: "meteora",
+      rejected: true,
+      differencePct,
+    };
+  }
+
+  return {
+    value: lpPct,
+    source: "lpagent",
+    rejected: false,
+    differencePct,
+  };
+}
+
 async function fetchJson(url, { headers = {}, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);

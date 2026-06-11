@@ -23,7 +23,7 @@ import { recordPerformance } from "../lessons.js";
 import { getPoolCooldown, setTokenCloseCooldown } from "../pool-memory.js";
 import { buildManualClosePerformance } from "../manual-close.js";
 import { normalizeMint } from "./wallet.js";
-import { getWalletPnl } from "../pnl-fetcher.js";
+import { getWalletPnl, selectTrustedPnlPct } from "../pnl-fetcher.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
 // @meteora-ag/dlmm → @coral-xyz/anchor uses CJS directory imports
@@ -654,8 +654,20 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
           const pnl = pnlMap.get(pos.position);
           if (!pnl) continue;
           const tracked = getTrackedPosition(pos.position);
-          if (pnl.pnlPct != null) pos.pnl_pct = Math.round(pnl.pnlPct * 10000) / 10000;
-          if (pnl.pnlPct != null) pos.pnlSolPctChange = Math.round(pnl.pnlPct * 10000) / 10000;
+          const meteoraPnlPct = pos.pnl_pct;
+          const trustedPnl = selectTrustedPnlPct(pnl.pnlPct, meteoraPnlPct);
+          if (trustedPnl.value != null) {
+            pos.pnl_pct = Math.round(trustedPnl.value * 10000) / 10000;
+            pos.pnlSolPctChange = pos.pnl_pct;
+            pos.pnl_source = trustedPnl.source;
+          }
+          if (trustedPnl.rejected) {
+            pos.pnl_integrity_reset = true;
+            log(
+              "positions_warn",
+              `Rejected inconsistent LPAgent PnL for ${pos.pair}: lpagent=${pnl.pnlPct.toFixed(4)}%, meteora=${meteoraPnlPct.toFixed(4)}%, difference=${trustedPnl.differencePct.toFixed(4)}%`
+            );
+          }
           if (pnl.pnlUsd != null) pos.pnl_true_usd = pnl.pnlUsd;
           if (!config.management.solMode && pnl.pnlUsd != null) pos.pnl_usd = pnl.pnlUsd;
           if (pnl.currentValue > 0) {

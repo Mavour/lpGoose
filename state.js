@@ -331,6 +331,16 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
 
   let changed = false;
 
+  if (positionData.pnl_integrity_reset && (pos.trailing_active || (pos.peak_pnl_pct ?? 0) > 0)) {
+    log(
+      "state",
+      `Resetting untrusted PnL state for ${position_address}: peak=${pos.peak_pnl_pct ?? 0}%, trailing=${pos.trailing_active ? "ON" : "OFF"}`
+    );
+    pos.peak_pnl_pct = 0;
+    pos.trailing_active = false;
+    changed = true;
+  }
+
   // Track peak PnL
   if (currentPnlPct != null && currentPnlPct > (pos.peak_pnl_pct ?? 0)) {
     pos.peak_pnl_pct = currentPnlPct;
