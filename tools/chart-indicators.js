@@ -167,6 +167,15 @@ export function calcSupertrend(candles, period = 10, multiplier = 3) {
   const prevDir = directions[previousIndex] || "neutral";
   const supertrendBreakDown = prevDir === "bullish" && direction === "bearish";
   const supertrendBreakUp = prevDir === "bearish" && direction === "bullish";
+  let barsSinceBullishBreak = null;
+  if (direction === "bullish") {
+    for (let i = latestIndex; i > period; i--) {
+      if (directions[i - 1] === "bearish" && directions[i] === "bullish") {
+        barsSinceBullishBreak = latestIndex - i;
+        break;
+      }
+    }
+  }
 
   return {
     value: values[latestIndex],
@@ -174,6 +183,7 @@ export function calcSupertrend(candles, period = 10, multiplier = 3) {
     previousDirection: prevDir,
     supertrendBreakUp,
     supertrendBreakDown,
+    barsSinceBullishBreak,
     upperBand,
     lowerBand,
     directions,
@@ -207,6 +217,7 @@ export function confirmSupertrendFromCandles(candles, {
     direction: st.direction,
     supertrendBreakUp: st.supertrendBreakUp,
     supertrendBreakDown: st.supertrendBreakDown,
+    barsSinceBullishBreak: st.barsSinceBullishBreak,
   };
 
   if (st.supertrendBreakUp || (st.direction === "bullish" && latest.close >= st.value)) {
@@ -247,10 +258,13 @@ export async function confirmSupertrendBreak({
 
 export async function confirmEntrySupertrendBreak({
   mint,
+  ath = null,
+  athFilterPct = null,
+  maxBarsSinceBreak = 1,
   ...options
 } = {}) {
   const result = await confirmSupertrendBreak({ mint, ...options, closedOnly: true });
-  return requireFreshBullishBreak(result);
+  return evaluateBullishEntry(result, { ath, athFilterPct, maxBarsSinceBreak });
 }
 
 export async function confirmExitSupertrendFlip({ mint, ...options } = {}) {
@@ -274,6 +288,78 @@ export function requireFreshBullishBreak(result) {
     reason: result?.signal
       ? `No fresh bullish Supertrend break ${result.signal.interval} (prevDir=${result.signal.previousDirection}, dir=${result.signal.direction})`
       : result?.reason || "Supertrend data unavailable",
+  };
+}
+
+export function evaluateBullishEntry(result, {
+  ath = null,
+  athFilterPct = null,
+  maxBarsSinceBreak = 1,
+} = {}) {
+  if (result?.error) return { ...result, confirmed: false, reason: result.reason || result.error };
+
+  const signal = result?.signal;
+  if (!signal) {
+    return { ...result, confirmed: false, reason: result?.reason || "Supertrend data unavailable" };
+  }
+
+  const barsSinceBreak = signal.barsSinceBullishBreak;
+  const bullish = result.direction === "bullish" && signal.direction === "bullish";
+  const aboveSupertrend =
+    Number.isFinite(Number(signal.close))
+    && Number.isFinite(Number(signal.supertrend))
+    && Number(signal.close) >= Number(signal.supertrend);
+  const withinEntryWindow =
+    Number.isInteger(barsSinceBreak)
+    && barsSinceBreak >= 0
+    && barsSinceBreak <= maxBarsSinceBreak;
+
+  if (!bullish || !aboveSupertrend || !withinEntryWindow) {
+    return {
+      ...result,
+      confirmed: false,
+      reason: `No recent bullish Supertrend break ${signal.interval} (barsSinceBreak=${barsSinceBreak ?? "none"}, dir=${signal.direction})`,
+    };
+  }
+
+  let priceVsAthPct = null;
+  let athLimitPct = null;
+  if (athFilterPct != null) {
+    const athValue = Number(ath);
+    if (!Number.isFinite(athValue) || athValue <= 0) {
+      return {
+        ...result,
+        confirmed: false,
+        reason: "ATH data unavailable while ATH filter is active",
+      };
+    }
+    priceVsAthPct = (Number(signal.close) / athValue) * 100;
+    athLimitPct = 100 + Number(athFilterPct);
+    if (!Number.isFinite(athLimitPct) || priceVsAthPct > athLimitPct) {
+      return {
+        ...result,
+        confirmed: false,
+        priceVsAthPct,
+        athLimitPct,
+        reason: `Entry candle ${priceVsAthPct.toFixed(2)}% of ATH exceeds ${athLimitPct}% limit`,
+      };
+    }
+  }
+
+  const entryLabel = barsSinceBreak === 0
+    ? "Fresh bullish Supertrend break"
+    : "Bullish continuation 1 candle after break";
+  const athLabel = priceVsAthPct == null
+    ? ""
+    : `, candle=${priceVsAthPct.toFixed(2)}% ATH`;
+
+  return {
+    ...result,
+    confirmed: true,
+    barsSinceBullishBreak: barsSinceBreak,
+    priceVsAthPct,
+    athLimitPct,
+    reason: `${entryLabel} ${signal.interval}${athLabel}`,
   };
 }
 

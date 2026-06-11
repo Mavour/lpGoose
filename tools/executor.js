@@ -29,7 +29,7 @@ import {
   formatMomentumLog,
   validateMomentumCandles,
 } from "./momentum.js";
-import { confirmSupertrendFromCandles, requireFreshBullishBreak } from "./chart-indicators.js";
+import { confirmSupertrendFromCandles, evaluateBullishEntry } from "./chart-indicators.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -443,6 +443,8 @@ async function runSafetyChecks(name, args, options = {}) {
       const liveEntry = await verifyLiveEntryGuards({
         poolAddress: args.pool_address,
         mint: liveBaseMint,
+      }, {
+        deferAthThreshold: true,
       });
       if (!liveEntry.pass) {
         return { pass: false, reason: `Live entry guard failed: ${liveEntry.reason}` };
@@ -478,11 +480,15 @@ async function runSafetyChecks(name, args, options = {}) {
           return { pass: false, reason: `Momentum candle validation failed: ${validated.reason}` };
         }
 
-        const stCheck = requireFreshBullishBreak(confirmSupertrendFromCandles(validated.candles, {
+        const stCheck = evaluateBullishEntry(confirmSupertrendFromCandles(validated.candles, {
           interval: "5m",
           period: config.chartIndicators.stPeriod || 10,
           multiplier: config.chartIndicators.stMultiplier || 3,
-        }));
+        }), {
+          ath: liveEntry.price?.ath,
+          athFilterPct: config.screening.athFilterPct,
+          maxBarsSinceBreak: 1,
+        });
         if (!stCheck.confirmed) {
           return { pass: false, reason: `Supertrend not confirmed: ${stCheck.reason}` };
         }
@@ -527,7 +533,7 @@ async function runSafetyChecks(name, args, options = {}) {
           pool_fees_timeframe: liveEntry.fees.timeframe || null,
           fee_window_usd: livePool.fee ?? null,
           fee_window_timeframe: config.screening.timeframe,
-          price_vs_ath_pct: liveEntry.price?.price_vs_ath_pct ?? null,
+          price_vs_ath_pct: stCheck.priceVsAthPct ?? null,
         };
         log("momentum", formatMomentumLog({
           pool: args.pool_address,
@@ -569,6 +575,9 @@ async function runSafetyChecks(name, args, options = {}) {
           interval: cc.entryInterval || cc.interval || "5m",
           period: cc.stPeriod || 10,
           multiplier: cc.stMultiplier || 3,
+          ath: liveEntry.price?.ath,
+          athFilterPct: config.screening.athFilterPct,
+          maxBarsSinceBreak: 1,
         }).catch(() => null);
         if (stCheck && !stCheck.confirmed) {
           if (cc.failOpen === false) {

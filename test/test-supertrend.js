@@ -3,6 +3,7 @@ import {
   calcSupertrend,
   closedCandlesOnly,
   confirmSupertrendFromCandles,
+  evaluateBullishEntry,
   requireFreshBullishBreak,
   requireFreshBearishFlip,
 } from "../tools/chart-indicators.js";
@@ -69,6 +70,11 @@ const bullishContinuation = [
   candle(103),
 ];
 
+const lateBullishContinuation = [
+  ...bullishContinuation,
+  candle(104),
+];
+
 assertLatest(
   bullishContinuation,
   { direction: "bullish", previousDirection: "bullish" },
@@ -93,6 +99,83 @@ assert.equal(
   })).confirmed,
   false,
   "bullish continuation without a fresh break does not confirm entry",
+);
+
+const freshEntry = evaluateBullishEntry(confirmSupertrendFromCandles(bullishBreak, {
+  interval: "5m",
+  period: 3,
+  multiplier: 1,
+}), { ath: 126.25, athFilterPct: -20 });
+assert.equal(freshEntry.confirmed, true, "fresh bullish break is accepted");
+assert.equal(freshEntry.barsSinceBullishBreak, 0);
+assert.equal(freshEntry.priceVsAthPct, 80);
+
+const secondCandleEntry = evaluateBullishEntry(confirmSupertrendFromCandles(bullishContinuation, {
+  interval: "5m",
+  period: 3,
+  multiplier: 1,
+}), { ath: 128.75, athFilterPct: -20 });
+assert.equal(secondCandleEntry.confirmed, true, "second bullish candle is accepted");
+assert.equal(secondCandleEntry.barsSinceBullishBreak, 1);
+assert.equal(secondCandleEntry.priceVsAthPct, 80);
+
+assert.equal(
+  evaluateBullishEntry(confirmSupertrendFromCandles(lateBullishContinuation, {
+    interval: "5m",
+    period: 3,
+    multiplier: 1,
+  }), { ath: 200, athFilterPct: -20 }).confirmed,
+  false,
+  "third bullish candle is rejected",
+);
+
+assert.equal(
+  evaluateBullishEntry(confirmSupertrendFromCandles(bullishContinuation, {
+    interval: "5m",
+    period: 3,
+    multiplier: 1,
+  }), { ath: 128, athFilterPct: -20 }).confirmed,
+  false,
+  "second candle above 80% ATH is rejected",
+);
+
+assert.equal(
+  evaluateBullishEntry({
+    direction: "bearish",
+    signal: {
+      interval: "5m",
+      direction: "bearish",
+      close: 90,
+      supertrend: 95,
+      barsSinceBullishBreak: null,
+    },
+  }, { ath: 200, athFilterPct: -20 }).confirmed,
+  false,
+  "bearish candle after a break is rejected",
+);
+
+assert.equal(
+  evaluateBullishEntry({
+    direction: "bullish",
+    signal: {
+      interval: "5m",
+      direction: "bullish",
+      close: 90,
+      supertrend: 95,
+      barsSinceBullishBreak: 1,
+    },
+  }, { ath: 200, athFilterPct: -20 }).confirmed,
+  false,
+  "second candle below Supertrend is rejected",
+);
+
+assert.match(
+  evaluateBullishEntry(confirmSupertrendFromCandles(bullishContinuation, {
+    interval: "5m",
+    period: 3,
+    multiplier: 1,
+  }), { ath: null, athFilterPct: -20 }).reason,
+  /ATH data unavailable/,
 );
 
 assert.equal(

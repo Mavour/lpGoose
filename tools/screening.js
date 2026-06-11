@@ -18,6 +18,7 @@ const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
 
 export async function verifyLiveEntryGuards({ poolAddress, mint }, {
   getPoolFees = getGmgnPoolFees,
+  deferAthThreshold = false,
 } = {}) {
   if (!poolAddress || !mint) {
     return { pass: false, reason: "live entry verification requires pool address and base mint" };
@@ -56,7 +57,7 @@ export async function verifyLiveEntryGuards({ poolAddress, mint }, {
       return { pass: false, reason: "ATH data unavailable while ATH filter is active" };
     }
     const threshold = 100 + config.screening.athFilterPct;
-    if (price.price_vs_ath_pct > threshold) {
+    if (!deferAthThreshold && price.price_vs_ath_pct > threshold) {
       return {
         pass: false,
         reason: `price_vs_ath ${price.price_vs_ath_pct}% > limit ${threshold}%`,
@@ -563,23 +564,19 @@ export async function getTopCandidates({ limit = 10 } = {}) {
 
   // Apply ATH data returned by the GMGN fee/token-info request.
   if (eligible.length > 0) {
-    // ATH filter — drop pools where price is too close to ATH
+    // Require ATH data here; the entry-candle threshold is checked after
+    // Supertrend is calculated from closed candles.
     const athFilter = config.screening.athFilterPct;
     if (athFilter != null) {
-      const threshold = 100 + athFilter; // e.g. -20 → threshold = 80 (price must be <= 80% of ATH)
       const before = eligible.length;
       eligible.splice(0, eligible.length, ...eligible.filter((p) => {
-        if (p.price_vs_ath_pct == null) {
+        if (p.ath == null || !Number.isFinite(Number(p.ath)) || Number(p.ath) <= 0) {
           log("screening", `ATH filter: dropped ${p.name} - ATH data unavailable`);
-          return false;
-        }
-        if (p.price_vs_ath_pct > threshold) {
-          log("screening", `ATH filter: dropped ${p.name} — ${p.price_vs_ath_pct}% of ATH (limit: ${threshold}%)`);
           return false;
         }
         return true;
       }));
-      if (eligible.length < before) log("screening", `ATH filter removed ${before - eligible.length} pool(s)`);
+      if (eligible.length < before) log("screening", `ATH availability filter removed ${before - eligible.length} pool(s)`);
     }
 
     // Drop any pools whose creator was supplied by Pool Discovery or Jupiter.
@@ -612,7 +609,7 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   if (gated.length > 0) {
     const cc = config.chartIndicators;
     const momentumConfig = config.momentum;
-    const { confirmSupertrendFromCandles, requireFreshBullishBreak } = await import("./chart-indicators.js");
+    const { confirmSupertrendFromCandles, evaluateBullishEntry } = await import("./chart-indicators.js");
     const signalResults = await Promise.all(
       gated.map(async (pool) => {
         const mint = pool.base?.mint;
@@ -643,11 +640,15 @@ export async function getTopCandidates({ limit = 10 } = {}) {
           };
         }
 
-        const supertrend = requireFreshBullishBreak(confirmSupertrendFromCandles(validated.candles, {
+        const supertrend = evaluateBullishEntry(confirmSupertrendFromCandles(validated.candles, {
           interval: "5m",
           period: cc.stPeriod || 10,
           multiplier: cc.stMultiplier || 3,
-        }));
+        }), {
+          ath: pool.ath,
+          athFilterPct: config.screening.athFilterPct,
+          maxBarsSinceBreak: 1,
+        });
         if (!supertrend.confirmed) {
           return {
             valid: true,
@@ -818,9 +819,9 @@ export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
   if (top10Pct != null && s.maxTop10Pct != null && top10Pct > s.maxTop10Pct) return fail(`top10 ${top10Pct}% > max ${s.maxTop10Pct}%`);
 
   if (s.athFilterPct != null) {
-    if (pool.price_vs_ath_pct == null) return fail("price_vs_ath unavailable while ATH filter is active");
-    const threshold = 100 + s.athFilterPct;
-    if (pool.price_vs_ath_pct > threshold) return fail(`price_vs_ath ${pool.price_vs_ath_pct}% > limit ${threshold}%`);
+    if (pool.ath == null || !Number.isFinite(Number(pool.ath)) || Number(pool.ath) <= 0) {
+      return fail("ATH data unavailable while ATH filter is active");
+    }
   }
 
   return { pass: true, memoryRisk: memoryRisk?.reason || null };

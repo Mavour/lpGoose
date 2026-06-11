@@ -233,6 +233,7 @@ const gatePool = {
   pool_fees_source: "token_total",
   pool_fees_unit: "SOL",
   price_vs_ath_pct: 10,
+  ath: 1,
   pvp_check_status: "verified",
   is_pvp: false,
 };
@@ -251,9 +252,10 @@ assert.equal(
   true,
 );
 gatePool.price_vs_ath_pct = null;
+gatePool.ath = null;
 assert.match(
   evaluateScreeningGate(gatePool, { tokenInfo: { launchpad: "pump.fun", audit: {} } }).reason,
-  /price_vs_ath unavailable/,
+  /ATH data unavailable/,
 );
 
 const liveGuard = await verifyLiveEntryGuards(
