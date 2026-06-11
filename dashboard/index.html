@@ -330,6 +330,19 @@ a{color:var(--accent);text-decoration:none}
 .config-val.boolean{font-weight:600}
 .config-val.boolean.true{color:var(--green)}
 .config-val.boolean.false{color:var(--text3)}
+.config-object{border-bottom:1px solid rgba(26,38,66,.5)}
+.config-object:last-child{border-bottom:none}
+.config-object summary{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:5px 0;cursor:pointer;list-style:none;color:var(--text2);
+}
+.config-object summary::-webkit-details-marker{display:none}
+.config-object summary::after{content:'+';font-family:var(--mono);color:var(--text3);font-size:.8rem}
+.config-object[open] summary::after{content:'-'}
+.config-object-title{font-size:.75rem;font-family:var(--mono);word-break:break-all}
+.config-object-count{margin-left:auto;font-size:.66rem;color:var(--text3);font-family:var(--mono);white-space:nowrap}
+.config-object-body{margin:0 0 6px 8px;padding-left:10px;border-left:1px solid var(--border)}
+.config-object-body .config-row{padding:3px 0}
 
 /* ─── utility ─── */
 .text-mono{font-family:var(--mono)}
@@ -387,7 +400,7 @@ a{color:var(--accent);text-decoration:none}
     <div class="card-body">
       <table class="data-table" id="historyTable">
         <thead><tr>
-          <th>Pool</th><th>Strategy</th><th>Bins</th><th>PnL</th><th>PnL %</th><th>Hold</th><th>Fees</th><th>R.Eff</th><th>Reason</th>
+          <th>Pool</th><th>Strategy</th><th>Amount</th><th>Bins</th><th>PnL</th><th>PnL %</th><th>Hold</th><th>Fees</th><th>R.Eff</th><th>Reason</th>
         </tr></thead>
         <tbody id="historyBody"></tbody>
       </table>
@@ -484,6 +497,10 @@ function fmtPnLPct(val) {
   const n = Number(val);
   const cls = n > 0 ? 'pnl-pos' : n < 0 ? 'pnl-neg' : 'pnl-zero';
   return `<span class="${cls}">${n > 0 ? '+' : ''}${n.toFixed(4)}%</span>`;
+}
+function fmtSolAmount(val) {
+  const n = Number(val);
+  return Number.isFinite(n) ? n.toFixed(2) + ' SOL' : '0.00 SOL';
 }
 function fmtPct(v) {
   if (v == null || isNaN(v)) return '-';
@@ -667,6 +684,7 @@ function renderHistory(list) {
   document.getElementById('historyBody').innerHTML = pageItems.map(p => `<tr>
     <td><strong>${p.pool_name||'-'}</strong></td>
     <td>${stratBadge(p.strategy)}</td>
+    <td class="text-mono">${fmtSolAmount(p.amount_sol)}</td>
     <td class="text-mono text-xs">${binsCount(p.bin_range) != null ? binsCount(p.bin_range) : '-'}</td>
     <td class="text-mono">${fmtPnL(p.pnl_sol)}</td>
     <td class="text-mono">${fmtPnLPct(p.pnl_pct)}</td>
@@ -679,6 +697,7 @@ function renderHistory(list) {
   document.getElementById('historyCards').innerHTML = pageItems.map(p => `<div class="pos-card">
     <div class="row"><span class="pool-name">${p.pool_name||'-'}</span>${stratBadge(p.strategy)}</div>
     <div class="divider"></div>
+    <div class="row"><span class="label">Amount</span><span class="value">${fmtSolAmount(p.amount_sol)}</span></div>
     <div class="row"><span class="label">PnL</span><span class="value">${fmtPnL(p.pnl_sol)} (${fmtPnLPct(p.pnl_pct)})</span></div>
     <div class="row"><span class="label">Bins</span><span class="value text-xs">${binsCount(p.bin_range) != null ? binsCount(p.bin_range) : '-'}</span></div>
     <div class="row"><span class="label">Hold</span><span class="value text-xs">${fmtHold(p.minutes_held)}</span></div>
@@ -731,13 +750,30 @@ function groupIcon(g) {
   const icons = {Preset:'🎯',Strategy:'📐',Risk:'🛡',Screening:'🔍',Deploy:'🚀',Management:'⚙',Schedule:'⏱',LLM:'🧠'};
   return icons[g]||'📋';
 }
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 function confRow(key, val) {
+  if (val && typeof val === 'object' && !Array.isArray(val)) {
+    const entries = Object.entries(val);
+    const count = entries.length;
+    const label = count === 1 ? 'setting' : 'settings';
+    return `<details class="config-object">
+      <summary><span class="config-object-title">${escapeHtml(key)}</span><span class="config-object-count">${count} ${label}</span></summary>
+      <div class="config-object-body">${entries.map(([childKey, childVal]) => confRow(childKey, childVal)).join('')}</div>
+    </details>`;
+  }
   let display = val, cls = '';
   if (typeof val === 'boolean') { display = val ? 'true' : 'false'; cls = 'boolean ' + display; }
   else if (Array.isArray(val)) { display = val.length ? val.join(', ') : '[]'; cls = 'array'; }
   else if (typeof val === 'string' && val.length > 40) { display = val.slice(0,37)+'...'; }
   else if (val === null || val === undefined) { display = 'null'; cls = 'text-muted'; }
-  return `<div class="config-row"><span class="config-key">${key}</span><span class="config-val ${cls}">${display}</span></div>`;
+  return `<div class="config-row"><span class="config-key">${escapeHtml(key)}</span><span class="config-val ${cls}">${escapeHtml(display)}</span></div>`;
 }
 
 async function loadConfigPage() {
