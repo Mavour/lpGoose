@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { fetchGmgn } from "./gmgn-request.js";
 
 const DEFAULT_GMGN_BASE = "https://openapi.gmgn.ai";
 
@@ -12,7 +13,7 @@ async function fetchJson(path) {
   const separator = path.includes("?") ? "&" : "?";
   const timestamp = Math.floor(Date.now() / 1000);
   const url = `${base}${path}${separator}timestamp=${timestamp}&client_id=${crypto.randomUUID()}`;
-  const res = await fetch(url, { headers: gmgnHeaders() });
+  const res = await fetchGmgn(url, { headers: gmgnHeaders() });
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`GMGN API error ${res.status}: ${text.slice(0, 120)}`);

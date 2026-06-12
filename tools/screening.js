@@ -19,6 +19,7 @@ const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
 export async function verifyLiveEntryGuards({ poolAddress, mint }, {
   getPoolFees = getGmgnPoolFees,
   deferAthThreshold = false,
+  feesSnapshot = null,
 } = {}) {
   if (!poolAddress || !mint) {
     return { pass: false, reason: "live entry verification requires pool address and base mint" };
@@ -26,7 +27,7 @@ export async function verifyLiveEntryGuards({ poolAddress, mint }, {
 
   let fees;
   try {
-    fees = await getPoolFees({ mint, pool_address: poolAddress });
+    fees = feesSnapshot || await getPoolFees({ mint, pool_address: poolAddress });
   } catch (error) {
     return { pass: false, reason: `verified GMGN pool fees unavailable: ${error.message}` };
   }
@@ -507,7 +508,11 @@ export async function discoverPools({
  * Returns eligible pools for the agent to evaluate and pick from.
  * Hard filters applied in code, agent decides which to deploy into.
  */
-export async function getTopCandidates({ limit = 10 } = {}) {
+export async function getTopCandidates({
+  limit = 10,
+  evaluationLimit = null,
+  evaluationOffset = 0,
+} = {}) {
   const { config } = await import("../config.js");
   const { getTokenInfo } = await import("./token.js");
   const { pools } = await discoverPools({ page_size: 50 });
@@ -518,7 +523,7 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   const occupiedPools = new Set(positions.map((p) => p.pool));
   const occupiedMints = new Set(positions.map((p) => p.base_mint).filter(Boolean));
 
-  const eligible = pools.filter((p) => {
+  const eligiblePools = pools.filter((p) => {
     if (occupiedPools.has(p.pool)) {
       log("screening", `Fresh gate: dropped ${p.name} - already have open position in pool`);
       return false;
@@ -529,6 +534,20 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     }
     return true;
   });
+  const requestedEvaluationLimit = Number(evaluationLimit);
+  const requestedEvaluationOffset = Math.max(0, Number(evaluationOffset) || 0);
+  const eligible = Number.isInteger(requestedEvaluationLimit) && requestedEvaluationLimit > 0
+    ? eligiblePools.slice(
+      requestedEvaluationOffset,
+      requestedEvaluationOffset + requestedEvaluationLimit,
+    )
+    : eligiblePools;
+  if (eligible.length < eligiblePools.length) {
+    log(
+      "screening",
+      `Limited expensive candidate checks to rank ${requestedEvaluationOffset + 1}-${requestedEvaluationOffset + eligible.length} of ${eligiblePools.length} pool(s)`,
+    );
+  }
 
   // Pool fee gate/reporting must use pool-specific fees, not Jupiter token/global fees.
   if (eligible.length > 0) {
@@ -542,6 +561,7 @@ export async function getTopCandidates({ limit = 10 } = {}) {
         eligible[i].pool_fees_source = r.value.source;
         eligible[i].pool_fees_timeframe = r.value.timeframe || null;
         eligible[i].pool_fees_unit = "SOL";
+        eligible[i].gmgn_price = r.value.price ?? null;
         eligible[i].price_vs_ath_pct = r.value.price_vs_ath_pct ?? null;
         eligible[i].ath = r.value.ath ?? null;
       } else {

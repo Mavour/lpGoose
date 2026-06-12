@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { log } from "../logger.js";
+import { fetchGmgn } from "./gmgn-request.js";
 
 function getGMGNKey() {
   return process.env.GMGN_API_KEY || process.env.GMGN_API_TOKEN || "";
@@ -60,7 +61,7 @@ export async function fetchKlineGMGN(mint, interval = "5m", limit = 298) {
   const cid = crypto.randomUUID();
   const url = `https://openapi.gmgn.ai/v1/market/token_kline?chain=sol&address=${mint}&resolution=${resolution}&limit=${fetchLimit}&timestamp=${ts}&client_id=${cid}`;
 
-  const res = await fetch(url, {
+  const res = await fetchGmgn(url, {
     headers: { "X-APIKEY": apiKey },
     signal: AbortSignal.timeout(10000),
   });

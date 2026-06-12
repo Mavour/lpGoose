@@ -32,7 +32,7 @@ import {
   runRankedCandidateAttempts,
 } from "./confidence.js";
 import { PositionCloseCoordinator } from "./position-close-coordinator.js";
-import { formatMomentumLog } from "./tools/momentum.js";
+import { formatMomentumLog, validateMomentumCandles } from "./tools/momentum.js";
 import {
   addToBlacklist,
   listBlacklist,
@@ -597,6 +597,15 @@ async function tryBottomSpotDeploy(passing, prePositions, preBalance) {
   const liveEntry = await verifyLiveEntryGuards({
     poolAddress: selectedPool.pool.pool,
     mint: selectedPool.pool.base?.mint,
+  }, {
+    feesSnapshot: {
+      pool_fees_sol: selectedPool.pool.pool_fees_sol,
+      source: selectedPool.pool.pool_fees_source,
+      timeframe: selectedPool.pool.pool_fees_timeframe,
+      price: selectedPool.pool.gmgn_price,
+      ath: selectedPool.pool.ath,
+      price_vs_ath_pct: selectedPool.pool.price_vs_ath_pct,
+    },
   });
   if (!liveEntry.pass) {
     log("bottom_spot", `Final live entry guard: dropped ${selectedPool.pool.name} - ${liveEntry.reason}`);
@@ -697,6 +706,25 @@ async function attemptStandardDeploy(candidate, deployAmount) {
     return { status: "failed", report: `Deploy skipped: ${reason}` };
   }
 
+  const freshCandles = validateMomentumCandles(pool.momentum_candles, {
+    maxCandleAgeMinutes: config.momentum.maxCandleAgeMinutes,
+  });
+  if (!freshCandles.valid) {
+    const reason = `momentum snapshot no longer fresh: ${freshCandles.reason}`;
+    log("momentum", formatMomentumLog({
+      pool: pool.pool,
+      mint: pool.base?.mint,
+      result: { ...momentum, ...freshCandles },
+      gmgnAttempt: pool.momentum_gmgn_attempt,
+      poolFeesSol: pool.pool_fees_sol,
+      poolFeesSource: pool.pool_fees_source,
+      feeTimeframe: pool.pool_fees_timeframe,
+      decision: "skip",
+      reason,
+    }));
+    return { status: "failed", report: `Deploy skipped: ${reason}` };
+  }
+
   const bins_below = momentum.binsBelow;
   log("momentum", formatMomentumLog({
     pool: pool.pool,
@@ -718,6 +746,15 @@ async function attemptStandardDeploy(candidate, deployAmount) {
   const liveEntry = await verifyLiveEntryGuards({
     poolAddress: pool.pool,
     mint: pool.base?.mint,
+  }, {
+    feesSnapshot: {
+      pool_fees_sol: pool.pool_fees_sol,
+      source: pool.pool_fees_source,
+      timeframe: pool.pool_fees_timeframe,
+      price: pool.gmgn_price,
+      ath: pool.ath,
+      price_vs_ath_pct: pool.price_vs_ath_pct,
+    },
   });
   if (!liveEntry.pass) {
     log("screening", `Final live entry guard: dropped ${pool.name} - ${liveEntry.reason}`);
@@ -836,9 +873,23 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const deployAmount = computeDeployAmount(currentBalance.sol);
     log("cron", `Computed deploy amount: ${deployAmount} SOL (wallet: ${currentBalance.sol} SOL)`);
 
-    // Fetch top candidates, then recon each sequentially with a small delay to avoid 429s
-    const topCandidates = await getTopCandidates({ limit: 10 }).catch(() => null);
-    const candidates = (topCandidates?.candidates || topCandidates?.pools || []).slice(0, 10);
+    // Check at most three Meteora-ranked pools sequentially and stop on the
+    // first candidate that passes the expensive GMGN-backed gates.
+    let candidates = [];
+    for (let rank = 0; rank < 3; rank++) {
+      const result = await getTopCandidates({
+        limit: 1,
+        evaluationLimit: 1,
+        evaluationOffset: rank,
+      }).catch(() => null);
+      const candidate = (result?.candidates || result?.pools || [])[0];
+      if (candidate) {
+        candidates = [candidate];
+        log("screening", `Selected GMGN-verified candidate at Meteora rank ${rank + 1}`);
+        break;
+      }
+      log("screening", `Meteora rank ${rank + 1} failed candidate gates; trying next rank`);
+    }
 
     const allCandidates = [];
     for (const pool of candidates) {
