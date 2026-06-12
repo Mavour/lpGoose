@@ -74,7 +74,7 @@ export function getConfidenceSizing(confidence, baseAmount, options = {}) {
   };
 }
 
-export function selectBestConfidenceCandidate(candidates, options = {}) {
+export function rankConfidenceCandidates(candidates, options = {}) {
   const scored = candidates.map((candidate) => ({
     ...candidate,
     confidence: calculateConfidence(candidate.pool, candidate.sw, options),
@@ -86,7 +86,33 @@ export function selectBestConfidenceCandidate(candidates, options = {}) {
     }
     return b.confidence.total - a.confidence.total ||
       (b.pool?.fee_active_tvl_ratio ?? 0) - (a.pool?.fee_active_tvl_ratio ?? 0);
-  })[0] || null;
+  });
+}
+
+export function selectBestConfidenceCandidate(candidates, options = {}) {
+  return rankConfidenceCandidates(candidates, options)[0] || null;
+}
+
+export async function runRankedCandidateAttempts(candidates, attemptCandidate) {
+  const infrastructureSkips = [];
+
+  for (const candidate of candidates) {
+    const attempt = await attemptCandidate(candidate);
+    if (attempt.status === "non_refundable_bin_cost") {
+      infrastructureSkips.push({
+        pool: candidate.pool?.name,
+        address: candidate.pool?.pool,
+        avoided_cost_sol: attempt.deployResult?.avoided_cost_sol ?? 0,
+      });
+      continue;
+    }
+    if (attempt.status === "failed") {
+      return { selectedAttempt: null, failedAttempt: attempt, infrastructureSkips };
+    }
+    return { selectedAttempt: attempt, failedAttempt: null, infrastructureSkips };
+  }
+
+  return { selectedAttempt: null, failedAttempt: null, infrastructureSkips };
 }
 
 export function getMinimumConfidenceDeployAmount(baseAmount, options = {}) {

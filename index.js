@@ -21,7 +21,11 @@ import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
 import { BottomSpotLPStrategy } from "./strategies/index.js";
 import { fetchKlineGMGN } from "./tools/chart-indicators.js";
-import { getConfidenceSizing, selectBestConfidenceCandidate } from "./confidence.js";
+import {
+  getConfidenceSizing,
+  rankConfidenceCandidates,
+  runRankedCandidateAttempts,
+} from "./confidence.js";
 import { PositionCloseCoordinator } from "./position-close-coordinator.js";
 import { formatMomentumLog } from "./tools/momentum.js";
 import {
@@ -644,6 +648,136 @@ async function tryBottomSpotDeploy(passing, prePositions, preBalance) {
   };
 }
 
+async function attemptStandardDeploy(candidate, deployAmount) {
+  const { pool, sw, confidence } = candidate;
+  const sizing = getConfidenceSizing(confidence.total, deployAmount, config.confidence);
+  const confidenceLog = [
+    `Confidence ${pool.name}: total=${confidence.total}%`,
+    `volatility=${confidence.volatility_score}/40 raw=${pool.volatility ?? "?"}`,
+    `fee_active_tvl=${confidence.fee_active_tvl_score}/40 raw=${pool.fee_active_tvl_ratio ?? "?"}%`,
+    `smart_wallet=${confidence.smart_wallet_score}/20 recent=${confidence.recent_smart_wallets.length}/${sw?.in_pool?.length ?? 0}`,
+    `action=${sizing.action}`,
+    `amount=${sizing.amount} SOL`,
+  ].join(" | ");
+  log("screening", confidenceLog);
+
+  if (sizing.action === "skip") {
+    return {
+      status: "failed",
+      report: [
+        `SKIPPED: ${pool.name}`,
+        `Confidence: ${confidence.total}% (< ${config.confidence.skipThreshold}%)`,
+        `Volatility score: ${confidence.volatility_score}/40`,
+        `Fee/Active TVL score: ${confidence.fee_active_tvl_score}/40`,
+        `Smart wallet score: ${confidence.smart_wallet_score}/20`,
+      ].join("\n"),
+    };
+  }
+
+  const momentum = pool.momentum;
+  if (!momentum?.valid) {
+    const reason = momentum?.reason || "momentum snapshot unavailable";
+    log("momentum", formatMomentumLog({
+      pool: pool.pool,
+      mint: pool.base?.mint,
+      result: momentum,
+      gmgnAttempt: pool.momentum_gmgn_attempt,
+      poolFeesSol: pool.pool_fees_sol,
+      poolFeesSource: pool.pool_fees_source,
+      feeTimeframe: pool.pool_fees_timeframe,
+      decision: "skip",
+      reason,
+    }));
+    return { status: "failed", report: `Deploy skipped: ${reason}` };
+  }
+
+  const bins_below = momentum.binsBelow;
+  log("momentum", formatMomentumLog({
+    pool: pool.pool,
+    mint: pool.base?.mint,
+    result: momentum,
+    gmgnAttempt: pool.momentum_gmgn_attempt,
+    poolFeesSol: pool.pool_fees_sol,
+    poolFeesSource: pool.pool_fees_source,
+    feeTimeframe: pool.pool_fees_timeframe,
+    decision: "deploy",
+    reason: pool.supertrend_reason || "bullish Supertrend confirmed",
+  }));
+
+  if (_autoCloseCoordinator.size > 0) {
+    log("screening", `Deploy skipped - ${_autoCloseCoordinator.size} priority close(s) in progress`);
+    return { status: "failed", report: "Deploy skipped while priority close is in progress." };
+  }
+
+  const liveEntry = await verifyLiveEntryGuards({
+    poolAddress: pool.pool,
+    mint: pool.base?.mint,
+  });
+  if (!liveEntry.pass) {
+    log("screening", `Final live entry guard: dropped ${pool.name} - ${liveEntry.reason}`);
+    return { status: "failed", report: `Deploy skipped: ${liveEntry.reason}` };
+  }
+
+  pool.pool_fees_sol = liveEntry.fees.pool_fees_sol;
+  pool.pool_fees_source = liveEntry.fees.source;
+  pool.pool_fees_timeframe = liveEntry.fees.timeframe || null;
+  if (liveEntry.price) {
+    pool.price_vs_ath_pct = liveEntry.price.price_vs_ath_pct;
+    pool.ath = liveEntry.price.ath;
+  }
+
+  const deployArgs = {
+    pool_address: pool.pool,
+    amount_sol: sizing.amount,
+    strategy: config.strategy.strategy,
+    bins_below,
+    bins_above: 0,
+    pool_name: pool.name,
+    bin_step: pool.bin_step,
+    fee_tvl_ratio: pool.fee_active_tvl_ratio,
+    volatility: pool.volatility,
+    organic_score: pool.organic_score,
+    momentum,
+    signal_snapshot: {
+      momentum,
+      supertrend_direction: pool.supertrend_direction,
+      supertrend_reason: pool.supertrend_reason,
+      pool_fees_sol: pool.pool_fees_sol,
+      pool_fees_source: pool.pool_fees_source,
+      pool_fees_timeframe: pool.pool_fees_timeframe,
+    },
+  };
+
+  const deployStartedAt = Date.now();
+  const deployResult = await deployPosition(deployArgs);
+  logAction({
+    tool: "deploy_position",
+    args: deployArgs,
+    result: deployResult,
+    duration_ms: Date.now() - deployStartedAt,
+    success: deployResult?.success === true || deployResult?.dry_run === true,
+  });
+
+  if (deployResult.code === "non_refundable_bin_cost") {
+    log("screening", `Skipped ${pool.name}: avoided ${deployResult.avoided_cost_sol?.toFixed?.(8) ?? deployResult.avoided_cost_sol ?? 0} SOL non-refundable cost`);
+    return { status: "non_refundable_bin_cost", deployResult };
+  }
+  if (!deployResult.success && !deployResult.dry_run) {
+    return {
+      status: "failed",
+      report: `Decision: DEPLOY FAILED\npool: ${pool.name} | ${pool.pool}\nerror: ${deployResult.error || "Unknown error"}`,
+    };
+  }
+
+  return {
+    status: "success",
+    candidate,
+    sizing,
+    momentum,
+    deployResult,
+  };
+}
+
 export async function runScreeningCycle({ silent = false } = {}) {
   if (_autoCloseCoordinator.size > 0) {
     log("cron", `Screening skipped - ${_autoCloseCoordinator.size} priority close(s) in progress`);
@@ -746,110 +880,37 @@ export async function runScreeningCycle({ silent = false } = {}) {
       idx: i,
       activeBin: activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value?.binId : null,
     }));
-    const best = selectBestConfidenceCandidate(indexed, config.confidence);
+    const ranked = rankConfidenceCandidates(indexed, config.confidence);
+    const {
+      selectedAttempt,
+      failedAttempt,
+      infrastructureSkips,
+    } = await runRankedCandidateAttempts(
+      ranked,
+      (candidate) => attemptStandardDeploy(candidate, deployAmount),
+    );
+    if (failedAttempt) screenReport = failedAttempt.report;
 
-    const { pool, sw, n, ti, activeBin, idx: bestIdx, confidence } = best;
-    const sizing = getConfidenceSizing(confidence.total, deployAmount, config.confidence);
-    const confidenceLog = [
-      `Confidence ${pool.name}: total=${confidence.total}%`,
-      `volatility=${confidence.volatility_score}/40 raw=${pool.volatility ?? "?"}`,
-      `fee_active_tvl=${confidence.fee_active_tvl_score}/40 raw=${pool.fee_active_tvl_ratio ?? "?"}%`,
-      `smart_wallet=${confidence.smart_wallet_score}/20 recent=${confidence.recent_smart_wallets.length}/${sw?.in_pool?.length ?? 0}`,
-      `action=${sizing.action}`,
-      `amount=${sizing.amount} SOL`,
-    ].join(" | ");
-    log("screening", confidenceLog);
-    if (sizing.action === "skip") {
-      screenReport = [
-        `SKIPPED: ${pool.name}`,
-        `Confidence: ${confidence.total}% (< ${config.confidence.skipThreshold}%)`,
-        `Volatility score: ${confidence.volatility_score}/40`,
-        `Fee/Active TVL score: ${confidence.fee_active_tvl_score}/40`,
-        `Smart wallet score: ${confidence.smart_wallet_score}/20`,
-      ].join("\n");
-      log("screening", `${pool.name} skipped - confidence ${confidence.total}% below ${config.confidence.skipThreshold}%`);
+    if (!selectedAttempt) {
+      if (!screenReport) {
+        const avoidedTotal = infrastructureSkips.reduce(
+          (sum, item) => sum + Number(item.avoided_cost_sol || 0),
+          0,
+        );
+        screenReport = [
+          "No deploy: every eligible candidate required non-refundable bin infrastructure.",
+          `Candidates skipped: ${infrastructureSkips.length}`,
+          `Total non-refundable cost avoided: ${avoidedTotal.toFixed(8)} SOL`,
+          ...infrastructureSkips.map((item) =>
+            `${item.pool} | ${item.address} | avoided ${Number(item.avoided_cost_sol || 0).toFixed(8)} SOL`
+          ),
+        ].join("\n");
+      }
       return screenReport;
     }
-    const momentum = pool.momentum;
-    if (!momentum?.valid) {
-      const reason = momentum?.reason || "momentum snapshot unavailable";
-      log("momentum", formatMomentumLog({
-        pool: pool.pool,
-        mint: pool.base?.mint,
-        result: momentum,
-        gmgnAttempt: pool.momentum_gmgn_attempt,
-        poolFeesSol: pool.pool_fees_sol,
-        poolFeesSource: pool.pool_fees_source,
-        feeTimeframe: pool.pool_fees_timeframe,
-        decision: "skip",
-        reason,
-      }));
-      return `Deploy skipped: ${reason}`;
-    }
-    const bins_below = momentum.binsBelow;
-    log("momentum", formatMomentumLog({
-      pool: pool.pool,
-      mint: pool.base?.mint,
-      result: momentum,
-      gmgnAttempt: pool.momentum_gmgn_attempt,
-      poolFeesSol: pool.pool_fees_sol,
-      poolFeesSource: pool.pool_fees_source,
-      feeTimeframe: pool.pool_fees_timeframe,
-      decision: "deploy",
-      reason: pool.supertrend_reason || "bullish Supertrend confirmed",
-    }));
 
-    if (_autoCloseCoordinator.size > 0) {
-      log("screening", `Deploy skipped - ${_autoCloseCoordinator.size} priority close(s) in progress`);
-      return "Deploy skipped while priority close is in progress.";
-    }
-
-    const liveEntry = await verifyLiveEntryGuards({
-      poolAddress: pool.pool,
-      mint: pool.base?.mint,
-    });
-    if (!liveEntry.pass) {
-      log("screening", `Final live entry guard: dropped ${pool.name} - ${liveEntry.reason}`);
-      return `Deploy skipped: ${liveEntry.reason}`;
-    }
-    pool.pool_fees_sol = liveEntry.fees.pool_fees_sol;
-    pool.pool_fees_source = liveEntry.fees.source;
-    pool.pool_fees_timeframe = liveEntry.fees.timeframe || null;
-    if (liveEntry.price) {
-      pool.price_vs_ath_pct = liveEntry.price.price_vs_ath_pct;
-      pool.ath = liveEntry.price.ath;
-    }
-
-    const deployStartedAt = Date.now();
-    const deployArgs = {
-      pool_address: pool.pool,
-      amount_sol: sizing.amount,
-      strategy: config.strategy.strategy,
-      bins_below,
-      bins_above: 0,
-      pool_name: pool.name,
-      bin_step: pool.bin_step,
-      fee_tvl_ratio: pool.fee_active_tvl_ratio,
-      volatility: pool.volatility,
-      organic_score: pool.organic_score,
-      momentum,
-      signal_snapshot: {
-        momentum,
-        supertrend_direction: pool.supertrend_direction,
-        supertrend_reason: pool.supertrend_reason,
-        pool_fees_sol: pool.pool_fees_sol,
-        pool_fees_source: pool.pool_fees_source,
-        pool_fees_timeframe: pool.pool_fees_timeframe,
-      },
-    };
-    const deployResult = await deployPosition(deployArgs);
-    logAction({
-      tool: "deploy_position",
-      args: deployArgs,
-      result: deployResult,
-      duration_ms: Date.now() - deployStartedAt,
-      success: deployResult?.success === true || deployResult?.dry_run === true,
-    });
+    const { candidate: best, sizing, momentum, deployResult } = selectedAttempt;
+    const { pool, sw, n, ti, activeBin, idx: bestIdx, confidence } = best;
 
     if (deployResult.success || deployResult.dry_run) {
       const minPrice = deployResult.price_range?.min ?? "?";
@@ -912,7 +973,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
         thesis,
         ``,
         `Why Deployed`,
-        `Best candidate by confidence score. All configured hard gates passed.`,
+        infrastructureSkips.length > 0
+          ? `Highest-ranked zero-cost candidate. ${infrastructureSkips.length} higher-ranked candidate(s) skipped for non-refundable bin cost.`
+          : `Best candidate by confidence score. All configured hard gates passed.`,
         ``,
         `Rejected: ${rejectedStr}`,
       ].filter(Boolean).join("\n");

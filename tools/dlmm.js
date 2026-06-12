@@ -87,6 +87,30 @@ async function getPool(poolAddress) {
 
 setInterval(() => poolCache.clear(), 5 * 60 * 1000);
 
+function quoteNumber(value) {
+  if (value && typeof value.toNumber === "function") return value.toNumber();
+  const number = Number(value ?? 0);
+  return Number.isFinite(number) ? number : 0;
+}
+
+export function evaluatePositionCostQuote(quote = {}) {
+  const binArraysCount = quoteNumber(quote.binArraysCount);
+  const binArrayCost = quoteNumber(quote.binArrayCost);
+  const bitmapExtensionCost = quoteNumber(quote.bitmapExtensionCost);
+  const avoidedCostSol = binArrayCost + bitmapExtensionCost;
+
+  return {
+    blocked: binArraysCount > 0 || binArrayCost > 0 || bitmapExtensionCost > 0,
+    bin_arrays_count: binArraysCount,
+    bin_array_cost_sol: binArrayCost,
+    bitmap_extension_cost_sol: bitmapExtensionCost,
+    avoided_cost_sol: avoidedCostSol,
+    position_rent_sol: quoteNumber(quote.positionCost),
+    position_extension_rent_sol: quoteNumber(quote.positionReallocCost),
+    transaction_count: quoteNumber(quote.transactionCount),
+  };
+}
+
 // ─── Get Active Bin ────────────────────────────────────────────
 export async function getActiveBin({ pool_address }) {
   pool_address = normalizeMint(pool_address);
@@ -120,7 +144,7 @@ export async function deployPosition({
   initial_value_usd,
   signal_snapshot,
   momentum,
-}, { manualRange = false } = {}) {
+}, { manualRange = false, dependencies = {} } = {}) {
   pool_address = normalizeMint(pool_address);
   const usesExplicitRange = strategy_label === "bottom_spot_lp" || manualRange;
   const activeStrategy = usesExplicitRange
@@ -187,9 +211,14 @@ export async function deployPosition({
     };
   }
 
-  const { StrategyType } = await getDLMM();
-  const wallet = getWallet();
-  const pool = await getPool(pool_address);
+  const loadDLMM = dependencies.getDLMM || getDLMM;
+  const loadPool = dependencies.getPool || getPool;
+  const loadWallet = dependencies.getWallet || getWallet;
+  const sendTransaction = dependencies.sendAndConfirmTransaction || sendAndConfirmTransaction;
+  const generatePosition = dependencies.generatePosition || (() => Keypair.generate());
+
+  const { StrategyType } = await loadDLMM();
+  const pool = await loadPool(pool_address);
   const activeBin = await pool.getActiveBin();
 
   // Range calculation
@@ -208,6 +237,49 @@ export async function deployPosition({
     throw new Error(`Invalid strategy: ${activeStrategy}. Use spot, curve, bid_ask, or mixed.`);
   }
 
+  const quoteStrategyType = isMixed ? StrategyType.BidAsk : strategyType;
+  let costQuote;
+  try {
+    costQuote = evaluatePositionCostQuote(await pool.quoteCreatePosition({
+      strategy: { minBinId, maxBinId, strategyType: quoteStrategyType },
+    }));
+  } catch (error) {
+    log("deploy_block", `Position cost preflight failed for ${pool_address}: ${error.message}`);
+    return {
+      success: false,
+      blocked: true,
+      code: "position_cost_quote_failed",
+      error: `Position cost preflight failed: ${error.message}`,
+      pool: pool_address,
+      pool_name,
+      bin_range: { min: minBinId, max: maxBinId, active: activeBin.binId },
+    };
+  }
+
+  if (costQuote.blocked) {
+    const error = [
+      "Deploy blocked: range requires non-refundable Meteora infrastructure cost",
+      `${costQuote.bin_arrays_count} new bin array(s)`,
+      `${costQuote.bin_array_cost_sol.toFixed(8)} SOL bin array cost`,
+      `${costQuote.bitmap_extension_cost_sol.toFixed(8)} SOL bitmap extension cost`,
+    ].join("; ");
+    log("deploy_block", `${error}; avoided ${costQuote.avoided_cost_sol.toFixed(8)} SOL`);
+    return {
+      success: false,
+      blocked: true,
+      code: "non_refundable_bin_cost",
+      reason: error,
+      error,
+      pool: pool_address,
+      pool_name,
+      bin_range: { min: minBinId, max: maxBinId, active: activeBin.binId },
+      cost_quote: costQuote,
+      avoided_cost_sol: costQuote.avoided_cost_sol,
+    };
+  }
+
+  const wallet = loadWallet();
+
   // Calculate amounts
   // If amount_y is not provided but amount_sol is, use amount_sol (for backward compatibility)
   const finalAmountY = amount_y ?? amount_sol ?? 0;
@@ -225,12 +297,13 @@ export async function deployPosition({
 
   const totalBins = activeBinsBelow + activeBinsAbove;
   const isWideRange = totalBins > 69;
-  const newPosition = Keypair.generate();
+  const newPosition = generatePosition();
 
   log("deploy", `Pool: ${pool_address}`);
   log("deploy", `Strategy: ${activeStrategy}, Bins: ${minBinId} to ${maxBinId} (${totalBins} bins${isWideRange ? " — WIDE RANGE" : ""})`);
   log("deploy", `Amount: ${finalAmountX} X, ${finalAmountY} Y`);
   log("deploy", `Position: ${newPosition.publicKey.toString()}`);
+  log("deploy", `Cost preflight: 0 non-refundable bin cost; refundable position rent ${costQuote.position_rent_sol.toFixed(8)} SOL; refundable extension rent ${costQuote.position_extension_rent_sol.toFixed(8)} SOL`);
 
   try {
     const txHashes = [];
@@ -260,7 +333,7 @@ export async function deployPosition({
       const createTxArray = Array.isArray(createTxs) ? createTxs : [createTxs];
       for (let i = 0; i < createTxArray.length; i++) {
         const signers = i === 0 ? [wallet, newPosition] : [wallet];
-        const txHash = await sendAndConfirmTransaction(getConnection(), createTxArray[i], signers);
+        const txHash = await sendTransaction(getConnection(), createTxArray[i], signers);
         txHashes.push(txHash);
         log("deploy", `Create tx ${i + 1}/${createTxArray.length}: ${txHash}`);
       }
@@ -277,7 +350,7 @@ export async function deployPosition({
         });
         const bidaskTxArray = Array.isArray(bidaskTxs) ? bidaskTxs : [bidaskTxs];
         for (let i = 0; i < bidaskTxArray.length; i++) {
-          const txHash = await sendAndConfirmTransaction(getConnection(), bidaskTxArray[i], [wallet]);
+          const txHash = await sendTransaction(getConnection(), bidaskTxArray[i], [wallet]);
           txHashes.push(txHash);
           log("deploy", `Mixed BidAsk tx ${i + 1}/${bidaskTxArray.length}: ${txHash}`);
         }
@@ -294,7 +367,7 @@ export async function deployPosition({
           });
           const spotTxArray = Array.isArray(spotTxs) ? spotTxs : [spotTxs];
           for (let i = 0; i < spotTxArray.length; i++) {
-            const txHash = await sendAndConfirmTransaction(getConnection(), spotTxArray[i], [wallet]);
+            const txHash = await sendTransaction(getConnection(), spotTxArray[i], [wallet]);
             txHashes.push(txHash);
             log("deploy", `Mixed Spot tx ${i + 1}/${spotTxArray.length}: ${txHash}`);
           }
@@ -314,7 +387,7 @@ export async function deployPosition({
         });
         const addTxArray = Array.isArray(addTxs) ? addTxs : [addTxs];
         for (let i = 0; i < addTxArray.length; i++) {
-          const txHash = await sendAndConfirmTransaction(getConnection(), addTxArray[i], [wallet]);
+          const txHash = await sendTransaction(getConnection(), addTxArray[i], [wallet]);
           txHashes.push(txHash);
           log("deploy", `Add liquidity tx ${i + 1}/${addTxArray.length}: ${txHash}`);
         }
@@ -330,7 +403,7 @@ export async function deployPosition({
         strategy: { maxBinId, minBinId, strategyType: StrategyType.BidAsk },
         slippage: 1000,
       });
-      const hash1 = await sendAndConfirmTransaction(getConnection(), bidaskTx, [wallet, newPosition]);
+      const hash1 = await sendTransaction(getConnection(), bidaskTx, [wallet, newPosition]);
       txHashes.push(hash1);
       log("deploy", `Mixed BidAsk layer tx: ${hash1}`);
 
@@ -344,7 +417,7 @@ export async function deployPosition({
           strategy: { maxBinId, minBinId, strategyType: StrategyType.Spot },
           slippage: 100,
         });
-        const hash2 = await sendAndConfirmTransaction(getConnection(), spotTx, [wallet]);
+        const hash2 = await sendTransaction(getConnection(), spotTx, [wallet]);
         txHashes.push(hash2);
         log("deploy", `Mixed Spot layer tx: ${hash2}`);
       } catch (spotError) {
@@ -361,7 +434,7 @@ export async function deployPosition({
         strategy: { maxBinId, minBinId, strategyType },
         slippage: 1000,
       });
-      const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet, newPosition]);
+      const txHash = await sendTransaction(getConnection(), tx, [wallet, newPosition]);
       txHashes.push(txHash);
     }
 
@@ -413,6 +486,7 @@ export async function deployPosition({
       amount_y: finalAmountY,
       txs: txHashes,
       momentum: momentum || null,
+      cost_quote: costQuote,
     };
 
     if (isMixed) {
