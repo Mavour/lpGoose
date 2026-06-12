@@ -821,7 +821,7 @@ async function attemptStandardDeploy(candidate, deployAmount) {
   };
 }
 
-export async function runScreeningCycle({ silent = false } = {}) {
+export async function runScreeningCycle({ silent = false, force = false } = {}) {
   const runtimeReload = reloadRuntimeConfig();
   if (runtimeReload.error) {
     log("config_warn", `Runtime config reload failed: ${runtimeReload.error}`);
@@ -836,6 +836,15 @@ export async function runScreeningCycle({ silent = false } = {}) {
   }
   if (_screeningBusy) {
     log("cron", "Screening skipped — previous cycle still running");
+    return null;
+  }
+  const recentScreeningCooldownMs = 60_000;
+  const sinceLastScreeningMs = Date.now() - _screeningLastTriggered;
+  if (!force && _screeningLastTriggered > 0 && sinceLastScreeningMs < recentScreeningCooldownMs) {
+    log(
+      "cron",
+      `Screening skipped - last cycle started ${Math.ceil(sinceLastScreeningMs / 1000)}s ago`,
+    );
     return null;
   }
   _screeningBusy = true; // set immediately — prevents TOCTOU race with concurrent callers
@@ -1861,7 +1870,7 @@ if (isTTY) {
     if (text === "/screen") {
       await sendMessage("Starting screening cycle...");
       try {
-        await runScreeningCycle();
+        await runScreeningCycle({ force: true });
       } catch (e) {
         await sendMessage(`Screening failed: ${e.message}`).catch(() => {});
       } finally {
@@ -2087,7 +2096,7 @@ Commands:
     if (input === "/screen") {
       await runBusy(async () => {
         console.log("\nStarting deterministic screening cycle...\n");
-        const report = await runScreeningCycle({ silent: true });
+        const report = await runScreeningCycle({ silent: true, force: true });
         if (report) console.log(`\n${report}\n`);
       });
       return;
