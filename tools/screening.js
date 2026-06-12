@@ -667,6 +667,20 @@ export async function getTopCandidates({ limit = 10 } = {}) {
           strongMaxBins: momentumConfig.strongMaxBins,
           weakMinBins: momentumConfig.weakMinBins,
           weakMaxBins: momentumConfig.weakMaxBins,
+          tokenAgeHours: pool.token_age_hours,
+          ageBands: {
+            newMaxHours: momentumConfig.ageNewMaxHours,
+            youngMaxHours: momentumConfig.ageYoungMaxHours,
+            matureMaxHours: momentumConfig.ageMatureMaxHours,
+            newMinBins: momentumConfig.newMinBins,
+            newMaxBins: momentumConfig.newMaxBins,
+            youngMinBins: momentumConfig.youngMinBins,
+            youngMaxBins: momentumConfig.youngMaxBins,
+            matureMinBins: momentumConfig.matureMinBins,
+            matureMaxBins: momentumConfig.matureMaxBins,
+            oldMinBins: momentumConfig.oldMinBins,
+            oldMaxBins: momentumConfig.oldMaxBins,
+          },
           maxCandleAgeMinutes: momentumConfig.maxCandleAgeMinutes,
         });
         if (!momentum.valid) {
@@ -675,6 +689,20 @@ export async function getTopCandidates({ limit = 10 } = {}) {
             volatility: pool.volatility,
             weakMinBins: momentumConfig.weakMinBins,
             weakMaxBins: momentumConfig.weakMaxBins,
+            tokenAgeHours: pool.token_age_hours,
+            ageBands: {
+              newMaxHours: momentumConfig.ageNewMaxHours,
+              youngMaxHours: momentumConfig.ageYoungMaxHours,
+              matureMaxHours: momentumConfig.ageMatureMaxHours,
+              newMinBins: momentumConfig.newMinBins,
+              newMaxBins: momentumConfig.newMaxBins,
+              youngMinBins: momentumConfig.youngMinBins,
+              youngMaxBins: momentumConfig.youngMaxBins,
+              matureMinBins: momentumConfig.matureMinBins,
+              matureMaxBins: momentumConfig.matureMaxBins,
+              oldMinBins: momentumConfig.oldMinBins,
+              oldMaxBins: momentumConfig.oldMaxBins,
+            },
             reason: `supertrend_confirmed_momentum_fallback: ${momentum.reason}`,
           });
         }

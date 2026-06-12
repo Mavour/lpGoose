@@ -86,9 +86,49 @@ assert.equal(weak.score, 0);
 assert.equal(weak.classification, "weak");
 assert.equal(weak.binsBelow, 150);
 
+const ageBands = {
+  newMaxHours: 24,
+  youngMaxHours: 48,
+  matureMaxHours: 120,
+  newMinBins: 90,
+  newMaxBins: 150,
+  youngMinBins: 70,
+  youngMaxBins: 110,
+  matureMinBins: 55,
+  matureMaxBins: 85,
+  oldMinBins: 45,
+  oldMaxBins: 70,
+};
+const newToken = calculateMomentum({
+  candles: candles({ latestVolume: 100, latestClose: 100 }),
+  feeActiveTvlRatio: 0.2,
+  minFeeActiveTvlRatio: 0.2,
+  volatility: 5,
+  tokenAgeHours: 6,
+  ageBands,
+  now,
+});
+assert.equal(newToken.ageBand, "new");
+assert.deepEqual(newToken.selectedBand, [90, 150]);
+assert.equal(newToken.binsBelow, 150);
+
+const oldToken = calculateMomentum({
+  candles: candles({ latestVolume: 100, latestClose: 100 }),
+  feeActiveTvlRatio: 0.2,
+  minFeeActiveTvlRatio: 0.2,
+  volatility: 2.5,
+  tokenAgeHours: 240,
+  ageBands,
+  now,
+});
+assert.equal(oldToken.ageBand, "old");
+assert.deepEqual(oldToken.selectedBand, [45, 70]);
+assert.equal(oldToken.binsBelow, 58);
+
 applyRuntimeConfig({
   minFeeActiveTvlRatio: 0.1,
   momentumWeakMaxBins: 125,
+  momentumOldMaxBins: 72,
   chartIndicators: {
     ...config.chartIndicators,
     stPeriod: 7,
@@ -96,6 +136,7 @@ applyRuntimeConfig({
 });
 assert.equal(config.screening.minFeeActiveTvlRatio, 0.1);
 assert.equal(config.momentum.weakMaxBins, 125);
+assert.equal(config.momentum.oldMaxBins, 72);
 assert.equal(config.chartIndicators.stPeriod, 7);
 
 const runtimeChanges = applyRuntimeConfig({
@@ -105,6 +146,7 @@ const runtimeChanges = applyRuntimeConfig({
   momentumStrongMaxBins: 70,
   momentumWeakMinBins: 70,
   momentumWeakMaxBins: 150,
+  momentumOldMaxBins: 70,
   chartIndicators: {
     ...config.chartIndicators,
     entryPreset: "supertrend_break",
@@ -114,11 +156,13 @@ const runtimeChanges = applyRuntimeConfig({
   },
 });
 assert.ok(runtimeChanges.some((change) => change.key === "momentum.weakMaxBins"));
+assert.ok(runtimeChanges.some((change) => change.key === "momentum.oldMaxBins"));
 assert.equal(config.screening.minFeeActiveTvlRatio, 0.2);
 assert.equal(config.momentum.weakMaxBins, 150);
 assert.equal(config.chartIndicators.stPeriod, 10);
 assert.match(formatRuntimeConfigSnapshot(), /min_fee_active_tvl=0.2%/);
 assert.match(formatRuntimeConfigSnapshot(), /weak_band=70-150/);
+assert.match(formatRuntimeConfigSnapshot(), /age_bands=<24h:90-150,<48h:70-110,<120h:55-85,old:45-70/);
 assert.match(formatRuntimeConfigSnapshot(), /supertrend=5m\/10\/3/);
 
 const magpieCandles = Array.from({ length: 12 }, (_, index) => ({

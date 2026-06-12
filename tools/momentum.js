@@ -118,6 +118,8 @@ export function calculateMomentum({
   strongMaxBins = 70,
   weakMinBins = 70,
   weakMaxBins = 150,
+  tokenAgeHours = null,
+  ageBands = null,
   maxCandleAgeMinutes = 10,
   now = Date.now(),
 } = {}) {
@@ -161,9 +163,10 @@ export function calculateMomentum({
   const score = Math.round(priceScore + volumeScore + feeScore);
   const classification = score >= strongThreshold ? "strong" : "weak";
   const volatilityFactor = clamp(volatilityValue / 5, 0, 1);
-  const selectedBand = classification === "strong"
+  const ageBand = selectAgeBand(tokenAgeHours, ageBands);
+  const selectedBand = ageBand?.band || (classification === "strong"
     ? [strongMinBins, strongMaxBins]
-    : [weakMinBins, weakMaxBins];
+    : [weakMinBins, weakMaxBins]);
   const binsBelow = Math.round(
     selectedBand[0] + volatilityFactor * (selectedBand[1] - selectedBand[0]),
   );
@@ -174,6 +177,8 @@ export function calculateMomentum({
     classification,
     binsBelow: clamp(binsBelow, selectedBand[0], selectedBand[1]),
     selectedBand,
+    ageBand: ageBand?.name || null,
+    tokenAgeHours: Number.isFinite(Number(tokenAgeHours)) ? Number(tokenAgeHours) : null,
     priceChange5m,
     volumeRatio,
     priceScore,
@@ -204,6 +209,8 @@ export function calculateWeakMomentumFallback({
   volatility,
   weakMinBins = 70,
   weakMaxBins = 150,
+  tokenAgeHours = null,
+  ageBands = null,
   reason = "momentum_scoring_unavailable",
 } = {}) {
   if (!validatedCandles?.valid || !Array.isArray(validatedCandles.candles)) {
@@ -213,8 +220,10 @@ export function calculateWeakMomentumFallback({
   const volatilityFactor = Number.isFinite(volatilityValue) && volatilityValue >= 0
     ? clamp(volatilityValue / 5, 0, 1)
     : 1;
+  const ageBand = selectAgeBand(tokenAgeHours, ageBands);
+  const selectedBand = ageBand?.band || [weakMinBins, weakMaxBins];
   const binsBelow = Math.round(
-    weakMinBins + volatilityFactor * (weakMaxBins - weakMinBins),
+    selectedBand[0] + volatilityFactor * (selectedBand[1] - selectedBand[0]),
   );
   const latest = validatedCandles.candles.at(-1);
   const previous = validatedCandles.candles.at(-2);
@@ -223,8 +232,10 @@ export function calculateWeakMomentumFallback({
     valid: true,
     score: null,
     classification: "fallback_weak",
-    binsBelow: clamp(binsBelow, weakMinBins, weakMaxBins),
-    selectedBand: [weakMinBins, weakMaxBins],
+    binsBelow: clamp(binsBelow, selectedBand[0], selectedBand[1]),
+    selectedBand,
+    ageBand: ageBand?.name || null,
+    tokenAgeHours: Number.isFinite(Number(tokenAgeHours)) ? Number(tokenAgeHours) : null,
     priceChange5m: previous?.close > 0
       ? ((latest.close / previous.close) - 1) * 100
       : null,
@@ -251,6 +262,25 @@ export function calculateWeakMomentumFallback({
     fallback: true,
     reason,
   };
+}
+
+export function selectAgeBand(tokenAgeHours, ageBands) {
+  const age = Number(tokenAgeHours);
+  if (!Number.isFinite(age) || age < 0 || !ageBands) return null;
+
+  const bands = [
+    ["new", ageBands.newMaxHours, ageBands.newMinBins, ageBands.newMaxBins],
+    ["young", ageBands.youngMaxHours, ageBands.youngMinBins, ageBands.youngMaxBins],
+    ["mature", ageBands.matureMaxHours, ageBands.matureMinBins, ageBands.matureMaxBins],
+    ["old", Infinity, ageBands.oldMinBins, ageBands.oldMaxBins],
+  ];
+  const match = bands.find(([, maxHours]) => age < Number(maxHours));
+  const minBins = Number(match?.[2]);
+  const maxBins = Number(match?.[3]);
+  if (!match || !Number.isFinite(minBins) || !Number.isFinite(maxBins) || minBins > maxBins) {
+    return null;
+  }
+  return { name: match[0], band: [minBins, maxBins] };
 }
 
 function classifyFetchError(error) {
@@ -337,6 +367,8 @@ export function formatMomentumLog({
     `total_score=${result?.score ?? "?"}`,
     `strong_threshold=${result?.strongThreshold ?? "?"}`,
     `classification=${result?.classification ?? "?"}`,
+    `token_age_hours=${value(result?.tokenAgeHours, 1)}`,
+    `age_band=${result?.ageBand ?? "?"}`,
     `volatility=${value(result?.volatility, 2)}`,
     `volatility_factor=${value(result?.volatilityFactor, 2)}`,
     `strong_band=${result?.strongBand?.join("-") ?? "?"}`,

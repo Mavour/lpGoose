@@ -192,6 +192,17 @@ const toolMap = {
       momentumStrongMaxBins: ["momentum", "strongMaxBins"],
       momentumWeakMinBins: ["momentum", "weakMinBins"],
       momentumWeakMaxBins: ["momentum", "weakMaxBins"],
+      momentumAgeNewMaxHours: ["momentum", "ageNewMaxHours"],
+      momentumAgeYoungMaxHours: ["momentum", "ageYoungMaxHours"],
+      momentumAgeMatureMaxHours: ["momentum", "ageMatureMaxHours"],
+      momentumNewMinBins: ["momentum", "newMinBins"],
+      momentumNewMaxBins: ["momentum", "newMaxBins"],
+      momentumYoungMinBins: ["momentum", "youngMinBins"],
+      momentumYoungMaxBins: ["momentum", "youngMaxBins"],
+      momentumMatureMinBins: ["momentum", "matureMinBins"],
+      momentumMatureMaxBins: ["momentum", "matureMaxBins"],
+      momentumOldMinBins: ["momentum", "oldMinBins"],
+      momentumOldMaxBins: ["momentum", "oldMaxBins"],
       momentumMaxCandleAgeMinutes: ["momentum", "maxCandleAgeMinutes"],
       momentumMaxRetries: ["momentum", "maxRetries"],
       momentumRetryDelayMs: ["momentum", "retryDelayMs"],
@@ -513,6 +524,22 @@ async function runSafetyChecks(name, args, options = {}) {
           strongMaxBins: config.momentum.strongMaxBins,
           weakMinBins: config.momentum.weakMinBins,
           weakMaxBins: config.momentum.weakMaxBins,
+          tokenAgeHours: livePool.token_x?.created_at
+            ? (Date.now() - livePool.token_x.created_at) / 3_600_000
+            : null,
+          ageBands: {
+            newMaxHours: config.momentum.ageNewMaxHours,
+            youngMaxHours: config.momentum.ageYoungMaxHours,
+            matureMaxHours: config.momentum.ageMatureMaxHours,
+            newMinBins: config.momentum.newMinBins,
+            newMaxBins: config.momentum.newMaxBins,
+            youngMinBins: config.momentum.youngMinBins,
+            youngMaxBins: config.momentum.youngMaxBins,
+            matureMinBins: config.momentum.matureMinBins,
+            matureMaxBins: config.momentum.matureMaxBins,
+            oldMinBins: config.momentum.oldMinBins,
+            oldMaxBins: config.momentum.oldMaxBins,
+          },
           maxCandleAgeMinutes: config.momentum.maxCandleAgeMinutes,
         });
         if (!momentum.valid) {
@@ -521,6 +548,22 @@ async function runSafetyChecks(name, args, options = {}) {
             volatility: livePool.volatility,
             weakMinBins: config.momentum.weakMinBins,
             weakMaxBins: config.momentum.weakMaxBins,
+            tokenAgeHours: livePool.token_x?.created_at
+              ? (Date.now() - livePool.token_x.created_at) / 3_600_000
+              : null,
+            ageBands: {
+              newMaxHours: config.momentum.ageNewMaxHours,
+              youngMaxHours: config.momentum.ageYoungMaxHours,
+              matureMaxHours: config.momentum.ageMatureMaxHours,
+              newMinBins: config.momentum.newMinBins,
+              newMaxBins: config.momentum.newMaxBins,
+              youngMinBins: config.momentum.youngMinBins,
+              youngMaxBins: config.momentum.youngMaxBins,
+              matureMinBins: config.momentum.matureMinBins,
+              matureMaxBins: config.momentum.matureMaxBins,
+              oldMinBins: config.momentum.oldMinBins,
+              oldMaxBins: config.momentum.oldMaxBins,
+            },
             reason: `supertrend_confirmed_momentum_fallback: ${momentum.reason}`,
           });
         }

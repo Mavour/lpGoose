@@ -1399,6 +1399,20 @@ if (isTTY) {
       const field = key.split(".")[1];
       return config.confidence?.[field] ?? "?";
     }
+    const momentumFields = {
+      momentumAgeNewMaxHours: "ageNewMaxHours",
+      momentumAgeYoungMaxHours: "ageYoungMaxHours",
+      momentumAgeMatureMaxHours: "ageMatureMaxHours",
+      momentumNewMinBins: "newMinBins",
+      momentumNewMaxBins: "newMaxBins",
+      momentumYoungMinBins: "youngMinBins",
+      momentumYoungMaxBins: "youngMaxBins",
+      momentumMatureMinBins: "matureMinBins",
+      momentumMatureMaxBins: "matureMaxBins",
+      momentumOldMinBins: "oldMinBins",
+      momentumOldMaxBins: "oldMaxBins",
+    };
+    if (momentumFields[key]) return config.momentum[momentumFields[key]];
     if (key in config.risk) return config.risk[key];
     if (key in config.screening) return config.screening[key];
     if (key in config.management) return config.management[key];
@@ -1496,6 +1510,17 @@ if (isTTY) {
       ["mixedRatio", "Mixed ratio"],
       ["minBinsBelow", "Min bins"],
       ["maxBinsBelow", "Max bins"],
+      ["momentumAgeNewMaxHours", "New max age h"],
+      ["momentumNewMinBins", "New min bins"],
+      ["momentumNewMaxBins", "New max bins"],
+      ["momentumAgeYoungMaxHours", "Young max age h"],
+      ["momentumYoungMinBins", "Young min bins"],
+      ["momentumYoungMaxBins", "Young max bins"],
+      ["momentumAgeMatureMaxHours", "Mature max age h"],
+      ["momentumMatureMinBins", "Mature min bins"],
+      ["momentumMatureMaxBins", "Mature max bins"],
+      ["momentumOldMinBins", "Old min bins"],
+      ["momentumOldMaxBins", "Old max bins"],
     ],
     indicators: [
       ["stPeriod", "ST Period"],
