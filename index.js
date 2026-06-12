@@ -2084,6 +2084,15 @@ Commands:
     // ── Slash commands ───────────────────────
     if (input === "/stop") { await shutdown("user command"); return; }
 
+    if (input === "/screen") {
+      await runBusy(async () => {
+        console.log("\nStarting deterministic screening cycle...\n");
+        const report = await runScreeningCycle({ silent: true });
+        if (report) console.log(`\n${report}\n`);
+      });
+      return;
+    }
+
     if (input === "/status") {
       await runBusy(async () => {
         const [wallet, positions] = await Promise.all([getWalletBalances(), getMyPositions({ force: true })]);
