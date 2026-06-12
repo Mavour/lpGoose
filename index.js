@@ -9,7 +9,12 @@ import { log, logAction } from "./logger.js";
 import { getMyPositions, closePosition, claimFees, getActiveBin, deployPosition } from "./tools/dlmm.js";
 import { getWalletBalances, swapToken } from "./tools/wallet.js";
 import { evaluateScreeningGate, getTopCandidates, verifyLiveEntryGuards } from "./tools/screening.js";
-import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
+import {
+  config,
+  formatRuntimeConfigSnapshot,
+  reloadRuntimeConfig,
+  computeDeployAmount,
+} from "./config.js";
 import { evolveThresholds, formatLearningProposal, getLearningProposal, getPerformanceSummary, listLearningProposals, markLearningProposal } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, sendKeyboard, editKeyboard, answerCallback, notifyClose, notifyOutOfRange, notifySupertrendWarning, isEnabled as telegramEnabled } from "./telegram.js";
@@ -42,6 +47,7 @@ const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
 log("startup", `Model: ${process.env.LLM_MODEL || "hermes-3-405b"}`);
+log("config", `Effective entry config: ${formatRuntimeConfigSnapshot()}`);
 if (!process.env.GMGN_API_KEY && !process.env.GMGN_API_TOKEN) {
   log("startup_warn", "GMGN credentials missing - normal auto-deploy will fail closed at the momentum gate.");
 }
@@ -779,6 +785,14 @@ async function attemptStandardDeploy(candidate, deployAmount) {
 }
 
 export async function runScreeningCycle({ silent = false } = {}) {
+  const runtimeReload = reloadRuntimeConfig();
+  if (runtimeReload.error) {
+    log("config_warn", `Runtime config reload failed: ${runtimeReload.error}`);
+  } else if (runtimeReload.changes.length > 0) {
+    const changedKeys = runtimeReload.changes.map((change) => change.key).join(", ");
+    log("config", `Runtime config reloaded: ${changedKeys}`);
+    log("config", `Effective entry config: ${formatRuntimeConfigSnapshot()}`);
+  }
   if (_autoCloseCoordinator.size > 0) {
     log("cron", `Screening skipped - ${_autoCloseCoordinator.size} priority close(s) in progress`);
     return null;
@@ -1299,7 +1313,11 @@ if (isTTY) {
 
     if (key === "dryRun") process.env.DRY_RUN = String(value);
 
-    reloadScreeningThresholds();
+    const runtimeReload = reloadRuntimeConfig();
+    if (runtimeReload.error) {
+      throw new Error(`Runtime config reload failed: ${runtimeReload.error}`);
+    }
+    log("config", `Effective entry config: ${formatRuntimeConfigSnapshot()}`);
     if (config.screening && key in config.screening) config.screening[key] = value;
     if (config.management && key in config.management) config.management[key] = value;
     if (confidenceFields[key]) {

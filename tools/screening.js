@@ -647,7 +647,6 @@ export async function getTopCandidates({ limit = 10 } = {}) {
         }), {
           ath: pool.ath,
           athFilterPct: config.screening.athFilterPct,
-          maxBarsSinceBreak: 1,
         });
         if (!supertrend.confirmed) {
           return {

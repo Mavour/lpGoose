@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import {
+  applyRuntimeConfig,
+  config,
+  formatRuntimeConfigSnapshot,
+} from "../config.js";
+import {
   calculateMomentum,
   calculateWeakMomentumFallback,
   fetchMomentumCandles,
@@ -13,6 +18,18 @@ import { dedupePoolsByAddress, evaluateScreeningGate, verifyLiveEntryGuards } fr
 
 const FIVE_MINUTES = 5 * 60_000;
 const now = Date.UTC(2026, 5, 11, 6, 0, 0);
+const originalRuntimeConfig = {
+  minFeeActiveTvlRatio: config.screening.minFeeActiveTvlRatio,
+  momentumStrongThreshold: config.momentum.strongThreshold,
+  momentumStrongMinBins: config.momentum.strongMinBins,
+  momentumStrongMaxBins: config.momentum.strongMaxBins,
+  momentumWeakMinBins: config.momentum.weakMinBins,
+  momentumWeakMaxBins: config.momentum.weakMaxBins,
+  momentumMaxCandleAgeMinutes: config.momentum.maxCandleAgeMinutes,
+  momentumMaxRetries: config.momentum.maxRetries,
+  momentumRetryDelayMs: config.momentum.retryDelayMs,
+  chartIndicators: { ...config.chartIndicators },
+};
 
 function candles({
   baselineVolume = 100,
@@ -68,6 +85,68 @@ const weak = calculateMomentum({
 assert.equal(weak.score, 0);
 assert.equal(weak.classification, "weak");
 assert.equal(weak.binsBelow, 150);
+
+applyRuntimeConfig({
+  minFeeActiveTvlRatio: 0.1,
+  momentumWeakMaxBins: 125,
+  chartIndicators: {
+    ...config.chartIndicators,
+    stPeriod: 7,
+  },
+});
+assert.equal(config.screening.minFeeActiveTvlRatio, 0.1);
+assert.equal(config.momentum.weakMaxBins, 125);
+assert.equal(config.chartIndicators.stPeriod, 7);
+
+const runtimeChanges = applyRuntimeConfig({
+  minFeeActiveTvlRatio: 0.2,
+  momentumStrongThreshold: 70,
+  momentumStrongMinBins: 40,
+  momentumStrongMaxBins: 70,
+  momentumWeakMinBins: 70,
+  momentumWeakMaxBins: 150,
+  chartIndicators: {
+    ...config.chartIndicators,
+    entryPreset: "supertrend_break",
+    stPeriod: 10,
+    stMultiplier: 3,
+    entryInterval: "5m",
+  },
+});
+assert.ok(runtimeChanges.some((change) => change.key === "momentum.weakMaxBins"));
+assert.equal(config.screening.minFeeActiveTvlRatio, 0.2);
+assert.equal(config.momentum.weakMaxBins, 150);
+assert.equal(config.chartIndicators.stPeriod, 10);
+assert.match(formatRuntimeConfigSnapshot(), /min_fee_active_tvl=0.2%/);
+assert.match(formatRuntimeConfigSnapshot(), /weak_band=70-150/);
+assert.match(formatRuntimeConfigSnapshot(), /supertrend=5m\/10\/3/);
+
+const magpieCandles = Array.from({ length: 12 }, (_, index) => ({
+  time: Math.floor((now - (13 - index) * FIVE_MINUTES) / 1000),
+  open: 0.0009296073,
+  high: 0.00094,
+  low: 0.00091,
+  close: index === 11 ? 0.0009269445 : 0.0009296073,
+  volume: index === 11 ? 4036.89 : 5661.11,
+}));
+const magpie = calculateMomentum({
+  candles: magpieCandles,
+  feeActiveTvlRatio: 0.5406,
+  minFeeActiveTvlRatio: config.screening.minFeeActiveTvlRatio,
+  volatility: 8.21,
+  strongThreshold: config.momentum.strongThreshold,
+  strongMinBins: config.momentum.strongMinBins,
+  strongMaxBins: config.momentum.strongMaxBins,
+  weakMinBins: config.momentum.weakMinBins,
+  weakMaxBins: config.momentum.weakMaxBins,
+  now,
+});
+assert.equal(magpie.valid, true);
+assert.ok(Math.abs(magpie.feeScore - 17.03) < 0.001);
+assert.equal(magpie.score, 17);
+assert.equal(magpie.classification, "weak");
+assert.deepEqual(magpie.selectedBand, [70, 150]);
+assert.equal(magpie.binsBelow, 150);
 
 const outlierBaseline = candles({ baselineVolume: 100, latestVolume: 200 });
 outlierBaseline[0].volume = 10_000;
@@ -186,6 +265,10 @@ const logLine = formatMomentumLog({
 });
 assert.match(logLine, /pool_fees_source=gmgn_pool/);
 assert.match(logLine, /final_bins_below=55/);
+assert.match(logLine, /min_fee_active_tvl_ratio=0.2000%/);
+assert.match(logLine, /strong_threshold=70/);
+assert.match(logLine, /strong_band=40-70/);
+assert.match(logLine, /weak_band=70-150/);
 
 const poolFee = await getGmgnPoolFees(
   { mint: "mint", pool_address: "TargetPool" },
@@ -313,6 +396,7 @@ const manual = await deployPosition({
 assert.equal(manual.dry_run, true);
 assert.equal(manual.would_deploy.bins_below, 90);
 process.env.DRY_RUN = originalDryRun;
+applyRuntimeConfig(originalRuntimeConfig);
 
 console.log("Momentum tests passed");
 process.exit(0);

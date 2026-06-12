@@ -260,11 +260,10 @@ export async function confirmEntrySupertrendBreak({
   mint,
   ath = null,
   athFilterPct = null,
-  maxBarsSinceBreak = 1,
   ...options
 } = {}) {
   const result = await confirmSupertrendBreak({ mint, ...options });
-  return evaluateBullishEntry(result, { ath, athFilterPct, maxBarsSinceBreak });
+  return evaluateBullishEntry(result, { ath, athFilterPct });
 }
 
 export async function confirmExitSupertrendFlip({ mint, ...options } = {}) {

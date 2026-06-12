@@ -20,7 +20,12 @@ import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-bla
 import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
-import { config, reloadScreeningThresholds, computeDeployAmount } from "../config.js";
+import {
+  config,
+  formatRuntimeConfigSnapshot,
+  reloadRuntimeConfig,
+  computeDeployAmount,
+} from "../config.js";
 import { getMinimumConfidenceDeployAmount } from "../confidence.js";
 import {
   calculateMomentum,
@@ -249,6 +254,12 @@ const toolMap = {
     Object.assign(userConfig, applied);
     userConfig._lastAgentTune = new Date().toISOString();
     fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
+    const reload = reloadRuntimeConfig();
+    if (reload.error) {
+      log("config_warn", `Runtime config reload failed: ${reload.error}`);
+    } else {
+      log("config", `Effective entry config: ${formatRuntimeConfigSnapshot()}`);
+    }
 
     // Restart cron jobs if intervals changed
     const intervalChanged = applied.managementIntervalMin != null || applied.screeningIntervalMin != null;
@@ -487,7 +498,6 @@ async function runSafetyChecks(name, args, options = {}) {
         }), {
           ath: liveEntry.price?.ath,
           athFilterPct: config.screening.athFilterPct,
-          maxBarsSinceBreak: 1,
         });
         if (!stCheck.confirmed) {
           return { pass: false, reason: `Supertrend not confirmed: ${stCheck.reason}` };
@@ -577,7 +587,6 @@ async function runSafetyChecks(name, args, options = {}) {
           multiplier: cc.stMultiplier || 3,
           ath: liveEntry.price?.ath,
           athFilterPct: config.screening.athFilterPct,
-          maxBarsSinceBreak: 1,
         }).catch(() => null);
         if (stCheck && !stCheck.confirmed) {
           if (cc.failOpen === false) {

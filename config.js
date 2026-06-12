@@ -202,34 +202,119 @@ export function computeDeployAmount(walletSol) {
   return parseFloat(result.toFixed(2));
 }
 
+const RUNTIME_CONFIG_FIELDS = {
+  screening: {
+    minFeeActiveTvlRatio: ["minFeeActiveTvlRatio"],
+    minTvl: ["minTvl"],
+    maxTvl: ["maxTvl"],
+    minVolume: ["minVolume"],
+    minOrganic: ["minOrganic"],
+    minHolders: ["minHolders"],
+    minMcap: ["minMcap"],
+    maxMcap: ["maxMcap"],
+    minBinStep: ["minBinStep"],
+    maxBinStep: ["maxBinStep"],
+    timeframe: ["timeframe"],
+    category: ["category"],
+    minTokenFeesSol: ["minTokenFeesSol"],
+    maxBotHoldersPct: ["maxBotHoldersPct"],
+    maxTop10Pct: ["maxTop10Pct"],
+    blockedLaunchpads: ["blockedLaunchpads"],
+    allowedLaunchpads: ["allowedLaunchpads"],
+    minTokenAgeHours: ["minTokenAgeHours"],
+    maxTokenAgeHours: ["maxTokenAgeHours"],
+    athFilterPct: ["athFilterPct"],
+    avoidPvpSymbols: ["avoidPvpSymbols"],
+    blockPvpSymbols: ["blockPvpSymbols"],
+  },
+  momentum: {
+    strongThreshold: ["momentumStrongThreshold", "momentum", "strongThreshold"],
+    strongMinBins: ["momentumStrongMinBins", "momentum", "strongMinBins"],
+    strongMaxBins: ["momentumStrongMaxBins", "momentum", "strongMaxBins"],
+    weakMinBins: ["momentumWeakMinBins", "momentum", "weakMinBins"],
+    weakMaxBins: ["momentumWeakMaxBins", "momentum", "weakMaxBins"],
+    maxCandleAgeMinutes: ["momentumMaxCandleAgeMinutes", "momentum", "maxCandleAgeMinutes"],
+    maxRetries: ["momentumMaxRetries", "momentum", "maxRetries"],
+    retryDelayMs: ["momentumRetryDelayMs", "momentum", "retryDelayMs"],
+  },
+  chartIndicators: {
+    enabled: ["chartIndicators", "enabled"],
+    entryPreset: ["chartIndicators", "entryPreset"],
+    stPeriod: ["chartIndicators", "stPeriod"],
+    stMultiplier: ["chartIndicators", "stMultiplier"],
+    interval: ["chartIndicators", "interval"],
+    entryInterval: ["chartIndicators", "entryInterval"],
+    exitInterval: ["chartIndicators", "exitInterval"],
+    failOpen: ["chartIndicators", "failOpen"],
+    exitOnBearishFlip: ["chartIndicators", "exitOnBearishFlip"],
+  },
+};
+
+function getConfigValue(source, pathParts) {
+  let current = source;
+  for (const part of pathParts) {
+    if (current == null || !Object.prototype.hasOwnProperty.call(current, part)) {
+      return { found: false, value: undefined };
+    }
+    current = current[part];
+  }
+  return { found: true, value: current };
+}
+
+function getFirstConfigValue(source, pathParts) {
+  if (pathParts.length <= 2) return getConfigValue(source, pathParts);
+  const flat = getConfigValue(source, [pathParts[0]]);
+  return flat.found ? flat : getConfigValue(source, pathParts.slice(1));
+}
+
+export function applyRuntimeConfig(fresh) {
+  const changes = [];
+  for (const [section, fields] of Object.entries(RUNTIME_CONFIG_FIELDS)) {
+    for (const [field, sourcePath] of Object.entries(fields)) {
+      const next = getFirstConfigValue(fresh, sourcePath);
+      if (!next.found) continue;
+      const previous = config[section][field];
+      if (JSON.stringify(previous) === JSON.stringify(next.value)) continue;
+      config[section][field] = next.value;
+      changes.push({
+        key: `${section}.${field}`,
+        previous,
+        value: next.value,
+      });
+    }
+  }
+  return changes;
+}
+
+export function formatRuntimeConfigSnapshot() {
+  const s = config.screening;
+  const m = config.momentum;
+  const c = config.chartIndicators;
+  return [
+    `min_fee_active_tvl=${s.minFeeActiveTvlRatio}%`,
+    `momentum_threshold=${m.strongThreshold}`,
+    `strong_band=${m.strongMinBins}-${m.strongMaxBins}`,
+    `weak_band=${m.weakMinBins}-${m.weakMaxBins}`,
+    `supertrend=${c.entryInterval || c.interval}/${c.stPeriod}/${c.stMultiplier}`,
+    `entry_preset=${c.entryPreset}`,
+    `ath_filter=${s.athFilterPct ?? "off"}`,
+  ].join(" | ");
+}
+
 /**
- * Reload user-config.json and apply updated screening thresholds to the
- * in-memory config object. Called after threshold evolution so the next
- * agent cycle uses the evolved values without a restart.
+ * Reload only entry-screening configuration that is safe to change while the
+ * process is running. Wallet, RPC, and process-level settings still require a
+ * restart.
  */
-export function reloadScreeningThresholds() {
-  if (!fs.existsSync(USER_CONFIG_PATH)) return;
+export function reloadRuntimeConfig() {
+  if (!fs.existsSync(USER_CONFIG_PATH)) return { changes: [], error: null };
   try {
     const fresh = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
-    const s = config.screening;
-    if (fresh.minFeeActiveTvlRatio != null) s.minFeeActiveTvlRatio = fresh.minFeeActiveTvlRatio;
-    if (fresh.minOrganic     != null) s.minOrganic     = fresh.minOrganic;
-    if (fresh.minHolders     != null) s.minHolders     = fresh.minHolders;
-    if (fresh.minMcap        != null) s.minMcap        = fresh.minMcap;
-    if (fresh.maxMcap        != null) s.maxMcap        = fresh.maxMcap;
-    if (fresh.minTvl         != null) s.minTvl         = fresh.minTvl;
-    if (fresh.maxTvl         != null) s.maxTvl         = fresh.maxTvl;
-    if (fresh.minVolume      != null) s.minVolume      = fresh.minVolume;
-    if (fresh.minBinStep     != null) s.minBinStep     = fresh.minBinStep;
-    if (fresh.maxBinStep     != null) s.maxBinStep     = fresh.maxBinStep;
-    if (fresh.timeframe         != null) s.timeframe         = fresh.timeframe;
-    if (fresh.category          != null) s.category          = fresh.category;
-    if (fresh.minTokenAgeHours  !== undefined) s.minTokenAgeHours = fresh.minTokenAgeHours;
-    if (fresh.maxTokenAgeHours  !== undefined) s.maxTokenAgeHours = fresh.maxTokenAgeHours;
-    if (fresh.athFilterPct      !== undefined) s.athFilterPct     = fresh.athFilterPct;
-    if (fresh.maxBotHoldersPct  != null) s.maxBotHoldersPct = fresh.maxBotHoldersPct;
-    if (fresh.allowedLaunchpads  !== undefined) s.allowedLaunchpads = fresh.allowedLaunchpads;
-    if (fresh.avoidPvpSymbols   !== undefined) s.avoidPvpSymbols = fresh.avoidPvpSymbols;
-    if (fresh.blockPvpSymbols   !== undefined) s.blockPvpSymbols = fresh.blockPvpSymbols;
-  } catch { /* ignore */ }
+    return { changes: applyRuntimeConfig(fresh), error: null };
+  } catch (error) {
+    return { changes: [], error: error.message };
+  }
 }
+
+// Backward-compatible alias for callers outside this repository.
+export const reloadScreeningThresholds = reloadRuntimeConfig;
