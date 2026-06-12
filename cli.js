@@ -310,7 +310,11 @@ switch (subcommand) {
     const { recallForPool } = await import("./pool-memory.js");
 
     const limit = parseInt(flags.limit || "5");
-    const raw = await getTopCandidates({ limit });
+    const raw = await getTopCandidates({
+      limit,
+      evaluationLimit: limit,
+      signalGate: false,
+    });
     const pools = raw.candidates || raw.pools || [];
 
     const enriched = [];

@@ -1279,7 +1279,11 @@ if (isTTY) {
     const [wallet, positions, { candidates, total_eligible, total_screened }] = await Promise.all([
       getWalletBalances(),
       getMyPositions({ force: true }),
-      getTopCandidates({ limit: 5 }),
+      getTopCandidates({
+        limit: 5,
+        evaluationLimit: 5,
+        signalGate: false,
+      }),
     ]);
 
     startupCandidates = candidates;
@@ -2104,7 +2108,11 @@ Commands:
 
     if (input === "/candidates") {
       await runBusy(async () => {
-        const { candidates, total_eligible, total_screened } = await getTopCandidates({ limit: 5 });
+        const { candidates, total_eligible, total_screened } = await getTopCandidates({
+          limit: 5,
+          evaluationLimit: 5,
+          signalGate: false,
+        });
         startupCandidates = candidates;
         console.log(`\nTop pools (${total_eligible} eligible from ${total_screened} screened):\n`);
         console.log(formatCandidates(candidates));
@@ -2150,7 +2158,11 @@ Commands:
         } else {
           // Fetch top 10 candidates across all eligible pools
           console.log("\nFetching top pool candidates to study...\n");
-          const { candidates } = await getTopCandidates({ limit: 10 });
+          const { candidates } = await getTopCandidates({
+            limit: 10,
+            evaluationLimit: 10,
+            signalGate: false,
+          });
           if (!candidates.length) {
             console.log("No eligible pools found to study.\n");
             return;

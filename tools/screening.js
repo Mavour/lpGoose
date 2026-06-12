@@ -512,6 +512,7 @@ export async function getTopCandidates({
   limit = 10,
   evaluationLimit = null,
   evaluationOffset = 0,
+  signalGate = true,
 } = {}) {
   const { config } = await import("../config.js");
   const { getTokenInfo } = await import("./token.js");
@@ -626,7 +627,7 @@ export async function getTopCandidates({
   }
 
   // ─── Supertrend entry gate (hard filter) ───
-  if (gated.length > 0) {
+  if (signalGate && gated.length > 0) {
     const cc = config.chartIndicators;
     const momentumConfig = config.momentum;
     const { confirmSupertrendFromCandles, evaluateBullishEntry } = await import("./chart-indicators.js");
