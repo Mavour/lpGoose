@@ -260,13 +260,21 @@ export function evaluatePvpAssets(pool, assets, rivalAssessments = new Map()) {
   }
 
   const rivals = matching.filter((asset) => asset.id !== ownMint);
-  const invalidRival = rivals.find((asset) => !Number.isFinite(Date.parse(asset.createdAt)));
-  if (invalidRival) {
-    return setPvpUnverified(pool, `createdAt unavailable for rival mint ${invalidRival.id}`);
+  const undatedRivals = rivals.filter((asset) => !Number.isFinite(Date.parse(asset.createdAt)));
+  const establishedUndatedRivals = undatedRivals.filter(
+    (asset) => rivalAssessments.get(asset.id)?.established,
+  );
+  if (establishedUndatedRivals.length > 0) {
+    const rival = establishedUndatedRivals[0];
+    return setPvpUnverified(
+      pool,
+      `established same-symbol rival ${rival.id} has no createdAt; cannot determine original mint`,
+    );
   }
 
   const olderRivals = rivals
     .map((asset) => ({ asset, createdAt: Date.parse(asset.createdAt) }))
+    .filter(({ createdAt }) => Number.isFinite(createdAt))
     .filter(({ createdAt }) => createdAt < ownCreatedAt - PVP_COPYCAT_AGE_GAP_MS)
     .sort((a, b) => a.createdAt - b.createdAt);
 
@@ -294,9 +302,13 @@ export function evaluatePvpAssets(pool, assets, rivalAssessments = new Map()) {
   pool.pvp_risk = "low";
   clearPvpRival(pool);
   pool.pvp_check_status = "verified";
-  pool.pvp_check_reason = olderRivals.length > 0
-    ? "older same-symbol mints exist but none qualify as an established OG"
-    : "no same-symbol mint is more than 24 hours older";
+  if (olderRivals.length > 0) {
+    pool.pvp_check_reason = "older same-symbol mints exist but none qualify as an established OG";
+  } else if (undatedRivals.length > 0) {
+    pool.pvp_check_reason = "same-symbol rivals without createdAt exist but none qualify as established";
+  } else {
+    pool.pvp_check_reason = "no same-symbol mint is more than 24 hours older";
+  }
   return pool;
 }
 
@@ -310,17 +322,26 @@ async function evaluatePvpWithEstablishedRivals(pool, assets, {
   const symbol = normalizeSymbol(pool.base?.symbol);
   const ownAsset = assets.find((asset) => asset?.id === pool.base?.mint && normalizeSymbol(asset?.symbol) === symbol);
   const ownCreatedAt = Date.parse(ownAsset.createdAt);
-  const olderRivals = assets
+  const relevantRivals = assets
     .filter((asset) =>
       asset?.id
       && asset.id !== ownAsset.id
       && normalizeSymbol(asset.symbol) === symbol
-      && Date.parse(asset.createdAt) < ownCreatedAt - PVP_COPYCAT_AGE_GAP_MS
+      && (
+        !Number.isFinite(Date.parse(asset.createdAt))
+        || Date.parse(asset.createdAt) < ownCreatedAt - PVP_COPYCAT_AGE_GAP_MS
+      )
     )
-    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    .sort((a, b) => {
+      const aCreatedAt = Date.parse(a.createdAt);
+      const bCreatedAt = Date.parse(b.createdAt);
+      if (!Number.isFinite(aCreatedAt)) return 1;
+      if (!Number.isFinite(bCreatedAt)) return -1;
+      return aCreatedAt - bCreatedAt;
+    });
 
   const assessments = new Map();
-  await Promise.all(olderRivals.map(async (rival) => {
+  await Promise.all(relevantRivals.map(async (rival) => {
     if (!assessmentCache.has(rival.id)) {
       assessmentCache.set(rival.id, Promise.resolve().then(() => assessRival(rival)));
     }
@@ -380,14 +401,24 @@ export async function enrichPvpRisk(pools, {
 
       const ownAsset = assets.find((asset) => asset?.id === pool.base.mint);
       const ownCreatedAt = Date.parse(ownAsset?.createdAt);
-      for (const rival of assets.filter((asset) =>
-        asset?.id
-        && asset.id !== pool.base.mint
-        && normalizeSymbol(asset.symbol) === symbol
-        && Date.parse(asset.createdAt) < ownCreatedAt - PVP_COPYCAT_AGE_GAP_MS
-      )) {
+      const relevantRivals = assets.filter((asset) => {
+        const rivalCreatedAt = Date.parse(asset?.createdAt);
+        return asset?.id
+          && asset.id !== pool.base.mint
+          && normalizeSymbol(asset.symbol) === symbol
+          && (
+            !Number.isFinite(rivalCreatedAt)
+            || rivalCreatedAt < ownCreatedAt - PVP_COPYCAT_AGE_GAP_MS
+          );
+      });
+      for (const rival of relevantRivals) {
         const assessment = await assessmentCache.get(rival.id);
-        if (assessment?.established) {
+        const rivalCreatedAt = Date.parse(rival.createdAt);
+        if (!Number.isFinite(rivalCreatedAt) && assessment?.established) {
+          log("screening", `PVP established undated rival blocks verification: ${rival.name || symbol} (${rival.id.slice(0, 8)}) liquidity=$${assessment.liquidity ?? "?"} volume24h=$${assessment.volume24h ?? "?"} holders=${assessment.holders ?? "?"} pool=${assessment.pool || "?"} tvl=$${assessment.tvl ?? "?"} fee_tvl=${assessment.feeTvl ?? "?"}% fees=${assessment.poolFeesSol ?? "?"} SOL`);
+        } else if (!Number.isFinite(rivalCreatedAt)) {
+          log("screening", `PVP weak undated rival ignored: ${rival.name || symbol} (${rival.id.slice(0, 8)}) - ${assessment?.reason || "not established"}`);
+        } else if (assessment?.established) {
           log("screening", `PVP rival accepted: ${rival.name || symbol} (${rival.id.slice(0, 8)}) liquidity=$${assessment.liquidity ?? "?"} volume24h=$${assessment.volume24h ?? "?"} holders=${assessment.holders ?? "?"} pool=${assessment.pool || "?"} tvl=$${assessment.tvl ?? "?"} fee_tvl=${assessment.feeTvl ?? "?"}% fees=${assessment.poolFeesSol ?? "?"} SOL`);
         } else {
           log("screening", `PVP rival ignored: ${rival.name || symbol} (${rival.id.slice(0, 8)}) - ${assessment?.reason || "not established"}`);

@@ -189,6 +189,51 @@ const invalidTimestamp = evaluatePvpAssets(pool("InvalidMint", "INVALID"), [
 ]);
 assert.equal(invalidTimestamp.pvp_check_status, "unverified");
 
+const JOTCHOA = "BcHEaaTCvycPwwsJ9yQTXdHP9X2gCLkznDbZ8VySpump";
+const UNDATED_JOTCHOA_RIVAL = "3aBcYMDudtgJoMoJBECnVLo6zKKfzHKpnEjMzx4wRi97";
+const jotchoaAssets = [
+  {
+    id: JOTCHOA,
+    name: "Jotchoa",
+    symbol: "Jotchoa",
+    createdAt: "2026-06-07T00:00:00Z",
+  },
+  {
+    id: UNDATED_JOTCHOA_RIVAL,
+    name: "Jotchoa copy",
+    symbol: "Jotchoa",
+    createdAt: null,
+  },
+];
+const jotchoaWithWeakUndatedRival = await checkPoolPvpRisk(pool(JOTCHOA, "Jotchoa"), {
+  searchAssets: async () => jotchoaAssets,
+  assessRival: async () => ({
+    established: false,
+    reason: "liquidity 500 < min 5000; holders 2 < min 1000",
+  }),
+});
+assert.equal(jotchoaWithWeakUndatedRival.pvp_check_status, "verified");
+assert.equal(jotchoaWithWeakUndatedRival.is_pvp, false);
+assert.match(jotchoaWithWeakUndatedRival.pvp_check_reason, /without createdAt/);
+
+const jotchoaWithStrongUndatedRival = await checkPoolPvpRisk(pool(JOTCHOA, "Jotchoa"), {
+  searchAssets: async () => jotchoaAssets,
+  assessRival: async () => ({
+    established: true,
+    liquidity: 500_000,
+    volume24h: 100_000,
+    holders: 20_000,
+    pool: "StrongUndatedPool",
+    tvl: 400_000,
+    feeTvl: 0.5,
+    poolFeesSol: 200,
+  }),
+});
+assert.equal(jotchoaWithStrongUndatedRival.pvp_check_status, "unverified");
+assert.equal(jotchoaWithStrongUndatedRival.is_pvp, false);
+assert.match(jotchoaWithStrongUndatedRival.pvp_check_reason, /established same-symbol rival/);
+assert.match(getPvpBlockReason(jotchoaWithStrongUndatedRival), /unverified/);
+
 const failedSearch = await checkPoolPvpRisk(pool("ApiFailure", "FAIL"), {
   searchAssets: async () => { throw new Error("timeout"); },
 });
