@@ -1699,6 +1699,15 @@ if (isTTY) {
       const section = b || "quick";
       const preset = c || "custom";
 
+      if (key === "confidence.enabled") {
+        const value = !config.confidence.enabled;
+        await applyTelegramConfig(key, value);
+        const menu = buildSettingsMenu(section, preset);
+        await editKeyboard(chatId, messageId, menu.text, menu.keyboard);
+        await answerCallback(query.id, `Confidence score ${value ? "ON" : "OFF"}`);
+        return;
+      }
+
       if (key === "strategy") {
         const keyboard = [
           [{ text: `bid_ask${config.strategy.strategy === "bid_ask" ? " ✓" : ""}`, callback_data: `set_strategy:bid_ask:${section}:${preset}` }],
