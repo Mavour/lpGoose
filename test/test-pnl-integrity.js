@@ -4,6 +4,10 @@ import {
   calculateMeteoraPositionPnl,
   calculatePnl,
 } from "../pnl-fetcher.js";
+import {
+  calculateMixedAllocation,
+  evaluatePnlDepositTrust,
+} from "../tools/dlmm.js";
 import { updatePnlAndCheckExits } from "../state.js";
 
 const statePath = "./state.json";
@@ -40,6 +44,35 @@ try {
   };
   assert.equal(calculateMeteoraPositionPnl(apiPosition, "usd").pnl, 25);
   assert.ok(Math.abs(calculateMeteoraPositionPnl(apiPosition, "sol").pnl - 0.25) < 1e-12);
+
+  for (const ratio of [
+    { bidask: 90, spot: 10 },
+    { bidask: 80, spot: 20 },
+    { bidask: 70, spot: 30 },
+  ]) {
+    const allocation = calculateMixedAllocation(0.2, ratio);
+    assert.ok(Math.abs(allocation.bidask - 0.2 * ratio.bidask / 100) < 1e-12);
+    assert.ok(Math.abs(allocation.spot - 0.2 * ratio.spot / 100) < 1e-12);
+    assert.ok(Math.abs(allocation.bidask + allocation.spot - 0.2) < 1e-12);
+  }
+
+  assert.equal(evaluatePnlDepositTrust({
+    actualDepositSol: 0.16,
+    expectedDepositSol: 0.2,
+  }).trusted, false);
+  assert.equal(evaluatePnlDepositTrust({
+    actualDepositSol: 0.198,
+    expectedDepositSol: 0.2,
+  }).trusted, true);
+  assert.equal(evaluatePnlDepositTrust({
+    actualDepositSol: 0.18,
+    expectedDepositSol: 0.18,
+  }).trusted, true);
+  assert.equal(evaluatePnlDepositTrust({
+    actualDepositSol: 0.2,
+    expectedDepositSol: 0.2,
+    deploying: true,
+  }).trusted, false);
 
   fs.writeFileSync(statePath, JSON.stringify({
     positions: {
@@ -80,6 +113,40 @@ try {
   assert.equal(repaired.peak_pnl_pct, 0.2);
   assert.equal(repaired.trailing_active, false);
 
+  fs.writeFileSync(statePath, JSON.stringify({
+    positions: {
+      partial_mixed: {
+        position: "partial_mixed",
+        peak_pnl_pct: 0,
+        trailing_active: false,
+        closed: false,
+        amount_sol: 0.2,
+      },
+    },
+    recentEvents: [],
+  }));
+  const pendingExit = updatePnlAndCheckExits(
+    "partial_mixed",
+    {
+      pnl_pct: 25,
+      pnl_trusted: false,
+      pnl_pending_reason: "indexed deposit 0.16 SOL below expected 0.2 SOL",
+      in_range: true,
+      fee_per_tvl_24h: 0,
+    },
+    {
+      trailingTakeProfit: true,
+      trailingTriggerPct: 2,
+      trailingDropPct: 0.15,
+      stopLossPct: -5,
+      takeProfitFeePct: 15,
+    }
+  );
+  assert.equal(pendingExit, null);
+  const pendingState = JSON.parse(fs.readFileSync(statePath, "utf8")).positions.partial_mixed;
+  assert.equal(pendingState.peak_pnl_pct, 0);
+  assert.equal(pendingState.trailing_active, false);
+
   console.log("PnL integrity tests passed");
 } finally {
   if (originalState == null) {
@@ -88,3 +155,5 @@ try {
     fs.writeFileSync(statePath, originalState);
   }
 }
+
+process.exit(0);

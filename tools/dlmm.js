@@ -298,26 +298,31 @@ export async function deployPosition({
   const totalBins = activeBinsBelow + activeBinsAbove;
   const isWideRange = totalBins > 69;
   const newPosition = generatePosition();
+  const positionAddress = newPosition.publicKey.toString();
 
   log("deploy", `Pool: ${pool_address}`);
   log("deploy", `Strategy: ${activeStrategy}, Bins: ${minBinId} to ${maxBinId} (${totalBins} bins${isWideRange ? " — WIDE RANGE" : ""})`);
   log("deploy", `Amount: ${finalAmountX} X, ${finalAmountY} Y`);
-  log("deploy", `Position: ${newPosition.publicKey.toString()}`);
+  log("deploy", `Position: ${positionAddress}`);
   log("deploy", `Cost preflight: 0 non-refundable bin cost; refundable position rent ${costQuote.position_rent_sol.toFixed(8)} SOL; refundable extension rent ${costQuote.position_extension_rent_sol.toFixed(8)} SOL`);
 
   try {
     const txHashes = [];
     let mixedPartial = false;
+    const completedMixedLayers = [];
+    _deployingPositions.add(positionAddress);
 
     // Pre-calculate mixed ratio split
     let mixedBidaskX, mixedBidaskY, mixedSpotX, mixedSpotY;
+    let mixedAllocationY = null;
     if (isMixed) {
       const ratio = config.strategy.mixedRatio || { bidask: 70, spot: 30 };
-      const total = ratio.bidask + ratio.spot;
-      mixedBidaskX = new BN(Math.floor((ratio.bidask / total) * Number(totalXLamports)));
-      mixedBidaskY = new BN(Math.floor((ratio.bidask / total) * Number(totalYLamports)));
-      mixedSpotX = new BN(Math.floor((ratio.spot / total) * Number(totalXLamports)));
-      mixedSpotY = new BN(Math.floor((ratio.spot / total) * Number(totalYLamports)));
+      const mixedAllocationX = calculateMixedAllocation(Number(totalXLamports), ratio);
+      mixedAllocationY = calculateMixedAllocation(Number(totalYLamports), ratio);
+      mixedBidaskX = new BN(Math.floor(mixedAllocationX.bidask));
+      mixedBidaskY = new BN(Math.floor(mixedAllocationY.bidask));
+      mixedSpotX = new BN(Math.floor(mixedAllocationX.spot));
+      mixedSpotY = new BN(Math.floor(mixedAllocationY.spot));
     }
 
     if (isWideRange) {
@@ -339,7 +344,7 @@ export async function deployPosition({
       }
 
       if (isMixed) {
-        // Phase 2: Add BidAsk layer (70%)
+        // Phase 2: Add the configured BidAsk share.
         const bidaskTxs = await pool.addLiquidityByStrategyChunkable({
           positionPubKey: newPosition.publicKey,
           user: wallet.publicKey,
@@ -354,8 +359,9 @@ export async function deployPosition({
           txHashes.push(txHash);
           log("deploy", `Mixed BidAsk tx ${i + 1}/${bidaskTxArray.length}: ${txHash}`);
         }
+        completedMixedLayers.push("bidask");
 
-        // Phase 3: Add Spot layer (30%) to same position
+        // Phase 3: Add the configured Spot share to the same position.
         try {
           const spotTxs = await pool.addLiquidityByStrategyChunkable({
             positionPubKey: newPosition.publicKey,
@@ -371,6 +377,7 @@ export async function deployPosition({
             txHashes.push(txHash);
             log("deploy", `Mixed Spot tx ${i + 1}/${spotTxArray.length}: ${txHash}`);
           }
+          completedMixedLayers.push("spot");
         } catch (spotError) {
           log("deploy_error", `Mixed Spot layer failed (BidAsk succeeded): ${spotError.message}`);
           mixedPartial = true;
@@ -394,7 +401,7 @@ export async function deployPosition({
       }
     } else if (isMixed) {
       // ── Mixed Standard Path (≤69 bins) ──────────────────────────
-      // Phase 1: Initialize position + add BidAsk layer (70%)
+      // Phase 1: Initialize position and add the configured BidAsk share.
       const bidaskTx = await pool.initializePositionAndAddLiquidityByStrategy({
         positionPubKey: newPosition.publicKey,
         user: wallet.publicKey,
@@ -406,8 +413,9 @@ export async function deployPosition({
       const hash1 = await sendTransaction(getConnection(), bidaskTx, [wallet, newPosition]);
       txHashes.push(hash1);
       log("deploy", `Mixed BidAsk layer tx: ${hash1}`);
+      completedMixedLayers.push("bidask");
 
-      // Phase 2: Add Spot layer (30%) to same position
+      // Phase 2: Add the configured Spot share to the same position.
       try {
         const spotTx = await pool.addLiquidityByStrategy({
           positionPubKey: newPosition.publicKey,
@@ -420,6 +428,7 @@ export async function deployPosition({
         const hash2 = await sendTransaction(getConnection(), spotTx, [wallet]);
         txHashes.push(hash2);
         log("deploy", `Mixed Spot layer tx: ${hash2}`);
+        completedMixedLayers.push("spot");
       } catch (spotError) {
         log("deploy_error", `Mixed Spot layer failed (BidAsk succeeded): ${spotError.message}`);
         mixedPartial = true;
@@ -441,10 +450,17 @@ export async function deployPosition({
     const layerCount = isMixed ? (mixedPartial ? 1 : 2) : 1;
     log("deploy", `SUCCESS — ${txHashes.length} tx(s): ${txHashes[0]}${isMixed ? ` (${layerCount}/${isMixed ? 2 : 1} layers)` : ""}`);
 
+    const successfulDepositSol = isMixed
+      ? completedMixedLayers.reduce(
+        (sum, layer) => sum + Number(layer === "bidask" ? mixedBidaskY : mixedSpotY) / 1e9,
+        0
+      )
+      : finalAmountY;
     _positionsCacheAt = 0;
     _pnlDiscoveryAt = 0;
+    _pnlCostBasis.delete(positionAddress);
     trackPosition({
-      position: newPosition.publicKey.toString(),
+      position: positionAddress,
       pool: pool_address,
       pool_name,
       strategy: trackedStrategy,
@@ -453,13 +469,19 @@ export async function deployPosition({
       volatility,
       fee_tvl_ratio,
       organic_score,
-      amount_sol: finalAmountY,
+      amount_sol: successfulDepositSol,
       amount_x: finalAmountX,
       active_bin: activeBin.binId,
       initial_value_usd,
+      expected_deposit_sol: successfulDepositSol,
+      requested_deposit_sol: finalAmountY,
+      mixed_ratio: isMixed ? mixedAllocationY.ratio : null,
+      mixed_layers_completed: isMixed ? completedMixedLayers : null,
+      deploying: false,
       signal_snapshot,
       momentum,
     });
+    _deployingPositions.delete(positionAddress);
 
     const actualBinStep = pool.lbPair.binStep;
     const activePrice = parseFloat(activeBin.price);
@@ -499,6 +521,9 @@ export async function deployPosition({
 
     return result;
   } catch (error) {
+    _deployingPositions.delete(positionAddress);
+    _pnlCostBasis.delete(positionAddress);
+    _pnlDiscoveryAt = 0;
     log("deploy_error", error.message);
     return { success: false, error: error.message };
   }
@@ -514,6 +539,81 @@ let _pnlDiscovery = null;
 let _pnlDiscoveryAt = 0;
 const _pnlCostBasis = new Map();
 const _closingPositions = new Set();
+const _deployingPositions = new Set();
+const _pnlPendingReasons = new Map();
+
+const PNL_DEPOSIT_TOLERANCE_PCT = 1;
+
+export function calculateMixedAllocation(totalAmount, ratio) {
+  const bidask = Number(ratio?.bidask);
+  const spot = Number(ratio?.spot);
+  const total = bidask + spot;
+  if (!Number.isFinite(totalAmount) || totalAmount < 0) {
+    throw new Error("Mixed allocation amount must be a non-negative number");
+  }
+  if (!Number.isFinite(bidask) || !Number.isFinite(spot) || bidask < 0 || spot < 0 || total <= 0) {
+    throw new Error("mixedRatio must contain non-negative bidask and spot weights");
+  }
+  return {
+    bidask: totalAmount * (bidask / total),
+    spot: totalAmount * (spot / total),
+    total: totalAmount,
+    ratio: { bidask, spot },
+  };
+}
+
+export function evaluatePnlDepositTrust({
+  actualDepositSol,
+  expectedDepositSol,
+  deploying = false,
+  tolerancePct = PNL_DEPOSIT_TOLERANCE_PCT,
+}) {
+  if (deploying) {
+    return { trusted: false, reason: "deployment layers still in progress" };
+  }
+  if (!Number.isFinite(expectedDepositSol) || expectedDepositSol <= 0) {
+    return { trusted: true, reason: null };
+  }
+  if (!Number.isFinite(actualDepositSol) || actualDepositSol < expectedDepositSol * (1 - tolerancePct / 100)) {
+    return {
+      trusted: false,
+      reason: `indexed deposit ${Number.isFinite(actualDepositSol) ? actualDepositSol : "?"} SOL below expected ${expectedDepositSol} SOL`,
+    };
+  }
+  return { trusted: true, reason: null };
+}
+
+function applyPnlTrust(position, raw) {
+  const tracked = getTrackedPosition(position.position);
+  const expectedDepositSol = Number(tracked?.expected_deposit_sol);
+  const actualDepositSol = Number.parseFloat(raw?.allTimeDeposits?.total?.sol);
+  const trust = evaluatePnlDepositTrust({
+    actualDepositSol,
+    expectedDepositSol,
+    deploying: _deployingPositions.has(position.position) || tracked?.deploying === true,
+  });
+  position.pnl_trusted = trust.trusted;
+  position.pnl_pending_reason = trust.reason;
+  position.expected_deposit_sol = Number.isFinite(expectedDepositSol) ? expectedDepositSol : null;
+  position.indexed_deposit_sol = Number.isFinite(actualDepositSol) ? actualDepositSol : null;
+  if (!trust.trusted) {
+    _pnlDiscoveryAt = 0;
+    position.pnl_pct = null;
+    position.pnl_usd = null;
+    position.pnl_true_usd = null;
+    position.pnl_sol = null;
+    if (_pnlPendingReasons.get(position.position) !== trust.reason) {
+      _pnlPendingReasons.set(position.position, trust.reason);
+      log(
+        "pnl_pending",
+        `${position.pair} | ${trust.reason} | ratio=${tracked?.mixed_ratio ? `${tracked.mixed_ratio.bidask}/${tracked.mixed_ratio.spot}` : "n/a"} | layers=${tracked?.mixed_layers_completed?.join("+") || "pending"}`
+      );
+    }
+  } else {
+    _pnlPendingReasons.delete(position.position);
+  }
+  return position;
+}
 
 // ─── Fetch DLMM PnL API for all positions in a pool ────────────
 async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
@@ -684,7 +784,7 @@ function fallbackPosition(pool, positionAddress, raw) {
     pnlNumber(raw?.unrealizedPnl?.unclaimedFeeTokenX?.amountSol) +
     pnlNumber(raw?.unrealizedPnl?.unclaimedFeeTokenY?.amountSol);
 
-  return {
+  return applyPnlTrust({
     position: positionAddress,
     pool: pool.poolAddress,
     pair: tracked?.pool_name || `${pool.tokenX}/${pool.tokenY}`,
@@ -716,7 +816,7 @@ function fallbackPosition(pool, positionAddress, raw) {
       : null,
     minutes_out_of_range: minutesOutOfRange(positionAddress),
     instruction: tracked?.instruction ?? null,
-  };
+  }, raw);
 }
 
 async function fetchOnChainPoolPositions(poolMeta, priceMap) {
@@ -782,7 +882,7 @@ async function fetchOnChainPoolPositions(poolMeta, priceMap) {
 
     const tracked = getTrackedPosition(positionAddress);
     const inRange = activeBin.binId >= data.lowerBinId && activeBin.binId <= data.upperBinId;
-    return {
+    return applyPnlTrust({
       position: positionAddress,
       pool: poolMeta.poolAddress,
       pair: tracked?.pool_name || `${poolMeta.tokenX}/${poolMeta.tokenY}`,
@@ -812,7 +912,7 @@ async function fetchOnChainPoolPositions(poolMeta, priceMap) {
         : null,
       minutes_out_of_range: minutesOutOfRange(positionAddress),
       instruction: tracked?.instruction ?? null,
-    };
+    }, costBasis);
   });
 }
 
@@ -831,6 +931,8 @@ export async function getPositionPnl({ pool_address, position_address }) {
       pnl_usd: position.pnl_true_usd,
       pnl_sol: position.pnl_sol,
       pnl_pct: position.pnl_pct,
+      pnl_trusted: position.pnl_trusted,
+      pnl_pending_reason: position.pnl_pending_reason,
       current_value_usd: position.total_value_true_usd,
       unclaimed_fee_usd: position.unclaimed_fees_true_usd,
       all_time_fees_usd: position.collected_fees_true_usd,

@@ -67,6 +67,11 @@ export function trackPosition({
   fee_tvl_ratio,
   organic_score,
   initial_value_usd,
+  expected_deposit_sol,
+  requested_deposit_sol,
+  mixed_ratio = null,
+  mixed_layers_completed = null,
+  deploying = false,
   signal_snapshot = null,
   momentum = null,
 }) {
@@ -86,6 +91,11 @@ export function trackPosition({
     initial_fee_tvl_24h: fee_tvl_ratio,
     organic_score,
     initial_value_usd,
+    expected_deposit_sol: expected_deposit_sol ?? amount_sol,
+    requested_deposit_sol: requested_deposit_sol ?? amount_sol,
+    mixed_ratio,
+    mixed_layers_completed,
+    deploying,
     signal_snapshot: signal_snapshot || null,
     momentum: momentum || null,
     deployed_at: new Date().toISOString(),
@@ -247,14 +257,19 @@ export function updatePositionSnapshots(positions) {
     if (!pos || pos.closed) continue;
 
     pos.base_mint = snapshot.base_mint || pos.base_mint || null;
+    const pnlTrusted = snapshot.pnl_trusted !== false;
     pos.last_snapshot = {
       captured_at: new Date().toISOString(),
-      pnl_pct: snapshot.pnl_pct ?? null,
-      pnl_sol: snapshot.pnl_sol ?? null,
-      pnl_usd: snapshot.pnl_true_usd ?? snapshot.pnl_usd ?? null,
-      fees_earned_sol: snapshot.fees_earned_sol ?? null,
-      fees_earned_usd: (snapshot.collected_fees_true_usd || 0) + (snapshot.unclaimed_fees_true_usd || 0),
-      final_value_usd: snapshot.total_value_true_usd ?? null,
+      pnl_pct: pnlTrusted ? snapshot.pnl_pct ?? null : null,
+      pnl_trusted: pnlTrusted,
+      pnl_pending_reason: snapshot.pnl_pending_reason ?? null,
+      pnl_sol: pnlTrusted ? snapshot.pnl_sol ?? null : null,
+      pnl_usd: pnlTrusted ? snapshot.pnl_true_usd ?? snapshot.pnl_usd ?? null : null,
+      fees_earned_sol: pnlTrusted ? snapshot.fees_earned_sol ?? null : null,
+      fees_earned_usd: pnlTrusted
+        ? (snapshot.collected_fees_true_usd || 0) + (snapshot.unclaimed_fees_true_usd || 0)
+        : null,
+      final_value_usd: pnlTrusted ? snapshot.total_value_true_usd ?? null : null,
       in_range: snapshot.in_range ?? null,
       age_minutes: snapshot.age_minutes ?? null,
     };
@@ -323,6 +338,10 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     log("state", `Auto-registered untracked position: ${position_address} (${positionData.pair || "?"})`);
   }
   if (pos.closed) return null;
+
+  if (positionData.pnl_trusted === false || pos.deploying) {
+    return null;
+  }
 
   // Sanity cap: reject absurd PnL values (API sometimes returns bogus data for new positions)
   if (currentPnlPct != null && (currentPnlPct > 200 || currentPnlPct < -200)) {
