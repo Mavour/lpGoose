@@ -18,6 +18,7 @@
     "test:bin-cost": "node test/test-bin-cost-guard.js",
     "test:momentum": "node test/test-momentum.js",
     "test:pnl": "node test/test-pnl-integrity.js",
+    "test:journal": "node test/test-journal.js",
     "test:agent": "DRY_RUN=true node test/test-agent.js",
     "postinstall": "node scripts/patch-anchor.js"
   },

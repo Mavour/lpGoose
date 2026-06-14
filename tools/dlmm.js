@@ -22,6 +22,9 @@ import {
 import { recordPerformance } from "../lessons.js";
 import { getPoolCooldown, setTokenCloseCooldown } from "../pool-memory.js";
 import { buildManualClosePerformance } from "../manual-close.js";
+import {
+  safeRecordJournalEntry,
+} from "../journal.js";
 import { normalizeMint } from "./wallet.js";
 import {
   calculateMeteoraPositionPnl,
@@ -140,7 +143,9 @@ export async function deployPosition({
   base_fee,
   volatility,
   fee_tvl_ratio,
+  volume,
   organic_score,
+  base_mint,
   initial_value_usd,
   signal_snapshot,
   momentum,
@@ -466,9 +471,12 @@ export async function deployPosition({
       strategy: trackedStrategy,
       bin_range: { min: minBinId, max: maxBinId, bins_below: activeBinsBelow, bins_above: activeBinsAbove },
       bin_step,
+      base_fee,
       volatility,
       fee_tvl_ratio,
+      volume,
       organic_score,
+      base_mint,
       amount_sol: successfulDepositSol,
       amount_x: finalAmountX,
       active_bin: activeBin.binId,
@@ -477,9 +485,42 @@ export async function deployPosition({
       requested_deposit_sol: finalAmountY,
       mixed_ratio: isMixed ? mixedAllocationY.ratio : null,
       mixed_layers_completed: isMixed ? completedMixedLayers : null,
+      position_rent_sol: costQuote.position_rent_sol,
+      position_extension_rent_sol: costQuote.position_extension_rent_sol,
       deploying: false,
       signal_snapshot,
       momentum,
+    });
+    const tracked = getTrackedPosition(positionAddress);
+    safeRecordJournalEntry({
+      position: positionAddress,
+      pool: pool_address,
+      poolName: pool_name,
+      deployedAt: tracked?.deployed_at,
+      entrySnapshot: signal_snapshot,
+      fallbackEntry: {
+        captured_at: tracked?.deployed_at,
+        pool: {
+          address: pool_address,
+          name: pool_name ?? null,
+          bin_step: bin_step ?? null,
+          fee_pct: base_fee ?? null,
+          volume_window_usd: volume ?? null,
+          fee_active_tvl_ratio_pct: fee_tvl_ratio ?? null,
+          volatility: volatility ?? null,
+        },
+        token: {
+          mint: base_mint ?? null,
+          organic_score: organic_score ?? null,
+        },
+        decision: {
+          strategy: activeStrategy,
+          strategy_label: trackedStrategy,
+          amount_sol: successfulDepositSol,
+          bins_below: activeBinsBelow,
+          bins_above: activeBinsAbove,
+        },
+      },
     });
     _deployingPositions.delete(positionAddress);
 
@@ -671,7 +712,28 @@ async function fetchClosedPnlForPosition(poolAddress, positionAddress, walletAdd
 }
 
 async function recordExternalClose(tracked, walletAddress) {
-  const closedPnl = await fetchClosedPnlForPosition(tracked.pool, tracked.position, walletAddress);
+  const snapshot = tracked.last_snapshot || {};
+  let closedPnl = null;
+  if (
+    snapshot.pnl_source === "rpc" &&
+    snapshot.pnl_trusted !== false &&
+    (numberOrNull(snapshot.pnl_sol) != null || numberOrNull(snapshot.pnl_pct) != null)
+  ) {
+    closedPnl = {
+      pnl_sol: numberOrNull(snapshot.pnl_sol),
+      pnl_pct: numberOrNull(snapshot.pnl_pct),
+      pnl_usd: numberOrNull(snapshot.pnl_usd),
+      fees_earned_sol: numberOrNull(snapshot.fees_earned_sol),
+      fees_earned_usd: numberOrNull(snapshot.fees_earned_usd),
+      final_value_usd: numberOrNull(snapshot.final_value_usd),
+      initial_value_usd: numberOrNull(tracked.initial_value_usd),
+      pnl_source: "rpc",
+      pnl_trusted: true,
+    };
+  } else {
+    closedPnl = await fetchClosedPnlForPosition(tracked.pool, tracked.position, walletAddress);
+    if (closedPnl) closedPnl.pnl_source = "meteora_closed_api";
+  }
   const performance = buildManualClosePerformance(tracked, closedPnl);
 
   if (tracked.base_mint) {
@@ -1369,6 +1431,27 @@ export async function closePosition({ position_address, reason }) {
     log("close", `Closing position: ${position_address}`);
     const wallet = getWallet();
     const poolAddress = await lookupPoolForPosition(position_address, wallet.publicKey.toString());
+    let preClosePnl = _positionsCache?.positions?.find(
+      (position) => position.position === position_address
+    ) || null;
+    if (!preClosePnl && tracked?.last_snapshot) {
+      const snapshot = tracked.last_snapshot;
+      preClosePnl = {
+        pnl_source: snapshot.pnl_source,
+        pnl_trusted: snapshot.pnl_trusted,
+        pnl_pct: snapshot.pnl_pct,
+        pnl_sol: snapshot.pnl_sol,
+        pnl_true_usd: snapshot.pnl_usd,
+        fees_earned_sol: snapshot.fees_earned_sol,
+        collected_fees_true_usd: tracked.total_fees_claimed_usd || 0,
+        unclaimed_fees_true_usd: Math.max(
+          0,
+          Number(snapshot.fees_earned_usd || 0) -
+            Number(tracked.total_fees_claimed_usd || 0)
+        ),
+        total_value_true_usd: snapshot.final_value_usd,
+      };
+    }
     // Clear cached pool so SDK loads fresh position fee state
     poolCache.delete(poolAddress.toString());
     const pool = await getPool(poolAddress);
@@ -1490,16 +1573,24 @@ export async function closePosition({ position_address, reason }) {
         minutesOOR = Math.floor((Date.now() - new Date(tracked.out_of_range_since).getTime()) / 60000);
       }
 
-      // Fetch closed PnL from API — authoritative source after withdrawal settles
-      let pnlUsd = 0;
-      let pnlPct = 0;
-      let finalValueUsd = 0;
-      let initialUsd = 0;
-      let feesUsd = tracked.total_fees_claimed_usd || 0;
-      let pnlSol = null;
-      let feesSol = null;
+      // Prefer trusted RPC PnL captured immediately before close.
+      const rpcSnapshot = preClosePnl?.pnl_source === "rpc" &&
+        preClosePnl?.pnl_trusted !== false
+        ? preClosePnl
+        : null;
+      let pnlUsd = rpcSnapshot?.pnl_true_usd ?? rpcSnapshot?.pnl_usd ?? 0;
+      let pnlPct = rpcSnapshot?.pnl_pct ?? 0;
+      let finalValueUsd = rpcSnapshot?.total_value_true_usd ?? rpcSnapshot?.total_value_usd ?? 0;
+      let initialUsd = tracked.initial_value_usd || 0;
+      let feesUsd = rpcSnapshot
+        ? (rpcSnapshot.collected_fees_true_usd || 0) + (rpcSnapshot.unclaimed_fees_true_usd || 0)
+        : tracked.total_fees_claimed_usd || 0;
+      let pnlSol = rpcSnapshot?.pnl_sol ?? null;
+      let feesSol = rpcSnapshot?.fees_earned_sol ?? null;
+      let pnlSource = rpcSnapshot ? "rpc" : null;
+      let pnlTrusted = rpcSnapshot != null;
       let posEntry = null;
-      for (let retry = 0; retry < 3; retry++) {
+      for (let retry = 0; !rpcSnapshot && retry < 3; retry++) {
         try {
           const closedUrl = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${wallet.publicKey.toString()}&status=closed&pageSize=50&page=1`;
           const res = await fetch(closedUrl);
@@ -1516,7 +1607,9 @@ export async function closePosition({ position_address, reason }) {
               finalValueUsd = parseFloat(posEntry.allTimeWithdrawals?.total?.usd || 0);
               initialUsd    = parseFloat(posEntry.allTimeDeposits?.total?.usd || 0);
               feesUsd       = parseFloat(posEntry.allTimeFees?.total?.usd || 0) || feesUsd;
-              log("close", `Closed PnL from API: pnl=${pnlUsd.toFixed(2)} USD (${pnlPct.toFixed(2)}%), withdrawn=${finalValueUsd.toFixed(2)}, deposited=${initialUsd.toFixed(2)}`);
+              pnlSource     = "meteora_closed_api";
+              pnlTrusted    = true;
+              log("close", `Closed PnL API fallback: pnl=${pnlUsd.toFixed(2)} USD (${pnlPct.toFixed(2)}%), withdrawn=${finalValueUsd.toFixed(2)}, deposited=${initialUsd.toFixed(2)}`);
               break;
             }
             log("close_warn", `Closed PnL retry ${retry + 1}/3: position not settled yet`);
@@ -1528,7 +1621,7 @@ export async function closePosition({ position_address, reason }) {
       }
       // Fallback to pre-close cache snapshot if closed API had no data
       if (finalValueUsd === 0) {
-        const cachedPos = _positionsCache?.positions?.find(p => p.position === position_address);
+        const cachedPos = preClosePnl || _positionsCache?.positions?.find(p => p.position === position_address);
         if (cachedPos) {
           pnlUsd        = cachedPos.pnl_true_usd ?? cachedPos.pnl_usd ?? 0;
           pnlPct        = cachedPos.pnl_pct   ?? 0;
@@ -1536,6 +1629,8 @@ export async function closePosition({ position_address, reason }) {
           initialUsd    = tracked.initial_value_usd || 0;
           pnlSol        = cachedPos.pnl_sol ?? (tracked.amount_sol ? tracked.amount_sol * (pnlPct / 100) : 0);
           feesSol       = cachedPos.fees_earned_sol ?? 0;
+          pnlSource     = cachedPos.pnl_source || "last_open_snapshot";
+          pnlTrusted    = cachedPos.pnl_trusted !== false;
           if (initialUsd > 0) {
             finalValueUsd = Math.max(0, initialUsd + pnlUsd - feesUsd);
             pnlPct = (pnlUsd / initialUsd) * 100;
@@ -1543,7 +1638,7 @@ export async function closePosition({ position_address, reason }) {
             finalValueUsd = cachedPos.total_value_true_usd ?? cachedPos.total_value_usd ?? 0;
             initialUsd = Math.max(0, finalValueUsd + feesUsd - pnlUsd);
           }
-          log("close_warn", `Using cached pnl fallback because closed API has not settled yet`);
+          log("close_warn", `Using cached PnL fallback because canonical RPC data was unavailable`);
         }
       }
 
@@ -1557,8 +1652,13 @@ export async function closePosition({ position_address, reason }) {
         volatility: tracked.volatility || null,
         fee_tvl_ratio: tracked.fee_tvl_ratio || null,
         organic_score: tracked.organic_score || null,
+        signal_snapshot: tracked.signal_snapshot || null,
+        deployed_at: tracked.deployed_at || null,
         amount_sol: tracked.amount_sol,
         pnl_sol: pnlSol,
+        pnl_usd: pnlUsd,
+        pnl_source: pnlSource || "unknown",
+        pnl_trusted: pnlTrusted,
         fees_earned_sol: feesSol,
         fees_earned_usd: feesUsd,
         final_value_usd: finalValueUsd,
@@ -1566,6 +1666,9 @@ export async function closePosition({ position_address, reason }) {
         minutes_in_range: minutesHeld - minutesOOR,
         minutes_held: minutesHeld,
         close_reason: reason || "agent decision",
+        close_source: "agent",
+        position_rent_sol: tracked.position_rent_sol ?? null,
+        position_extension_rent_sol: tracked.position_extension_rent_sol ?? null,
       }).catch(e => log("close_warn", `Async PnL record failed: ${e.message}`));
 
       const baseMint = pool.lbPair.tokenXMint.toString();

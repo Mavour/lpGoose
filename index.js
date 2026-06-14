@@ -40,6 +40,7 @@ import {
   removeFromBlacklist,
   resolveBlacklistMint,
 } from "./token-blacklist.js";
+import { buildEntrySnapshot } from "./journal.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -213,8 +214,10 @@ async function evaluateAutoExit(position) {
       const strategy = new BottomSpotLPStrategy(config.bottomSpotLP);
       const decision = await strategy.evaluatePosition({
         ...position,
-        upperPrice: tracked?.signal_snapshot?.upperPrice,
-        lowerPrice: tracked?.signal_snapshot?.lowerPrice,
+        upperPrice: tracked?.signal_snapshot?.decision?.signal?.upper_price
+          ?? tracked?.signal_snapshot?.upperPrice,
+        lowerPrice: tracked?.signal_snapshot?.decision?.signal?.lower_price
+          ?? tracked?.signal_snapshot?.lowerPrice,
         ilPct: position.pnl_pct != null && position.pnl_pct < 0 ? Math.abs(position.pnl_pct) : 0,
       }, candles, { pct: feesPct });
       if (decision.action === "close") {
@@ -580,15 +583,6 @@ async function tryBottomSpotDeploy(passing, prePositions, preBalance) {
       report: `Bottom Spot signal found, but deploy params invalid: ${deployParams.reason}`,
     };
   }
-  deployParams.signal_snapshot = {
-    ...deployParams.signal_snapshot,
-    dumpPct: selectedPool.signal.dumpPct,
-    retracePct: selectedPool.signal.retracePct,
-    athPrice: selectedPool.signal.athPrice,
-    dumpLow: selectedPool.signal.dumpLow,
-    currentPrice: selectedPool.signal.currentPrice,
-  };
-
   if (_autoCloseCoordinator.size > 0) {
     log("bottom_spot", `Deploy skipped - ${_autoCloseCoordinator.size} priority close(s) in progress`);
     return { deployed: false, report: "Bottom Spot deploy skipped while priority close is in progress." };
@@ -614,13 +608,38 @@ async function tryBottomSpotDeploy(passing, prePositions, preBalance) {
       report: `Bottom Spot deploy skipped: ${liveEntry.reason}`,
     };
   }
-  deployParams.signal_snapshot = {
-    ...deployParams.signal_snapshot,
-    pool_fees_sol: liveEntry.fees.pool_fees_sol,
-    pool_fees_source: liveEntry.fees.source,
-    pool_fees_timeframe: liveEntry.fees.timeframe || null,
-    price_vs_ath_pct: liveEntry.price?.price_vs_ath_pct ?? null,
-  };
+  deployParams.signal_snapshot = buildEntrySnapshot({
+    pool: {
+      ...selectedPool.pool,
+      pool_fees_sol: liveEntry.fees.pool_fees_sol,
+      pool_fees_source: liveEntry.fees.source,
+      pool_fees_timeframe: liveEntry.fees.timeframe || null,
+      price_vs_ath_pct: liveEntry.price?.price_vs_ath_pct
+        ?? selectedPool.pool.price_vs_ath_pct,
+      ath: liveEntry.price?.ath ?? selectedPool.pool.ath,
+    },
+    tokenInfo: selectedPool.candidate?.ti,
+    smartWallets: selectedPool.candidate?.sw,
+    activeConfig: config,
+    decision: {
+      strategy: deployParams.strategy,
+      strategy_label: deployParams.strategy_label,
+      amount_sol: amountSol,
+      sizing_action: "bottom_spot_fixed",
+      bins_below: deployParams.bins_below,
+      bins_above: deployParams.bins_above,
+      reason: selectedPool.reason,
+      signal: {
+        dump_pct: selectedPool.signal.dumpPct,
+        retrace_pct: selectedPool.signal.retracePct,
+        ath_price: selectedPool.signal.athPrice,
+        dump_low: selectedPool.signal.dumpLow,
+        current_price: selectedPool.signal.currentPrice,
+        lower_price: selectedPool.binRange.lowerPrice,
+        upper_price: selectedPool.binRange.upperPrice,
+      },
+    },
+  });
 
   const deployResult = await deployPosition(deployParams);
   const pool = selectedPool.pool;
@@ -777,18 +796,30 @@ async function attemptStandardDeploy(candidate, deployAmount) {
     bins_above: 0,
     pool_name: pool.name,
     bin_step: pool.bin_step,
+    base_fee: pool.fee_pct,
     fee_tvl_ratio: pool.fee_active_tvl_ratio,
+    volume: pool.volume_window,
     volatility: pool.volatility,
     organic_score: pool.organic_score,
+    base_mint: pool.base?.mint,
     momentum,
-    signal_snapshot: {
-      momentum,
-      supertrend_direction: pool.supertrend_direction,
-      supertrend_reason: pool.supertrend_reason,
-      pool_fees_sol: pool.pool_fees_sol,
-      pool_fees_source: pool.pool_fees_source,
-      pool_fees_timeframe: pool.pool_fees_timeframe,
-    },
+    signal_snapshot: buildEntrySnapshot({
+      pool,
+      tokenInfo: ti,
+      smartWallets: sw,
+      activeConfig: config,
+      decision: {
+        strategy: config.strategy.strategy,
+        amount_sol: sizing.amount,
+        sizing_action: sizing.action,
+        bins_below,
+        bins_above: 0,
+        active_bin: activeBin,
+        reason: "best candidate by confidence score; all hard gates passed",
+        confidence,
+        momentum,
+      },
+    }),
   };
 
   const deployStartedAt = Date.now();

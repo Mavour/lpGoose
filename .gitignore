@@ -17,6 +17,7 @@ pool-memory.json
 token-blacklist.json
 strategy-library.json
 live-positions-cache.json
+position-journal.json
 
 # Logs
 logs/

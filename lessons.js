@@ -10,6 +10,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
+import { safeRecordJournalOutcome } from "./journal.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -109,6 +110,7 @@ export async function recordPerformance(perf) {
   }
 
   save(data);
+  safeRecordJournalOutcome(entry);
 
   // Update pool-level memory
   if (perf.pool) {

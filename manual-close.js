@@ -49,6 +49,8 @@ export function buildManualClosePerformance(tracked, closedPnl = null, now = Dat
     volatility: tracked.volatility ?? null,
     fee_tvl_ratio: tracked.fee_tvl_ratio ?? null,
     organic_score: tracked.organic_score ?? null,
+    signal_snapshot: tracked.signal_snapshot ?? null,
+    deployed_at: tracked.deployed_at ?? null,
     amount_sol: amountSol,
     pnl_sol: pnlSol,
     pnl_usd: pnlUsd,
@@ -62,7 +64,11 @@ export function buildManualClosePerformance(tracked, closedPnl = null, now = Dat
     minutes_held: minutesHeld,
     close_reason: "External/manual close detected",
     close_source: "external",
-    pnl_source: closedPnl ? "meteora_closed_api" : "last_open_snapshot",
+    pnl_source: closedPnl?.pnl_source
+      ?? (snapshot.pnl_source === "rpc" ? "rpc" : closedPnl ? "meteora_closed_api" : "last_open_snapshot"),
+    pnl_trusted: closedPnl?.pnl_trusted ?? snapshot.pnl_trusted !== false,
+    position_rent_sol: tracked.position_rent_sol ?? null,
+    position_extension_rent_sol: tracked.position_extension_rent_sol ?? null,
   };
 }
 

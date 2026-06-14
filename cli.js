@@ -197,6 +197,12 @@ Shows all closed position performance history with summary stats.
 Output: { summary: { total_positions_closed, total_pnl_usd, avg_pnl_pct, win_rate_pct, total_lessons }, count, positions: [...] }
 \`\`\`
 
+### meridian journal-analysis
+Read-only analysis of the entry-to-exit position journal.
+\`\`\`
+Output: { data_quality, summary, cohorts, loss_patterns, feature_comparison }
+\`\`\`
+
 ### meridian discord-signals [clear]
 Shows pending Discord signal queue from the discord-listener process.
 \`\`\`
@@ -610,6 +616,13 @@ switch (subcommand) {
     const history = getPerformanceHistory({ hours: 999999, limit });
     const summary = getPerformanceSummary();
     out({ summary, ...history });
+    break;
+  }
+
+  // â”€â”€ journal-analysis â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  case "journal-analysis": {
+    const { analyzeJournal } = await import("./journal.js");
+    out(analyzeJournal());
     break;
   }
 

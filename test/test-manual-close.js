@@ -39,6 +39,7 @@ try {
     unclaimed_fees_true_usd: 0.5,
     fees_earned_sol: 0.015,
     total_value_true_usd: 94.5,
+    pnl_source: "rpc",
     in_range: true,
     age_minutes: 60,
   }]);
@@ -59,7 +60,7 @@ try {
   const performance = buildManualClosePerformance(detected[0], null);
   assert.equal(performance.position, position);
   assert.equal(performance.close_reason, "External/manual close detected");
-  assert.equal(performance.pnl_source, "last_open_snapshot");
+  assert.equal(performance.pnl_source, "rpc");
   assert.equal(performance.pnl_sol, -0.04);
   assert.equal(performance.fees_earned_usd, 1.5);
   assert.equal(performance.final_value_usd, 94.5);
@@ -72,6 +73,7 @@ try {
     fees_earned_usd: 2,
     final_value_usd: 108,
     initial_value_usd: 100,
+    pnl_source: "meteora_closed_api",
   });
   assert.equal(authoritative.pnl_source, "meteora_closed_api");
   assert.equal(authoritative.pnl_sol, 0.1);

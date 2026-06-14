@@ -14,6 +14,17 @@ const statePath = "./state.json";
 const originalState = fs.existsSync(statePath) ? fs.readFileSync(statePath, "utf8") : null;
 
 try {
+  const dlmmSource = fs.readFileSync("./tools/dlmm.js", "utf8");
+  const closeSource = dlmmSource.slice(
+    dlmmSource.indexOf("export async function closePosition"),
+    dlmmSource.indexOf("export async function withdrawLiquidity"),
+  );
+  assert.doesNotMatch(
+    closeSource,
+    /getMyPositions\(\{\s*force:\s*true,\s*silent:\s*true,\s*liveOnly:\s*true/,
+    "close must not fetch a fresh RPC PnL snapshot before sending transactions",
+  );
+
   assert.deepEqual(calculatePnl({
     balance: 110,
     withdrawals: 5,
