@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { getToolsForRole } from "../agent.js";
+import { getToolsForRole, shouldRequireRealToolUse } from "../agent.js";
 
 assert.deepEqual(
   getToolsForRole("GENERAL", "halo"),
@@ -15,6 +15,28 @@ assert.ok(
 assert.ok(
   getToolsForRole("GENERAL", "close position saya").some((tool) => tool.function.name === "close_position"),
   "close intent should expose close tools",
+);
+
+const mintLookupTools = getToolsForRole(
+  "GENERAL",
+  "cek 2dJniDEAGCG7zWKseCkyrML3W23WLjDf1CGxpNv3pump",
+);
+assert.ok(
+  mintLookupTools.some((tool) => tool.function.name === "get_token_info"),
+  "a raw Solana mint lookup should expose token research tools",
+);
+assert.ok(
+  mintLookupTools.some((tool) => tool.function.name === "search_pools"),
+  "a raw Solana mint lookup should expose pool search",
+);
+assert.equal(
+  shouldRequireRealToolUse(
+    "cek 2dJniDEAGCG7zWKseCkyrML3W23WLjDf1CGxpNv3pump",
+    "GENERAL",
+    false,
+  ),
+  true,
+  "a raw Solana mint lookup must not accept a no-tool final answer",
 );
 
 console.log("Agent routing tests passed");

@@ -6,6 +6,7 @@ import { tools } from "./tools/definitions.js";
 
 const MANAGER_TOOLS  = new Set(["close_position", "claim_fees", "swap_token", "get_position_pnl", "get_my_positions", "set_position_note", "add_pool_note", "get_wallet_balance", "get_wallet_positions"]);
 const SCREENER_TOOLS = new Set(["deploy_position", "get_active_bin", "get_top_candidates", "check_smart_wallets_on_pool", "get_token_holders", "get_token_narrative", "get_token_info", "search_pools", "get_pool_memory", "add_pool_note", "add_to_blacklist", "get_wallet_balance", "get_my_positions", "get_wallet_positions"]);
+const SOLANA_ADDRESS_RE = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/;
 
 // Intent → tool subsets for GENERAL role
 const INTENT_TOOLS = {
@@ -52,6 +53,9 @@ export function getToolsForRole(agentType, goal = "") {
 
   // GENERAL: match intent from goal, combine matched tool sets
   const matched = new Set();
+  if (SOLANA_ADDRESS_RE.test(goal)) {
+    for (const t of INTENT_TOOLS.screen) matched.add(t);
+  }
   for (const { intent, re } of INTENT_PATTERNS) {
     if (re.test(goal)) {
       for (const t of INTENT_TOOLS[intent]) matched.add(t);
@@ -81,10 +85,10 @@ const DEFAULT_MODEL = process.env.LLM_MODEL || "openrouter/healer-alpha";
 
 const TOOL_REQUIRED_INTENTS = /\b(deploy|open position|open|add liquidity|lp into|invest in|close|exit|withdraw|remove liquidity|claim|harvest|collect|swap|convert|sell|exchange|block|unblock|blacklist|self.?update|pull latest|git pull|update yourself|config|setting|threshold|set |change|update |balance|wallet|position|portfolio|pnl|yield|range|screen|candidate|find pool|search|research|token|smart wallet|whale|watch.?list|tracked wallet|study top|top lpers?|lp behavior|who.?s lping|performance|history|stats|report|lesson|learned|teach|pin|unpin)\b/i;
 
-function shouldRequireRealToolUse(goal, agentType, requireTool) {
+export function shouldRequireRealToolUse(goal, agentType, requireTool) {
   if (requireTool) return true;
   if (agentType === "MANAGER") return false;
-  return TOOL_REQUIRED_INTENTS.test(goal);
+  return SOLANA_ADDRESS_RE.test(goal) || TOOL_REQUIRED_INTENTS.test(goal);
 }
 
 /**
