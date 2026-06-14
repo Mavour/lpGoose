@@ -7,6 +7,7 @@ import {
   buildEntrySnapshot,
   recordJournalEntry,
   recordJournalOutcome,
+  safeBuildEntrySnapshot,
   safeRecordJournalEntry,
 } from "../journal.js";
 
@@ -19,9 +20,11 @@ try {
   const indexSource = fs.readFileSync("./index.js", "utf8");
   assert.match(
     indexSource,
-    /async function attemptStandardDeploy[\s\S]*const \{\s*pool,\s*sw,\s*ti,\s*confidence\s*\} = candidate;/,
-    "standard deploy must carry token info into the entry snapshot",
+    /async function attemptStandardDeploy[\s\S]*const \{\s*pool,\s*sw,\s*ti,\s*activeBin,\s*confidence\s*\} = candidate;/,
+    "standard deploy must carry existing candidate data into the entry snapshot",
   );
+  assert.doesNotMatch(indexSource, /\bbuildEntrySnapshot\(/);
+  assert.match(indexSource, /safeBuildEntrySnapshot\(/);
 
   const capturedAt = "2026-06-14T00:00:00.000Z";
   const poolInput = {
@@ -77,6 +80,11 @@ try {
   assert.equal(snapshot.token.market_cap_usd, 800_000);
   assert.equal(snapshot.safety.top_holders_pct, 20);
   assert.deepEqual(poolInput, poolBefore);
+  assert.equal(safeBuildEntrySnapshot({
+    get pool() {
+      throw new Error("snapshot fixture failure");
+    },
+  }), null);
 
   assert.equal(recordJournalEntry({
     position: "PositionA",

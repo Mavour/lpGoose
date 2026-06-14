@@ -40,7 +40,7 @@ import {
   removeFromBlacklist,
   resolveBlacklistMint,
 } from "./token-blacklist.js";
-import { buildEntrySnapshot } from "./journal.js";
+import { safeBuildEntrySnapshot } from "./journal.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -608,7 +608,7 @@ async function tryBottomSpotDeploy(passing, prePositions, preBalance) {
       report: `Bottom Spot deploy skipped: ${liveEntry.reason}`,
     };
   }
-  deployParams.signal_snapshot = buildEntrySnapshot({
+  deployParams.signal_snapshot = safeBuildEntrySnapshot({
     pool: {
       ...selectedPool.pool,
       pool_fees_sol: liveEntry.fees.pool_fees_sol,
@@ -683,7 +683,7 @@ async function tryBottomSpotDeploy(passing, prePositions, preBalance) {
 }
 
 async function attemptStandardDeploy(candidate, deployAmount) {
-  const { pool, sw, ti, confidence } = candidate;
+  const { pool, sw, ti, activeBin, confidence } = candidate;
   const sizing = getConfidenceSizing(confidence.total, deployAmount, config.confidence);
   const confidenceLog = [
     `Confidence ${pool.name}: total=${confidence.total}%`,
@@ -803,7 +803,7 @@ async function attemptStandardDeploy(candidate, deployAmount) {
     organic_score: pool.organic_score,
     base_mint: pool.base?.mint,
     momentum,
-    signal_snapshot: buildEntrySnapshot({
+    signal_snapshot: safeBuildEntrySnapshot({
       pool,
       tokenInfo: ti,
       smartWallets: sw,

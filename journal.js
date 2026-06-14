@@ -181,6 +181,15 @@ export function buildEntrySnapshot({
   };
 }
 
+export function safeBuildEntrySnapshot(args) {
+  try {
+    return buildEntrySnapshot(args);
+  } catch (error) {
+    log("journal_warn", `Entry snapshot build failed: ${error.message}`);
+    return null;
+  }
+}
+
 export function recordJournalEntry({
   position,
   pool,
