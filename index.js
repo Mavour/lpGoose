@@ -683,7 +683,7 @@ async function tryBottomSpotDeploy(passing, prePositions, preBalance) {
 }
 
 async function attemptStandardDeploy(candidate, deployAmount) {
-  const { pool, sw, confidence } = candidate;
+  const { pool, sw, ti, confidence } = candidate;
   const sizing = getConfidenceSizing(confidence.total, deployAmount, config.confidence);
   const confidenceLog = [
     `Confidence ${pool.name}: total=${confidence.total}%`,

@@ -16,6 +16,13 @@ const previousPath = process.env.MERIDIAN_JOURNAL_FILE;
 process.env.MERIDIAN_JOURNAL_FILE = journalPath;
 
 try {
+  const indexSource = fs.readFileSync("./index.js", "utf8");
+  assert.match(
+    indexSource,
+    /async function attemptStandardDeploy[\s\S]*const \{\s*pool,\s*sw,\s*ti,\s*confidence\s*\} = candidate;/,
+    "standard deploy must carry token info into the entry snapshot",
+  );
+
   const capturedAt = "2026-06-14T00:00:00.000Z";
   const poolInput = {
     pool: "PoolA",
