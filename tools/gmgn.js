@@ -147,6 +147,15 @@ export async function getGmgnPoolFees({ mint, pool_address }, { fetchData = fetc
         scope: "pool",
       }, info);
     }
+    const tokenTotal = tokenTotalFeeOf(info);
+    if (tokenTotal != null) {
+      return withPriceContext({
+        pool_fees_sol: Number(tokenTotal.toFixed(2)),
+        source: "gmgn_token_total",
+        timeframe: "all_time",
+        scope: "token",
+      }, info);
+    }
     return { pool_fees_sol: null, source: null, error: "pool fee not found in matching GMGN pool response" };
   } catch (e) {
     return { pool_fees_sol: null, source: null, error: e.message };

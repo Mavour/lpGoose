@@ -345,6 +345,45 @@ assert.deepEqual(tokenOnlyFee, {
   scope: "token",
 });
 
+let matchedPoolFallbackRequests = 0;
+const matchedPoolTokenFallback = await getGmgnPoolFees(
+  { mint: "mint", pool_address: "TargetPool" },
+  {
+    fetchData: async () => {
+      matchedPoolFallbackRequests += 1;
+      return {
+        data: {
+          total_fee: 61.25,
+          pools: [{ pool_address: "TargetPool", liquidity: 10_000 }],
+        },
+      };
+    },
+  },
+);
+assert.equal(matchedPoolFallbackRequests, 1);
+assert.deepEqual(matchedPoolTokenFallback, {
+  pool_fees_sol: 61.25,
+  source: "gmgn_token_total",
+  timeframe: "all_time",
+  scope: "token",
+});
+
+const missingMatchedPoolFee = await getGmgnPoolFees(
+  { mint: "mint", pool_address: "TargetPool" },
+  {
+    fetchData: async () => ({
+      data: {
+        pools: [{ pool_address: "TargetPool", liquidity: 10_000 }],
+      },
+    }),
+  },
+);
+assert.deepEqual(missingMatchedPoolFee, {
+  pool_fees_sol: null,
+  source: null,
+  error: "pool fee not found in matching GMGN pool response",
+});
+
 const gatePool = {
   pool: "FeeSourceTestPool",
   base: { mint: "FeeSourceTestMint", symbol: "TEST" },
