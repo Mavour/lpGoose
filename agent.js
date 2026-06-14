@@ -7,6 +7,8 @@ import { tools } from "./tools/definitions.js";
 const MANAGER_TOOLS  = new Set(["close_position", "claim_fees", "swap_token", "get_position_pnl", "get_my_positions", "set_position_note", "add_pool_note", "get_wallet_balance", "get_wallet_positions"]);
 const SCREENER_TOOLS = new Set(["deploy_position", "get_active_bin", "get_top_candidates", "check_smart_wallets_on_pool", "get_token_holders", "get_token_narrative", "get_token_info", "search_pools", "get_pool_memory", "add_pool_note", "add_to_blacklist", "get_wallet_balance", "get_my_positions", "get_wallet_positions"]);
 const SOLANA_ADDRESS_RE = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/;
+const LOOKUP_INTENT_RE = /\b(cek|check|inspect|analy[sz]e|analysis|lookup|look up|research|info|detail|details)\b/i;
+const ACTION_INTENT_RE = /\b(deploy|open|add liquidity|close|exit|withdraw|claim|swap|sell|block|unblock)\b/i;
 
 // Intent → tool subsets for GENERAL role
 const INTENT_TOOLS = {
@@ -91,6 +93,13 @@ export function shouldRequireRealToolUse(goal, agentType, requireTool) {
   return SOLANA_ADDRESS_RE.test(goal) || TOOL_REQUIRED_INTENTS.test(goal);
 }
 
+export function shouldIsolateLookupHistory(goal, agentType) {
+  return agentType === "GENERAL"
+    && SOLANA_ADDRESS_RE.test(goal)
+    && LOOKUP_INTENT_RE.test(goal)
+    && !ACTION_INTENT_RE.test(goal);
+}
+
 /**
  * Core ReAct agent loop.
  *
@@ -106,10 +115,11 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   const lessons = getLessonsForPrompt({ agentType });
   const perfSummary = getPerformanceSummary();
   const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary);
+  const effectiveHistory = shouldIsolateLookupHistory(goal, agentType) ? [] : sessionHistory;
 
   const messages = [
     { role: "system", content: systemPrompt },
-    ...sessionHistory,          // inject prior conversation turns
+    ...effectiveHistory,
     { role: "user", content: goal },
   ];
 

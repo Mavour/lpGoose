@@ -1,4 +1,18 @@
 const DATAPI_BASE = "https://datapi.jup.ag/v1";
+const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+function normalizeTokenSearchResults(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.data)) return data.data;
+  return data ? [data] : [];
+}
+
+export function selectTokenSearchResults(data, query, limit = 5) {
+  const tokens = normalizeTokenSearchResults(data);
+  if (!SOLANA_ADDRESS_RE.test(query)) return tokens.slice(0, limit);
+
+  return tokens.filter((token) => token?.id === query).slice(0, limit);
+}
 
 /**
  * Get the narrative/story behind a token from Jupiter ChainInsight.
@@ -24,10 +38,10 @@ export async function getTokenInfo({ query }) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Token search API error: ${res.status}`);
   const data = await res.json();
-  const tokens = Array.isArray(data) ? data : [data];
+  const tokens = selectTokenSearchResults(data, query);
   if (!tokens.length) return { found: false, query };
 
-  const results = tokens.slice(0, 5).map((t) => ({
+  const results = tokens.map((t) => ({
     mint: t.id,
     name: t.name,
     symbol: t.symbol,
@@ -74,7 +88,7 @@ export async function getTokenHolders({ mint, limit = 20 }) {
   if (!holdersRes.ok) throw new Error(`Holders API error: ${holdersRes.status}`);
   const data = await holdersRes.json();
   const tokenData = tokenRes.ok ? await tokenRes.json() : null;
-  const tokenInfo = Array.isArray(tokenData) ? tokenData[0] : tokenData;
+  const tokenInfo = selectTokenSearchResults(tokenData, mint, 1)[0] || null;
   const totalSupply = tokenInfo?.totalSupply || tokenInfo?.circSupply || null;
 
   const holders = Array.isArray(data) ? data : (data.holders || data.data || []);

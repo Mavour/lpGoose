@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { getToolsForRole, shouldRequireRealToolUse } from "../agent.js";
+import {
+  getToolsForRole,
+  shouldIsolateLookupHistory,
+  shouldRequireRealToolUse,
+} from "../agent.js";
 
 assert.deepEqual(
   getToolsForRole("GENERAL", "halo"),
@@ -37,6 +41,22 @@ assert.equal(
   ),
   true,
   "a raw Solana mint lookup must not accept a no-tool final answer",
+);
+assert.equal(
+  shouldIsolateLookupHistory(
+    "cek yoA2CoHk6HRNtFuTP1kVt5xkcvG7mr5raQ5zuNxpump",
+    "GENERAL",
+  ),
+  true,
+  "a standalone mint lookup should not inherit an earlier token analysis",
+);
+assert.equal(
+  shouldIsolateLookupHistory(
+    "deploy 0.2 SOL ke yoA2CoHk6HRNtFuTP1kVt5xkcvG7mr5raQ5zuNxpump",
+    "GENERAL",
+  ),
+  false,
+  "an action request may retain conversation context",
 );
 
 console.log("Agent routing tests passed");
