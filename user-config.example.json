@@ -97,6 +97,9 @@
   "managementIntervalMin": 10,
   "screeningIntervalMin": 30,
   "healthCheckIntervalMin": 60,
+  "pnlPollIntervalMs": 3000,
+  "pnlSlowCheckIntervalMs": 30000,
+  "pnlSignatureCheckIntervalMs": 60000,
 
   "temperature": 0.373,
   "maxTokens": 4096,

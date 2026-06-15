@@ -912,7 +912,7 @@ connectPositionsSSE();
 
 // Polling fallback (cache reads are local — near-zero cost)
 setInterval(refreshData, 5000);
-setInterval(fetchBalance, 5000);
+setInterval(fetchBalance, 30000);
 setInterval(refreshLogList, 30000);
 </script>
 </body>

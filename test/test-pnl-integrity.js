@@ -24,6 +24,20 @@ try {
     /getMyPositions\(\{\s*force:\s*true,\s*silent:\s*true,\s*liveOnly:\s*true/,
     "close must not fetch a fresh RPC PnL snapshot before sending transactions",
   );
+  assert.match(
+    dlmmSource,
+    /pnlSignatureCheckIntervalMs \?\? 60_000/,
+    "position signature RPC checks must be throttled",
+  );
+
+  const indexSource = fs.readFileSync("./index.js", "utf8");
+  const pollerSource = indexSource.slice(
+    indexSource.indexOf("const pnlPollInterval"),
+    indexSource.indexOf("const pnlSlowCheckInterval"),
+  );
+  assert.match(pollerSource, /liveOnly:\s*true/);
+  assert.doesNotMatch(pollerSource, /apiOnly:\s*true/);
+  assert.match(pollerSource, /pnlPollIntervalMs/);
 
   assert.deepEqual(calculatePnl({
     balance: 110,

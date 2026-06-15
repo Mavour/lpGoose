@@ -163,6 +163,7 @@ export const config = {
     healthCheckIntervalMin: u.healthCheckIntervalMin ?? 60,
     pnlPollIntervalMs:      u.pnlPollIntervalMs      ?? 3_000,
     pnlSlowCheckIntervalMs: u.pnlSlowCheckIntervalMs ?? 30_000,
+    pnlSignatureCheckIntervalMs: u.pnlSignatureCheckIntervalMs ?? 60_000,
   },
 
   // ─── LLM Settings ──────────────────────

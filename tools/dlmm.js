@@ -578,6 +578,7 @@ let _positionsCacheAt = 0;
 let _positionsInflight = null;
 let _pnlDiscovery = null;
 let _pnlDiscoveryAt = 0;
+let _pnlSignaturesCheckedAt = 0;
 const _pnlCostBasis = new Map();
 const _closingPositions = new Set();
 const _deployingPositions = new Set();
@@ -802,6 +803,10 @@ async function refreshPnlDiscovery(walletAddress, { force = false } = {}) {
 }
 
 async function refreshChangedCostBasis(discovery, walletAddress) {
+  const intervalMs = Math.max(0, config.schedule.pnlSignatureCheckIntervalMs ?? 60_000);
+  if (Date.now() - _pnlSignaturesCheckedAt < intervalMs) return;
+  _pnlSignaturesCheckedAt = Date.now();
+
   const entries = discovery.pools.flatMap((pool) =>
     (pool.listPositions || []).map((positionAddress) => ({ pool, positionAddress }))
   );
