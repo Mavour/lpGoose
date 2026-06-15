@@ -261,10 +261,11 @@ export async function confirmEntrySupertrendBreak({
   mint,
   ath = null,
   athFilterPct = null,
+  entryPreset = "supertrend_break",
   ...options
 } = {}) {
-  const result = await confirmSupertrendBreak({ mint, ...options });
-  return evaluateBullishEntry(result, { ath, athFilterPct });
+  const result = await confirmSupertrendBreak({ mint, ...options, closedOnly: true });
+  return evaluateEntrySupertrend(result, { entryPreset, ath, athFilterPct });
 }
 
 export async function confirmExitSupertrendFlip({ mint, ...options } = {}) {
@@ -356,6 +357,16 @@ export function evaluateBullishEntry(result, {
     athLimitPct,
     reason: `${entryLabel} ${signal.interval}${athLabel}`,
   };
+}
+
+export function evaluateEntrySupertrend(result, {
+  entryPreset = "supertrend_break",
+  ath = null,
+  athFilterPct = null,
+} = {}) {
+  const bullish = evaluateBullishEntry(result, { ath, athFilterPct });
+  if (!bullish.confirmed || entryPreset !== "supertrend_break") return bullish;
+  return requireFreshBullishBreak(bullish);
 }
 
 export function requireFreshBearishFlip(result) {

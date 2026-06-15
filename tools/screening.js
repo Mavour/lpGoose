@@ -661,7 +661,11 @@ export async function getTopCandidates({
   if (signalGate && gated.length > 0) {
     const cc = config.chartIndicators;
     const momentumConfig = config.momentum;
-    const { confirmSupertrendFromCandles, evaluateBullishEntry } = await import("./chart-indicators.js");
+    const {
+      closedCandlesOnly,
+      confirmSupertrendFromCandles,
+      evaluateEntrySupertrend,
+    } = await import("./chart-indicators.js");
     const signalResults = await Promise.all(
       gated.map(async (pool) => {
         const mint = pool.base?.mint;
@@ -692,11 +696,14 @@ export async function getTopCandidates({
           };
         }
 
-        const supertrend = evaluateBullishEntry(confirmSupertrendFromCandles(fetched.candles, {
-          interval: "5m",
+        const entryInterval = cc.entryInterval || cc.interval || "5m";
+        const closedCandles = closedCandlesOnly(fetched.candles, entryInterval);
+        const supertrend = evaluateEntrySupertrend(confirmSupertrendFromCandles(closedCandles, {
+          interval: entryInterval,
           period: cc.stPeriod || 10,
           multiplier: cc.stMultiplier || 3,
         }), {
+          entryPreset: cc.entryPreset,
           ath: pool.ath,
           athFilterPct: config.screening.athFilterPct,
         });

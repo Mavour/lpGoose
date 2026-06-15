@@ -34,7 +34,11 @@ import {
   formatMomentumLog,
   validateMomentumCandles,
 } from "./momentum.js";
-import { confirmSupertrendFromCandles, evaluateBullishEntry } from "./chart-indicators.js";
+import {
+  closedCandlesOnly,
+  confirmSupertrendFromCandles,
+  evaluateEntrySupertrend,
+} from "./chart-indicators.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -502,11 +506,16 @@ async function runSafetyChecks(name, args, options = {}) {
           return { pass: false, reason: `Momentum candle validation failed: ${validated.reason}` };
         }
 
-        const stCheck = evaluateBullishEntry(confirmSupertrendFromCandles(fetched.candles, {
-          interval: "5m",
+        const entryInterval = config.chartIndicators.entryInterval
+          || config.chartIndicators.interval
+          || "5m";
+        const closedCandles = closedCandlesOnly(fetched.candles, entryInterval);
+        const stCheck = evaluateEntrySupertrend(confirmSupertrendFromCandles(closedCandles, {
+          interval: entryInterval,
           period: config.chartIndicators.stPeriod || 10,
           multiplier: config.chartIndicators.stMultiplier || 3,
         }), {
+          entryPreset: config.chartIndicators.entryPreset,
           ath: liveEntry.price?.ath,
           athFilterPct: config.screening.athFilterPct,
         });
@@ -628,6 +637,7 @@ async function runSafetyChecks(name, args, options = {}) {
           interval: cc.entryInterval || cc.interval || "5m",
           period: cc.stPeriod || 10,
           multiplier: cc.stMultiplier || 3,
+          entryPreset: cc.entryPreset,
           ath: liveEntry.price?.ath,
           athFilterPct: config.screening.athFilterPct,
         }).catch(() => null);

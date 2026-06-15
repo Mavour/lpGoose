@@ -5,6 +5,7 @@ import {
   confirmEntrySupertrendBreak,
   confirmSupertrendFromCandles,
   evaluateBullishEntry,
+  evaluateEntrySupertrend,
   requireFreshBullishBreak,
   requireFreshBearishFlip,
 } from "../tools/chart-indicators.js";
@@ -128,6 +129,36 @@ assert.equal(
   }), { ath: 200, athFilterPct: -20 }).confirmed,
   true,
   "established bullish trend is accepted",
+);
+
+assert.equal(
+  evaluateEntrySupertrend(confirmSupertrendFromCandles(bullishBreak, {
+    interval: "5m",
+    period: 3,
+    multiplier: 1,
+  }), { entryPreset: "supertrend_break", ath: 200, athFilterPct: -20 }).confirmed,
+  true,
+  "supertrend_break preset accepts a fresh bullish flip",
+);
+
+assert.equal(
+  evaluateEntrySupertrend(confirmSupertrendFromCandles(bullishContinuation, {
+    interval: "5m",
+    period: 3,
+    multiplier: 1,
+  }), { entryPreset: "supertrend_break", ath: 200, athFilterPct: -20 }).confirmed,
+  false,
+  "supertrend_break preset rejects bullish continuation",
+);
+
+assert.equal(
+  evaluateEntrySupertrend(confirmSupertrendFromCandles(bullishContinuation, {
+    interval: "5m",
+    period: 3,
+    multiplier: 1,
+  }), { entryPreset: "supertrend_trend", ath: 200, athFilterPct: -20 }).confirmed,
+  true,
+  "supertrend_trend preset permits bullish continuation",
 );
 
 assert.equal(
@@ -259,8 +290,8 @@ const activeBearishEntry = await confirmEntrySupertrendBreak({
 globalThis.fetch = originalFetch;
 assert.equal(
   activeBearishEntry.confirmed,
-  false,
-  "active bearish Supertrend blocks entry immediately",
+  true,
+  "active bearish candle is ignored until it closes",
 );
 
 console.log("Supertrend tests passed");
