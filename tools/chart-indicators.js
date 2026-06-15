@@ -262,10 +262,16 @@ export async function confirmEntrySupertrendBreak({
   ath = null,
   athFilterPct = null,
   entryPreset = "supertrend_break",
+  minPriceChangePct = null,
   ...options
 } = {}) {
   const result = await confirmSupertrendBreak({ mint, ...options, closedOnly: true });
-  return evaluateEntrySupertrend(result, { entryPreset, ath, athFilterPct });
+  return evaluateEntrySupertrend(result, {
+    entryPreset,
+    ath,
+    athFilterPct,
+    minPriceChangePct,
+  });
 }
 
 export async function confirmExitSupertrendFlip({ mint, ...options } = {}) {
@@ -295,6 +301,7 @@ export function requireFreshBullishBreak(result) {
 export function evaluateBullishEntry(result, {
   ath = null,
   athFilterPct = null,
+  minPriceChangePct = null,
 } = {}) {
   if (result?.error) return { ...result, confirmed: false, reason: result.reason || result.error };
 
@@ -316,6 +323,35 @@ export function evaluateBullishEntry(result, {
       confirmed: false,
       reason: `Supertrend is not bullish ${signal.interval} (dir=${signal.direction})`,
     };
+  }
+
+  let priceChangePct = null;
+  if (minPriceChangePct != null) {
+    const close = Number(signal.close);
+    const previousClose = Number(signal.previousClose);
+    const minimum = Number(minPriceChangePct);
+    if (
+      !Number.isFinite(close)
+      || !Number.isFinite(previousClose)
+      || previousClose <= 0
+      || !Number.isFinite(minimum)
+    ) {
+      return {
+        ...result,
+        confirmed: false,
+        reason: "5m price change unavailable while entry price guard is active",
+      };
+    }
+    priceChangePct = ((close / previousClose) - 1) * 100;
+    if (priceChangePct < minimum - 1e-9) {
+      return {
+        ...result,
+        confirmed: false,
+        priceChangePct,
+        minPriceChangePct: minimum,
+        reason: `Price change ${signal.interval} ${priceChangePct.toFixed(2)}% < minimum ${minimum}%`,
+      };
+    }
   }
 
   let priceVsAthPct = null;
@@ -348,6 +384,9 @@ export function evaluateBullishEntry(result, {
   const athLabel = priceVsAthPct == null
     ? ""
     : `, candle=${priceVsAthPct.toFixed(2)}% ATH`;
+  const priceChangeLabel = priceChangePct == null
+    ? ""
+    : `, change=${priceChangePct.toFixed(2)}%`;
 
   return {
     ...result,
@@ -355,7 +394,9 @@ export function evaluateBullishEntry(result, {
     barsSinceBullishBreak: barsSinceBreak,
     priceVsAthPct,
     athLimitPct,
-    reason: `${entryLabel} ${signal.interval}${athLabel}`,
+    priceChangePct,
+    minPriceChangePct,
+    reason: `${entryLabel} ${signal.interval}${priceChangeLabel}${athLabel}`,
   };
 }
 
@@ -363,8 +404,13 @@ export function evaluateEntrySupertrend(result, {
   entryPreset = "supertrend_break",
   ath = null,
   athFilterPct = null,
+  minPriceChangePct = null,
 } = {}) {
-  const bullish = evaluateBullishEntry(result, { ath, athFilterPct });
+  const bullish = evaluateBullishEntry(result, {
+    ath,
+    athFilterPct,
+    minPriceChangePct,
+  });
   if (!bullish.confirmed || entryPreset !== "supertrend_break") return bullish;
   return requireFreshBullishBreak(bullish);
 }

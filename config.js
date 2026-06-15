@@ -112,7 +112,8 @@ export const config = {
   // ─── Chart Indicators (Supertrend Entry Gate) ───
   chartIndicators: {
     enabled:       u.chartIndicators?.enabled       ?? true,
-    entryPreset:   u.chartIndicators?.entryPreset   ?? "supertrend_break",
+    entryPreset:   u.chartIndicators?.entryPreset   ?? "supertrend_trend",
+    entryMinPriceChangePct: u.chartIndicators?.entryMinPriceChangePct ?? -1,
     stPeriod:      u.chartIndicators?.stPeriod      ?? 10,
     stMultiplier:  u.chartIndicators?.stMultiplier  ?? 3,
     interval:      u.chartIndicators?.interval      ?? "5m",
@@ -263,6 +264,7 @@ const RUNTIME_CONFIG_FIELDS = {
   chartIndicators: {
     enabled: ["chartIndicators", "enabled"],
     entryPreset: ["chartIndicators", "entryPreset"],
+    entryMinPriceChangePct: ["chartIndicators", "entryMinPriceChangePct"],
     stPeriod: ["chartIndicators", "stPeriod"],
     stMultiplier: ["chartIndicators", "stMultiplier"],
     interval: ["chartIndicators", "interval"],
@@ -321,6 +323,7 @@ export function formatRuntimeConfigSnapshot() {
     `age_bands=<${m.ageNewMaxHours}h:${m.newMinBins}-${m.newMaxBins},<${m.ageYoungMaxHours}h:${m.youngMinBins}-${m.youngMaxBins},<${m.ageMatureMaxHours}h:${m.matureMinBins}-${m.matureMaxBins},old:${m.oldMinBins}-${m.oldMaxBins}`,
     `supertrend=${c.entryInterval || c.interval}/${c.stPeriod}/${c.stMultiplier}`,
     `entry_preset=${c.entryPreset}`,
+    `entry_min_change=${c.entryMinPriceChangePct}%`,
     `ath_filter=${s.athFilterPct ?? "off"}`,
   ].join(" | ");
 }

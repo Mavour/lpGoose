@@ -518,6 +518,7 @@ async function runSafetyChecks(name, args, options = {}) {
           entryPreset: config.chartIndicators.entryPreset,
           ath: liveEntry.price?.ath,
           athFilterPct: config.screening.athFilterPct,
+          minPriceChangePct: config.chartIndicators.entryMinPriceChangePct,
         });
         if (!stCheck.confirmed) {
           return { pass: false, reason: `Supertrend not confirmed: ${stCheck.reason}` };
@@ -640,6 +641,7 @@ async function runSafetyChecks(name, args, options = {}) {
           entryPreset: cc.entryPreset,
           ath: liveEntry.price?.ath,
           athFilterPct: config.screening.athFilterPct,
+          minPriceChangePct: cc.entryMinPriceChangePct,
         }).catch(() => null);
         if (stCheck && !stCheck.confirmed) {
           if (cc.failOpen === false) {

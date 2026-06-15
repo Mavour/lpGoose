@@ -162,6 +162,46 @@ assert.equal(
 );
 
 assert.equal(
+  evaluateEntrySupertrend({
+    direction: "bullish",
+    signal: {
+      interval: "5m",
+      direction: "bullish",
+      close: 99,
+      previousClose: 100,
+      supertrend: 95,
+      barsSinceBullishBreak: 2,
+    },
+  }, {
+    entryPreset: "supertrend_trend",
+    minPriceChangePct: -1,
+  }).confirmed,
+  true,
+  "bullish trend accepts an exact -1% closed-candle move",
+);
+
+const fallingBullishEntry = evaluateEntrySupertrend({
+  direction: "bullish",
+  signal: {
+    interval: "5m",
+    direction: "bullish",
+    close: 98.9,
+    previousClose: 100,
+    supertrend: 95,
+    barsSinceBullishBreak: 2,
+  },
+}, {
+  entryPreset: "supertrend_trend",
+  minPriceChangePct: -1,
+});
+assert.equal(
+  fallingBullishEntry.confirmed,
+  false,
+  "bullish trend rejects a closed-candle move below -1%",
+);
+assert.match(fallingBullishEntry.reason, /-1\.10% < minimum -1%/);
+
+assert.equal(
   evaluateBullishEntry(confirmSupertrendFromCandles(bullishContinuation, {
     interval: "5m",
     period: 3,

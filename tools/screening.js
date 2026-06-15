@@ -706,6 +706,7 @@ export async function getTopCandidates({
           entryPreset: cc.entryPreset,
           ath: pool.ath,
           athFilterPct: config.screening.athFilterPct,
+          minPriceChangePct: cc.entryMinPriceChangePct,
         });
         if (!supertrend.confirmed) {
           return {

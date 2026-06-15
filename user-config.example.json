@@ -114,7 +114,8 @@
 
   "chartIndicators": {
     "enabled": true,
-    "entryPreset": "supertrend_break",
+    "entryPreset": "supertrend_trend",
+    "entryMinPriceChangePct": -1,
     "stPeriod": 10,
     "stMultiplier": 3,
     "interval": "5m",
