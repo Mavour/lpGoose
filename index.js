@@ -348,8 +348,34 @@ function isDirectTelegramCommand(text) {
   return (
     /^\/?(?:screen|menu|config|learning|briefing|positions)$/i.test(trimmed) ||
     /^\/close\s+\d+$/i.test(trimmed) ||
-    /^\/set\s+\S+\s+.+$/i.test(trimmed)
+    /^\/set\s+\S+\s+.+$/i.test(trimmed) ||
+    /^\/?(?:ask|agent)\s+.+$/i.test(trimmed)
   );
+}
+
+function parseExplicitTelegramLlmCommand(text) {
+  const match = String(text || "").trim().match(/^\/?(?:ask|agent)\s+(.+)$/i);
+  return match ? match[1].trim() : null;
+}
+
+function isDeployQuestion(text) {
+  const normalized = String(text || "").toLowerCase();
+  return /\bdeploy\b/.test(normalized) && /\b(kenapa|knp|why|kok|ga|gak|nggak|tidak|belum)\b/.test(normalized);
+}
+
+function formatFastDeployStatus() {
+  const s = config.screening;
+  const c = config.confidence;
+  return [
+    "Fast status: deploy cuma jalan kalau hard gates lolos.",
+    `Open limit: max ${config.risk.maxPositions} posisi.`,
+    `Size: ${config.management.deployAmountSol} SOL fixed.`,
+    `Confidence: ${c.enabled ? `ON, skip < ${c.skipThreshold}, full >= ${c.fullThreshold}` : "OFF"}.`,
+    `Volume: min $${s.minVolume}, volume/TVL min ${s.minVolumeToActiveTvlRatio ?? "off"}.`,
+    `Momentum: min ${s.minMomentumScore ?? "off"}, strong threshold ${config.momentum.strongThreshold}.`,
+    `Supertrend: ${config.chartIndicators.enabled ? "ON" : "OFF"}.`,
+    "Pakai /screen untuk paksa screening sekarang, /positions untuk posisi, /ask <teks> kalau memang mau LLM.",
+  ].join("\n");
 }
 
 function formatTokenCheckResult(target, tokenInfo, poolDetail, poolError) {
@@ -2049,8 +2075,59 @@ if (isTTY) {
     await answerCallback(query.id);
   }
 
+  async function sendTelegramPositionsSnapshot() {
+    const { positions, total_positions } = await getMyPositions({ force: true });
+    if (total_positions === 0) {
+      await sendMessage("No open positions.");
+      return;
+    }
+    const cur = config.management.solMode ? "◎" : "$";
+    const lines = positions.map((p, i) => {
+      const pnlDecimals = config.management.solMode ? 5 : 2;
+      const pnl = p.pnl_usd >= 0 ? `+${cur}${formatDecimal(p.pnl_usd, pnlDecimals)}` : `-${cur}${formatDecimal(Math.abs(p.pnl_usd), pnlDecimals)}`;
+      const age = p.age_minutes != null ? `${p.age_minutes}m` : "?";
+      const oor = !p.in_range ? " ⚠️OOR" : "";
+      return `${i + 1}. ${p.pair} | ${cur}${formatDecimal(p.total_value_usd, pnlDecimals)} | PnL: ${pnl} | fees: ${cur}${formatDecimal(p.unclaimed_fees_usd, pnlDecimals)} | ${age}${oor}`;
+    });
+    await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /set <n> <note> to set instruction`);
+  }
+
   async function telegramHandler(text) {
     log("telegram", `Incoming: ${text}`);
+
+    const explicitLlmPrompt = parseExplicitTelegramLlmCommand(text);
+    if (explicitLlmPrompt) {
+      if (_managementBusy || _screeningBusy || busy) {
+        if (_telegramQueue.length < 5) {
+          _telegramQueue.push(text);
+          log("telegram", `Queued explicit LLM (${_telegramQueue.length}): ${text}`);
+          sendMessage(`Queued for LLM (${_telegramQueue.length}): "${explicitLlmPrompt.slice(0, 60)}"`).catch(() => {});
+        } else {
+          log("telegram", `Explicit LLM queue full, dropped: ${text}`);
+          sendMessage("LLM queue is full (5 messages). Direct commands still work.").catch(() => {});
+        }
+        return;
+      }
+
+      busy = true;
+      try {
+        const hasCloseIntent = /\bclose\b|\bsell\b|\bexit\b|\bwithdraw\b/i.test(explicitLlmPrompt);
+        const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b|\badd liquidity\b/i.test(explicitLlmPrompt);
+        const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
+        const agentModel = agentRole === "SCREENER" ? config.llm.screeningModel : config.llm.generalModel;
+        const { content } = await agentLoop(explicitLlmPrompt, config.llm.maxSteps, sessionHistory, agentRole, agentModel);
+        appendHistory(explicitLlmPrompt, content);
+        await sendMessage(stripThink(content));
+      } catch (e) {
+        await sendMessage(`Error: ${e.message}`).catch(() => {});
+      } finally {
+        busy = false;
+        rl.setPrompt(buildPrompt());
+        rl.prompt(true);
+        drainTelegramQueue().catch(() => {});
+      }
+      return;
+    }
 
     const fastCloseCommand = parseFastCloseCommand(text);
     if (fastCloseCommand) {
@@ -2147,7 +2224,7 @@ if (isTTY) {
       return;
     }
 
-    if ((_managementBusy || _screeningBusy || busy) && !isDirectTelegramCommand(text)) {
+    if (false && (_managementBusy || _screeningBusy || busy) && !isDirectTelegramCommand(text)) {
       if (_telegramQueue.length < 5) {
         _telegramQueue.push(text);
         log("telegram", `Queued (${_telegramQueue.length}): ${text}`);
@@ -2278,23 +2355,34 @@ if (isTTY) {
       return;
     }
 
-    busy = true;
-    try {
-      const hasCloseIntent = /\bclose\b|\bsell\b|\bexit\b|\bwithdraw\b/i.test(text);
-      const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b|\badd liquidity\b/i.test(text);
-      const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
-      const agentModel = agentRole === "SCREENER" ? config.llm.screeningModel : config.llm.generalModel;
-      const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, agentRole, agentModel);
-      appendHistory(text, content);
-      await sendMessage(stripThink(content));
-    } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => { });
-    } finally {
-      busy = false;
-      rl.setPrompt(buildPrompt());
-      rl.prompt(true);
-      drainTelegramQueue().catch(() => {});
+    if (/^\/?(?:screen sekarang|scan|scan sekarang|cari kandidat|cek kandidat)$/i.test(text.trim())) {
+      await sendMessage("Starting screening cycle...");
+      try {
+        await runScreeningCycle({ force: true });
+      } catch (e) {
+        await sendMessage(`Screening failed: ${e.message}`).catch(() => {});
+      } finally {
+        drainTelegramQueue().catch(() => {});
+      }
+      return;
     }
+
+    if (isDeployQuestion(text)) {
+      await sendMessage(formatFastDeployStatus());
+      return;
+    }
+
+    if (/^\/?(?:status|posisi|position|cek posisi|lihat posisi)$/i.test(text.trim())) {
+      try {
+        await sendTelegramPositionsSnapshot();
+      } catch (e) {
+        await sendMessage(`Error: ${e.message}`).catch(() => {});
+      }
+      return;
+    }
+
+    log("telegram", `Fast fallback without LLM: ${text}`);
+    await sendMessage("Fast mode: command tidak dikenali. Pakai /positions, /screen, /menu, cek <mint/pool>, close <symbol>, blacklist, atau /ask <teks> untuk LLM.");
   }
 
   startPolling(telegramHandler, telegramCallbackHandler);
