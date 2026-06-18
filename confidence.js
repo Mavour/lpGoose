@@ -17,12 +17,7 @@ export function scoreVolatility(volatility) {
 
 export function scoreFeeActiveTvl(feeActiveTvlRatio) {
   const value = numberOrZero(feeActiveTvlRatio);
-  if (value < 0.2) return 0;
-  if (value < 0.3) return 15;
-  if (value < 0.5) return 24;
-  if (value < 0.8) return 32;
-  if (value < 1) return 36;
-  return 40;
+  return Math.max(0, Math.min(40, Math.round(value * 100)));
 }
 
 export function scoreSmartWallets(smartWalletResult, maxAgeMinutes = 60) {

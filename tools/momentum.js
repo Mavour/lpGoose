@@ -113,6 +113,7 @@ export function calculateMomentum({
   feeActiveTvlRatio,
   minFeeActiveTvlRatio,
   volatility,
+  volumeChangePct = null,
   strongThreshold = 70,
   strongMinBins = 40,
   strongMaxBins = 70,
@@ -132,9 +133,6 @@ export function calculateMomentum({
   if (!Number.isFinite(feeTvl) || !Number.isFinite(feeMinimum)) {
     return invalid("invalid_fee_active_tvl_ratio", validated);
   }
-  if (feeMinimum >= 0.8) {
-    return invalid("invalid_fee_score_range", validated);
-  }
   if (!Number.isFinite(volatilityValue) || volatilityValue < 0) {
     return invalid("invalid_volatility", validated);
   }
@@ -152,15 +150,19 @@ export function calculateMomentum({
   }
 
   const priceChange5m = ((latest.close / previous.close) - 1) * 100;
-  const priceScore = clamp(priceChange5m * 2, 0, 40);
+  const priceScore = clamp(priceChange5m, 0, 40);
+  const priceVelocityScore = clamp(priceChange5m * 2, 0, 30);
   const volumeRatio = latest.volume / baselineMedianVolume;
-  const volumeScore = clamp((volumeRatio - 1) * 30, 0, 30);
-  const feeScore = clamp(
-    ((feeTvl - feeMinimum) / (0.8 - feeMinimum)) * 30,
-    0,
-    30,
+  const volumeTrendPct = volumeChangePct == null ? null : Number(volumeChangePct);
+  const volumeAccelerating = Number.isFinite(volumeTrendPct)
+    ? volumeTrendPct > 10
+    : volumeRatio >= 1.5;
+  const volumeScore = volumeAccelerating ? 30 : 0;
+  const feeScore = clamp(feeTvl * 100, 0, 30);
+  const scoreFactors = [priceScore, volumeScore, feeScore, priceVelocityScore];
+  const score = Math.round(
+    scoreFactors.reduce((sum, value) => sum + value, 0) * (3 / scoreFactors.length),
   );
-  const score = Math.round(priceScore + volumeScore + feeScore);
   const classification = score >= strongThreshold ? "strong" : "weak";
   const volatilityFactor = clamp(volatilityValue / 5, 0, 1);
   const ageBand = selectAgeBand(tokenAgeHours, ageBands);
@@ -180,8 +182,11 @@ export function calculateMomentum({
     ageBand: ageBand?.name || null,
     tokenAgeHours: Number.isFinite(Number(tokenAgeHours)) ? Number(tokenAgeHours) : null,
     priceChange5m,
+    volumeChangePct: Number.isFinite(volumeTrendPct) ? volumeTrendPct : null,
+    volumeAccelerating,
     volumeRatio,
     priceScore,
+    priceVelocityScore,
     volumeScore,
     feeScore,
     feeActiveTvlRatio: feeTvl,
@@ -356,6 +361,8 @@ export function formatMomentumLog({
     `latest_volume=${value(result?.latestVolume, 2)}`,
     `baseline_median_volume=${value(result?.baselineMedianVolume, 2)}`,
     `volume_ratio=${value(result?.volumeRatio, 2)}x`,
+    `volume_change_pct=${value(result?.volumeChangePct, 2)}%`,
+    `volume_accelerating=${result?.volumeAccelerating ?? "?"}`,
     `fee_active_tvl_ratio=${value(result?.feeActiveTvlRatio, 4)}%`,
     `min_fee_active_tvl_ratio=${value(result?.minFeeActiveTvlRatio, 4)}%`,
     `fee_score=${value(result?.feeScore, 2)}`,
@@ -363,6 +370,7 @@ export function formatMomentumLog({
     `pool_fees_source=${poolFeesSource || "?"}`,
     `fee_timeframe=${feeTimeframe || "?"}`,
     `price_score=${value(result?.priceScore, 2)}`,
+    `price_velocity_score=${value(result?.priceVelocityScore, 2)}`,
     `volume_score=${value(result?.volumeScore, 2)}`,
     `total_score=${result?.score ?? "?"}`,
     `strong_threshold=${result?.strongThreshold ?? "?"}`,

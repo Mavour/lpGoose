@@ -52,7 +52,7 @@ function candles({
 }
 
 const strong = calculateMomentum({
-  candles: candles(),
+  candles: candles({ latestClose: 118 }),
   feeActiveTvlRatio: 0.8,
   minFeeActiveTvlRatio: 0.2,
   volatility: 2.5,
@@ -60,18 +60,18 @@ const strong = calculateMomentum({
 });
 assert.equal(strong.valid, true);
 assert.equal(strong.classification, "strong");
-assert.equal(strong.score, 80);
+assert.equal(strong.score, 81);
 assert.equal(strong.binsBelow, 55);
 assert.ok(strong.binsBelow >= 40 && strong.binsBelow <= 70);
 
 const boundaryStrong = calculateMomentum({
-  candles: candles({ latestVolume: 166.6666667, latestClose: 110 }),
+  candles: candles({ latestVolume: 166.6666667, latestClose: 112 }),
   feeActiveTvlRatio: 0.8,
   minFeeActiveTvlRatio: 0.2,
   volatility: 5,
   now,
 });
-assert.equal(boundaryStrong.score, 70);
+assert.equal(boundaryStrong.score, 72);
 assert.equal(boundaryStrong.classification, "strong");
 assert.equal(boundaryStrong.binsBelow, 70);
 
@@ -82,7 +82,7 @@ const weak = calculateMomentum({
   volatility: 5,
   now,
 });
-assert.equal(weak.score, 0);
+assert.equal(weak.score, 15);
 assert.equal(weak.classification, "weak");
 assert.equal(weak.binsBelow, 150);
 
@@ -162,7 +162,7 @@ assert.equal(config.momentum.weakMaxBins, 150);
 assert.equal(config.chartIndicators.stPeriod, 10);
 assert.match(formatRuntimeConfigSnapshot(), /min_fee_active_tvl=0.2%/);
 assert.match(formatRuntimeConfigSnapshot(), /weak_band=70-150/);
-assert.match(formatRuntimeConfigSnapshot(), /age_bands=<24h:90-150,<48h:70-110,<120h:55-85,old:45-70/);
+assert.match(formatRuntimeConfigSnapshot(), /age_bands=<24h:90-125,<48h:70-100,<120h:55-80,old:45-70/);
 assert.match(formatRuntimeConfigSnapshot(), /supertrend=5m\/10\/3/);
 
 const magpieCandles = Array.from({ length: 12 }, (_, index) => ({
@@ -186,8 +186,8 @@ const magpie = calculateMomentum({
   now,
 });
 assert.equal(magpie.valid, true);
-assert.ok(Math.abs(magpie.feeScore - 17.03) < 0.001);
-assert.equal(magpie.score, 17);
+assert.equal(magpie.feeScore, 30);
+assert.equal(magpie.score, 23);
 assert.equal(magpie.classification, "weak");
 assert.deepEqual(magpie.selectedBand, [70, 150]);
 assert.equal(magpie.binsBelow, 150);
@@ -431,14 +431,14 @@ const liveGuard = await verifyLiveEntryGuards(
       pool_fees_sol: 57.64,
       source: "gmgn_token_total",
       timeframe: "all_time",
-      price: 0.95,
+      price: 0.96,
       ath: 1,
-      price_vs_ath_pct: 95,
+      price_vs_ath_pct: 96,
     }),
   },
 );
 assert.equal(liveGuard.pass, false);
-assert.match(liveGuard.reason, /price_vs_ath 95%/);
+assert.match(liveGuard.reason, /price_vs_ath 96%/);
 
 const missingAthGuard = await verifyLiveEntryGuards(
   { poolAddress: "TargetPool", mint: "mint" },

@@ -797,6 +797,7 @@ export async function getTopCandidates({
           feeActiveTvlRatio: pool.fee_active_tvl_ratio,
           minFeeActiveTvlRatio: config.screening.minFeeActiveTvlRatio,
           volatility: pool.volatility,
+          volumeChangePct: pool.volume_change_pct,
           strongThreshold: momentumConfig.strongThreshold,
           strongMinBins: momentumConfig.strongMinBins,
           strongMaxBins: momentumConfig.strongMaxBins,
@@ -956,9 +957,10 @@ export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
     pool.active_tvl != null &&
     Number(pool.active_tvl) > 0
   ) {
+    const minVolumeTvlRatio = normalizeVolumeTvlThreshold(s.minVolumeToActiveTvlRatio);
     const volumeTvlRatio = Number(pool.volume_window) / Number(pool.active_tvl);
-    if (Number.isFinite(volumeTvlRatio) && volumeTvlRatio < s.minVolumeToActiveTvlRatio) {
-      return fail(`volume/tvl ${volumeTvlRatio.toFixed(4)} < min ${s.minVolumeToActiveTvlRatio}`);
+    if (Number.isFinite(volumeTvlRatio) && volumeTvlRatio < minVolumeTvlRatio) {
+      return fail(`volume/tvl ${(volumeTvlRatio * 100).toFixed(2)}% < min ${(minVolumeTvlRatio * 100).toFixed(2)}%`);
     }
   }
   if (pool.organic_score != null && pool.organic_score < s.minOrganic) return fail(`organic ${pool.organic_score} < min ${s.minOrganic}`);
@@ -1010,6 +1012,12 @@ function numberOrNull(value) {
   if (value == null || value === "?") return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function normalizeVolumeTvlThreshold(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return n;
+  return n > 1 ? n / 100 : n;
 }
 
 /**

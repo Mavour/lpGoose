@@ -332,10 +332,11 @@ export function formatRuntimeConfigSnapshot() {
   const s = config.screening;
   const m = config.momentum;
   const c = config.chartIndicators;
+  const minVolumeTvl = normalizeVolumeTvlThreshold(s.minVolumeToActiveTvlRatio);
   return [
     `min_fee_active_tvl=${s.minFeeActiveTvlRatio}%`,
     `min_volume=${s.minVolume}`,
-    `min_volume_tvl=${s.minVolumeToActiveTvlRatio ?? "off"}`,
+    `min_volume_tvl=${minVolumeTvl == null ? "off" : `${Number((minVolumeTvl * 100).toFixed(4))}%`}`,
     `min_momentum=${s.minMomentumScore ?? "off"}`,
     `momentum_threshold=${m.strongThreshold}`,
     `strong_band=${m.strongMinBins}-${m.strongMaxBins}`,
@@ -346,6 +347,13 @@ export function formatRuntimeConfigSnapshot() {
     `entry_min_change=${c.entryMinPriceChangePct}%`,
     `ath_filter=${s.athFilterPct ?? "off"}`,
   ].join(" | ");
+}
+
+function normalizeVolumeTvlThreshold(value) {
+  if (value == null) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return n > 1 ? n / 100 : n;
 }
 
 /**

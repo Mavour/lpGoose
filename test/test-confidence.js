@@ -16,11 +16,11 @@ assert.equal(scoreVolatility(5.5), 15);
 assert.equal(scoreVolatility(7), 5);
 assert.equal(scoreVolatility(9), 10);
 
-assert.equal(scoreFeeActiveTvl(0.19), 0);
-assert.equal(scoreFeeActiveTvl(0.2), 15);
-assert.equal(scoreFeeActiveTvl(0.3), 24);
-assert.equal(scoreFeeActiveTvl(0.5), 32);
-assert.equal(scoreFeeActiveTvl(0.8), 36);
+assert.equal(scoreFeeActiveTvl(0.19), 19);
+assert.equal(scoreFeeActiveTvl(0.2), 20);
+assert.equal(scoreFeeActiveTvl(0.3), 30);
+assert.equal(scoreFeeActiveTvl(0.5), 40);
+assert.equal(scoreFeeActiveTvl(0.8), 40);
 assert.equal(scoreFeeActiveTvl(1), 40);
 
 const wallets = {
@@ -45,7 +45,7 @@ assert.deepEqual(
     fee: confidence.fee_active_tvl_score,
     smart: confidence.smart_wallet_score,
   },
-  { total: 87, volatility: 40, fee: 32, smart: 15 }
+  { total: 95, volatility: 40, fee: 40, smart: 15 }
 );
 
 assert.deepEqual(
@@ -76,7 +76,7 @@ const selected = selectBestConfidenceCandidate([
   },
 ], { enabled: true, smartWalletMaxAgeMinutes: 60 });
 assert.equal(selected.pool.name, "BALANCED");
-assert.equal(selected.confidence.total, 87);
+assert.equal(selected.confidence.total, 95);
 
 const selectedWithoutConfidence = selectBestConfidenceCandidate([
   { pool: { name: "LOW-FEE", volatility: 2.4, fee_active_tvl_ratio: 0.5 }, sw: null },

@@ -529,6 +529,7 @@ async function runSafetyChecks(name, args, options = {}) {
           feeActiveTvlRatio: liveFeeTvl,
           minFeeActiveTvlRatio,
           volatility: livePool.volatility,
+          volumeChangePct: livePool.volume_change_pct,
           strongThreshold: config.momentum.strongThreshold,
           strongMinBins: config.momentum.strongMinBins,
           strongMaxBins: config.momentum.strongMaxBins,

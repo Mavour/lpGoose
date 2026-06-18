@@ -92,6 +92,13 @@ function formatDecimal(value, maxDecimals = 5) {
   return n.toFixed(maxDecimals).replace(/\.?0+$/, "");
 }
 
+function normalizeVolumeTvlThreshold(value) {
+  if (value == null) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return n > 1 ? n / 100 : n;
+}
+
 function buildPrompt() {
   const mgmt = formatCountdown(nextRunIn(timers.managementLastRun, config.schedule.managementIntervalMin));
   const scrn = formatCountdown(nextRunIn(timers.screeningLastRun, config.schedule.screeningIntervalMin));
@@ -238,6 +245,7 @@ async function evaluateDangerDrawdownExit(position) {
       feeActiveTvlRatio,
       minFeeActiveTvlRatio: config.screening.minFeeActiveTvlRatio,
       volatility,
+      volumeChangePct: pool.volume_change_pct,
       strongThreshold: config.momentum.strongThreshold,
       strongMinBins: config.momentum.strongMinBins,
       strongMaxBins: config.momentum.strongMaxBins,
@@ -489,6 +497,10 @@ async function executeAutoClose(position, exit, source) {
   return locked.result;
 }
 
+function isAutoCloseInFlight(positionAddress) {
+  return _autoCloseCoordinator.has(positionAddress);
+}
+
 function parseFastCloseCommand(text) {
   const trimmed = String(text || "").trim();
   if (/^\/?(?:close|exit|sell)$/i.test(trimmed)) {
@@ -616,6 +628,7 @@ function poolDetailToGatePool(detail, token) {
     bin_step: numberValue(detail.dlmm_params?.bin_step),
     fee_active_tvl_ratio: feeTvl != null ? Number(feeTvl.toFixed(4)) : null,
     volatility: numberValue(detail.volatility),
+    volume_change_pct: numberValue(detail.volume_change_pct),
     token_age_hours: detail.token_x?.created_at
       ? Math.floor((Date.now() - Number(detail.token_x.created_at)) / 3_600_000)
       : null,
@@ -632,10 +645,11 @@ function formatGateMetrics(pool) {
   const volumeTvl = pool.active_tvl > 0 && pool.volume_window != null
     ? pool.volume_window / pool.active_tvl
     : null;
+  const minVolumeTvl = normalizeVolumeTvlThreshold(config.screening.minVolumeToActiveTvlRatio);
   return [
     `TVL: $${formatDecimal(pool.active_tvl, 0)} (min $${config.screening.minTvl})`,
     `Volume: $${formatDecimal(pool.volume_window, 0)} (min $${config.screening.minVolume})`,
-    `Volume/TVL: ${volumeTvl == null ? "?" : formatDecimal(volumeTvl, 4)} (min ${config.screening.minVolumeToActiveTvlRatio ?? "off"})`,
+    `Volume/TVL: ${volumeTvl == null ? "?" : `${formatDecimal(volumeTvl * 100, 2)}%`} (min ${minVolumeTvl == null ? "off" : `${formatDecimal(minVolumeTvl * 100, 2)}%`})`,
     `Fee/TVL: ${formatDecimal(pool.fee_active_tvl_ratio, 4)}% (min ${config.screening.minFeeActiveTvlRatio}%)`,
     `Pool fees: ${pool.pool_fees_sol ?? "?"} SOL (min ${config.screening.minTokenFeesSol})`,
     `Organic: ${formatDecimal(pool.organic_score, 0)} (min ${config.screening.minOrganic})`,
@@ -709,6 +723,7 @@ async function evaluateLiveDeploySignals(pool) {
     feeActiveTvlRatio: pool.fee_active_tvl_ratio,
     minFeeActiveTvlRatio: config.screening.minFeeActiveTvlRatio,
     volatility: pool.volatility,
+    volumeChangePct: pool.volume_change_pct,
     strongThreshold: config.momentum.strongThreshold,
     strongMinBins: config.momentum.strongMinBins,
     strongMaxBins: config.momentum.strongMaxBins,
@@ -1879,6 +1894,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
       );
       for (let i = 0; i < result.positions.length; i++) {
         const p = result.positions[i];
+        if (isAutoCloseInFlight(p.position)) continue;
         const exit = exitResults[i];
         const tp = getTrackedPosition(p.position);
         const trail = tp?.trailing_active ? "ON" : "OFF";
@@ -1905,6 +1921,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
       const exits = await Promise.all(result.positions.map((position) => evaluateAutoExit(position)));
       const closeTasks = [];
       for (let index = 0; index < result.positions.length; index++) {
+        if (isAutoCloseInFlight(result.positions[index].position)) continue;
         if (exits[index]) {
           closeTasks.push(executeAutoClose(result.positions[index], exits[index], "slow-poller"));
         }

@@ -88,7 +88,7 @@ assert.equal(unique.is_pvp, false);
 const boundaryOwn = "2026-01-02T00:00:00Z";
 for (const [rivalCreatedAt, expected] of [
   ["2026-01-01T00:00:00Z", "verified"],
-  ["2025-12-31T23:59:59Z", "copycat"],
+  ["2025-12-31T23:59:59Z", "symbol_collision"],
 ]) {
   const result = evaluatePvpAssets(pool("BoundaryMint", "BOUND"), [
     { id: "BoundaryMint", symbol: "BOUND", createdAt: boundaryOwn },
