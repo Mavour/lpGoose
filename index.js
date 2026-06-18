@@ -185,6 +185,15 @@ async function evaluateDangerDrawdownExit(position) {
   try {
     const detail = await getPoolDetail({ pool_address: position.pool, timeframe: "5m" });
     const pool = poolDetailToGatePool(detail, { mint: position.base_mint, symbol: position.pair });
+    const feeActiveTvlRatio =
+      finiteNumberOrNull(pool.fee_active_tvl_ratio)
+      ?? finiteNumberOrNull(tracked?.fee_tvl_ratio)
+      ?? finiteNumberOrNull(tracked?.initial_fee_tvl_24h)
+      ?? finiteNumberOrNull(position.fee_per_tvl_24h);
+    const volatility =
+      finiteNumberOrNull(pool.volatility)
+      ?? finiteNumberOrNull(tracked?.volatility)
+      ?? finiteNumberOrNull(position.volatility);
     const fetched = await fetchMomentumCandles({
       mint: position.base_mint,
       maxRetries: config.momentum.maxRetries,
@@ -226,9 +235,9 @@ async function evaluateDangerDrawdownExit(position) {
 
     let momentum = calculateMomentum({
       candles: fetched.candles,
-      feeActiveTvlRatio: pool.fee_active_tvl_ratio,
+      feeActiveTvlRatio,
       minFeeActiveTvlRatio: config.screening.minFeeActiveTvlRatio,
-      volatility: pool.volatility,
+      volatility,
       strongThreshold: config.momentum.strongThreshold,
       strongMinBins: config.momentum.strongMinBins,
       strongMaxBins: config.momentum.strongMaxBins,
@@ -253,7 +262,7 @@ async function evaluateDangerDrawdownExit(position) {
     if (!momentum.valid) {
       momentum = calculateWeakMomentumFallback({
         validatedCandles: validated,
-        volatility: pool.volatility,
+        volatility,
         weakMinBins: config.momentum.weakMinBins,
         weakMaxBins: config.momentum.weakMaxBins,
         tokenAgeHours: pool.token_age_hours,
@@ -275,12 +284,15 @@ async function evaluateDangerDrawdownExit(position) {
     }
 
     const badReasons = [];
+    const signalNotes = [];
     if (!supertrend.confirmed) badReasons.push(`Supertrend ${supertrend.direction || "block"}: ${supertrend.reason}`);
 
     const momentumScore = finiteNumberOrNull(momentum.score);
     const minMomentum = Number(config.management.dangerCloseMomentumBelow ?? 40);
     if (momentumScore != null && Number.isFinite(minMomentum) && momentumScore < minMomentum) {
       badReasons.push(`momentum ${momentumScore} < ${minMomentum}`);
+    } else if (momentumScore == null) {
+      signalNotes.push(`momentum unavailable (${momentum.reason || "no score"})`);
     }
 
     const priceChange5m = finiteNumberOrNull(momentum.priceChange5m);
@@ -290,9 +302,10 @@ async function evaluateDangerDrawdownExit(position) {
     }
 
     if (badReasons.length > 0) {
+      const noteText = signalNotes.length > 0 ? `; note: ${signalNotes.join("; ")}` : "";
       return {
         action: "DANGER_DRAWDOWN",
-        reason: `Danger drawdown: PnL ${currentPnlPct.toFixed(2)}% <= ${dangerPct}%; ${badReasons.join("; ")}`,
+        reason: `Danger drawdown: PnL ${currentPnlPct.toFixed(2)}% <= ${dangerPct}%; ${badReasons.join("; ")}${noteText}`,
       };
     }
 
@@ -305,7 +318,7 @@ async function evaluateDangerDrawdownExit(position) {
 
     log(
       "state",
-      `Danger hold for ${position.pair}: PnL ${currentPnlPct.toFixed(2)}%, momentum ${momentumScore ?? "unavailable"}, Supertrend ${supertrend.direction || "?"} ${interval}, elapsed ${elapsed}m/${graceMinutes}m`
+      `Danger hold for ${position.pair}: PnL ${currentPnlPct.toFixed(2)}%, momentum ${momentumScore ?? `unavailable (${momentum.reason || "no score"})`}, Supertrend ${supertrend.direction || "?"} ${interval}, elapsed ${elapsed}m/${graceMinutes}m`
     );
     return null;
   } catch (error) {
