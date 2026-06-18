@@ -8,7 +8,7 @@ import { agentLoop } from "./agent.js";
 import { log, logAction } from "./logger.js";
 import { getMyPositions, closePosition, claimFees, getActiveBin, deployPosition } from "./tools/dlmm.js";
 import { getWalletBalances, swapToken } from "./tools/wallet.js";
-import { evaluateScreeningGate, getTopCandidates, verifyLiveEntryGuards } from "./tools/screening.js";
+import { evaluateScreeningGate, getPoolDetail, getTopCandidates, verifyLiveEntryGuards } from "./tools/screening.js";
 import {
   config,
   formatRuntimeConfigSnapshot,
@@ -99,6 +99,7 @@ let _screeningBusy = false;  // prevents overlapping screening cycles
 let _screeningLastTriggered = 0; // epoch ms — prevents management from spamming screening
 const _autoCloseCoordinator = new PositionCloseCoordinator();
 const _supertrendWarningCandles = new Map();
+const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 /** Strip <think>...</think> reasoning blocks that some models leak into output */
 function stripThink(text) {
@@ -332,6 +333,76 @@ function formatCloseChoices(matches) {
     const age = position.age_minutes != null ? ` | ${position.age_minutes}m` : "";
     return `${position._closeIndex || index + 1}. ${position.pair || position.pool_name || position.position}${pnl}${age}`;
   }).join("\n");
+}
+
+function parseFastCheckCommand(text) {
+  const match = String(text || "").trim().match(/^\/?(?:cek|check|inspect|info)\s+(\S+)$/i);
+  if (!match) return null;
+  const target = match[1].trim();
+  if (!SOLANA_ADDRESS_RE.test(target)) return null;
+  return target;
+}
+
+function isDirectTelegramCommand(text) {
+  const trimmed = String(text || "").trim();
+  return (
+    /^\/?(?:screen|menu|config|learning|briefing|positions)$/i.test(trimmed) ||
+    /^\/close\s+\d+$/i.test(trimmed) ||
+    /^\/set\s+\S+\s+.+$/i.test(trimmed)
+  );
+}
+
+function formatTokenCheckResult(target, tokenInfo, poolDetail, poolError) {
+  const token = tokenInfo?.results?.[0] || null;
+  const audit = token?.audit || {};
+  const poolLines = poolDetail
+    ? [
+        "",
+        "Pool",
+        `Name: ${poolDetail.name || "?"}`,
+        `TVL: $${formatDecimal(poolDetail.active_tvl ?? poolDetail.tvl, 2)}`,
+        `Volume: $${formatDecimal(poolDetail.volume, 2)} (${config.screening.timeframe})`,
+        `Fee/TVL: ${formatDecimal(poolDetail.fee_active_tvl_ratio, 4)}%`,
+        `Bin step: ${poolDetail.dlmm_params?.bin_step ?? "?"}`,
+      ]
+    : poolError
+      ? ["", `Pool: not found (${poolError})`]
+      : [];
+
+  if (!token) {
+    return [
+      `Fast check: ${target}`,
+      "Token: not found in Jupiter assets search",
+      ...poolLines,
+    ].join("\n");
+  }
+
+  return [
+    `Fast check: ${token.symbol || "UNKNOWN"}${token.name ? ` (${token.name})` : ""}`,
+    `Mint: ${token.mint}`,
+    `Price: $${formatDecimal(token.price, 8)}`,
+    `Mcap: $${formatDecimal(token.mcap, 0)}`,
+    `Liquidity: $${formatDecimal(token.liquidity, 0)}`,
+    `Holders: ${formatDecimal(token.holders, 0)}`,
+    `Organic: ${token.organic_score ?? "?"} (${token.organic_label || "?"})`,
+    `Launchpad: ${token.launchpad || "?"}`,
+    `Audit: mint ${audit.mint_disabled ? "disabled" : "open/?"}, freeze ${audit.freeze_disabled ? "disabled" : "open/?"}, top10 ${audit.top_holders_pct ?? "?"}%, bots ${audit.bot_holders_pct ?? "?"}%`,
+    token.stats_1h
+      ? `1h: price ${token.stats_1h.price_change ?? "?"}%, buy $${token.stats_1h.buy_vol ?? "?"}, sell $${token.stats_1h.sell_vol ?? "?"}, net buyers ${token.stats_1h.net_buyers ?? "?"}`
+      : null,
+    ...poolLines,
+  ].filter(Boolean).join("\n");
+}
+
+async function executeFastCheck(target) {
+  log("telegram", `Fast check: ${target}`);
+  const [tokenInfo, poolResult] = await Promise.all([
+    getTokenInfo({ query: target }).catch((error) => ({ found: false, error: error.message })),
+    getPoolDetail({ pool_address: target, timeframe: config.screening.timeframe })
+      .then((pool) => ({ pool }))
+      .catch((error) => ({ error: error.message })),
+  ]);
+  return formatTokenCheckResult(target, tokenInfo, poolResult.pool, poolResult.error);
 }
 
 async function executeTelegramClose(position, reason = "telegram fast close") {
@@ -2011,6 +2082,17 @@ if (isTTY) {
       return;
     }
 
+    const fastCheckTarget = parseFastCheckCommand(text);
+    if (fastCheckTarget) {
+      try {
+        const report = await executeFastCheck(fastCheckTarget);
+        await sendMessage(report);
+      } catch (e) {
+        await sendMessage(`Fast check failed: ${e.message}`).catch(() => {});
+      }
+      return;
+    }
+
     if (pendingMenuEdit && !text.startsWith("/")) {
       const { key, section, preset } = pendingMenuEdit;
       pendingMenuEdit = null;
@@ -2065,7 +2147,7 @@ if (isTTY) {
       return;
     }
 
-    if (_managementBusy || _screeningBusy || busy) {
+    if ((_managementBusy || _screeningBusy || busy) && !isDirectTelegramCommand(text)) {
       if (_telegramQueue.length < 5) {
         _telegramQueue.push(text);
         log("telegram", `Queued (${_telegramQueue.length}): ${text}`);
