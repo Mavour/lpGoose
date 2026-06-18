@@ -61,7 +61,12 @@ export const config = {
     downsideOutOfRangeWaitMinutes: u.downsideOutOfRangeWaitMinutes ?? u.outOfRangeWaitMinutes ?? 30,
     downsideOutOfRangeLossPct: u.downsideOutOfRangeLossPct ?? null,
     minVolumeToRebalance:  u.minVolumeToRebalance  ?? 1000,
-    stopLossPct:           u.stopLossPct           ?? u.emergencyPriceDropPct ?? -50,
+    stopLossPct:           u.stopLossPct           ?? u.emergencyPriceDropPct ?? -10,
+    dangerDrawdownPct:     u.dangerDrawdownPct     ?? -5,
+    dangerHardClosePct:    u.dangerHardClosePct    ?? -7,
+    dangerGraceMinutes:    u.dangerGraceMinutes    ?? 5,
+    dangerCloseMomentumBelow: u.dangerCloseMomentumBelow ?? 40,
+    dangerClosePriceChange5mPct: u.dangerClosePriceChange5mPct ?? -1,
     takeProfitFeePct:      u.takeProfitFeePct      ?? 5,
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
     minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close
@@ -276,6 +281,14 @@ const RUNTIME_CONFIG_FIELDS = {
     exitInterval: ["chartIndicators", "exitInterval"],
     failOpen: ["chartIndicators", "failOpen"],
     exitOnBearishFlip: ["chartIndicators", "exitOnBearishFlip"],
+  },
+  management: {
+    stopLossPct: ["stopLossPct", "management", "stopLossPct"],
+    dangerDrawdownPct: ["dangerDrawdownPct", "management", "dangerDrawdownPct"],
+    dangerHardClosePct: ["dangerHardClosePct", "management", "dangerHardClosePct"],
+    dangerGraceMinutes: ["dangerGraceMinutes", "management", "dangerGraceMinutes"],
+    dangerCloseMomentumBelow: ["dangerCloseMomentumBelow", "management", "dangerCloseMomentumBelow"],
+    dangerClosePriceChange5mPct: ["dangerClosePriceChange5mPct", "management", "dangerClosePriceChange5mPct"],
   },
 };
 

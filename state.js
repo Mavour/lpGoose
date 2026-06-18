@@ -117,6 +117,8 @@ export function trackPosition({
     closed_at: null,
     notes: [],
     peak_pnl_pct: 0,
+    min_pnl_pct: 0,
+    danger_drawdown_since: null,
     trailing_active: false,
   };
   pushEvent(state, { action: "deploy", position, pool_name: pool_name || pool });
@@ -342,6 +344,8 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
       deployed_at: null,
       out_of_range_since: null,
       peak_pnl_pct: 0,
+      min_pnl_pct: 0,
+      danger_drawdown_since: null,
       trailing_active: false,
       closed: false,
     };
@@ -359,6 +363,11 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     currentPnlPct = null;
   }
 
+  const pnlSuspect = currentPnlPct != null
+    && currentPnlPct <= -90
+    && pos.amount_sol
+    && (positionData.total_value_usd ?? 0) > 0.01;
+
   let changed = false;
 
   if (positionData.pnl_integrity_reset && (pos.trailing_active || (pos.peak_pnl_pct ?? 0) > 0)) {
@@ -371,10 +380,28 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     changed = true;
   }
 
-  // Track peak PnL
-  if (currentPnlPct != null && currentPnlPct > (pos.peak_pnl_pct ?? 0)) {
+  // Track peak/drawdown PnL only when the snapshot passes the integrity guard.
+  if (!pnlSuspect && currentPnlPct != null && currentPnlPct > (pos.peak_pnl_pct ?? 0)) {
     pos.peak_pnl_pct = currentPnlPct;
     changed = true;
+  }
+
+  if (!pnlSuspect && currentPnlPct != null && currentPnlPct < (pos.min_pnl_pct ?? 0)) {
+    pos.min_pnl_pct = currentPnlPct;
+    changed = true;
+  }
+
+  const dangerDrawdownPct = Number(mgmtConfig.dangerDrawdownPct);
+  if (!pnlSuspect && Number.isFinite(dangerDrawdownPct) && currentPnlPct != null) {
+    if (currentPnlPct <= dangerDrawdownPct && !pos.danger_drawdown_since) {
+      pos.danger_drawdown_since = new Date().toISOString();
+      changed = true;
+      log("state", `Position ${position_address} entered danger drawdown at ${currentPnlPct.toFixed(2)}% (threshold ${dangerDrawdownPct}%)`);
+    } else if (currentPnlPct > dangerDrawdownPct && pos.danger_drawdown_since) {
+      pos.danger_drawdown_since = null;
+      changed = true;
+      log("state", `Position ${position_address} recovered from danger drawdown at ${currentPnlPct.toFixed(2)}%`);
+    }
   }
 
   // Activate trailing TP once trigger threshold is reached
@@ -396,11 +423,6 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   }
 
   if (changed) save(state);
-
-  const pnlSuspect = currentPnlPct != null
-    && currentPnlPct <= -90
-    && pos.amount_sol
-    && (positionData.total_value_usd ?? 0) > 0.01;
 
   // ── Stop loss ──────────────────────────────────────────────────
   if (!pnlSuspect && currentPnlPct != null && mgmtConfig.stopLossPct != null && currentPnlPct <= mgmtConfig.stopLossPct) {

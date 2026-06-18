@@ -25,7 +25,7 @@ import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memor
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
 import { BottomSpotLPStrategy } from "./strategies/index.js";
-import { fetchKlineGMGN } from "./tools/chart-indicators.js";
+import { closedCandlesOnly, confirmSupertrendFromCandles, fetchKlineGMGN } from "./tools/chart-indicators.js";
 import {
   calculateConfidence,
   getConfidenceSizing,
@@ -136,6 +136,189 @@ async function autoSwapBaseToSol(baseMint, context = "") {
   return { swapped: false, token, error: swapResult.error };
 }
 
+function dangerElapsedMinutes(positionAddress) {
+  const tracked = getTrackedPosition(positionAddress);
+  if (!tracked?.danger_drawdown_since) return 0;
+  const started = new Date(tracked.danger_drawdown_since).getTime();
+  if (!Number.isFinite(started)) return 0;
+  return Math.max(0, Math.floor((Date.now() - started) / 60_000));
+}
+
+async function evaluateDangerDrawdownExit(position) {
+  const currentPnlPct = Number(position.pnl_pct);
+  const dangerPct = Number(config.management.dangerDrawdownPct);
+  if (!Number.isFinite(currentPnlPct) || !Number.isFinite(dangerPct) || currentPnlPct > dangerPct) {
+    return null;
+  }
+  const tracked = getTrackedPosition(position.position);
+  if (
+    currentPnlPct <= -90 &&
+    tracked?.amount_sol &&
+    (position.total_value_usd ?? 0) > 0.01
+  ) {
+    log("cron_warn", `Danger check skipped for ${position.pair}: suspect PnL ${currentPnlPct.toFixed(2)}%`);
+    return null;
+  }
+
+  const hardClosePct = Number(config.management.dangerHardClosePct);
+  if (Number.isFinite(hardClosePct) && currentPnlPct <= hardClosePct) {
+    return {
+      action: "DANGER_DRAWDOWN",
+      reason: `Danger hard close: PnL ${currentPnlPct.toFixed(2)}% <= ${hardClosePct}%`,
+    };
+  }
+
+  const graceMinutes = Number(config.management.dangerGraceMinutes ?? 5);
+  const elapsed = dangerElapsedMinutes(position.position);
+  const graceExpired = Number.isFinite(graceMinutes) && graceMinutes > 0 && elapsed >= graceMinutes;
+
+  if (!position.base_mint) {
+    if (graceExpired) {
+      return {
+        action: "DANGER_GRACE",
+        reason: `Danger drawdown: PnL ${currentPnlPct.toFixed(2)}% still <= ${dangerPct}% after ${elapsed}m`,
+      };
+    }
+    return null;
+  }
+
+  try {
+    const detail = await getPoolDetail({ pool_address: position.pool, timeframe: "5m" });
+    const pool = poolDetailToGatePool(detail, { mint: position.base_mint, symbol: position.pair });
+    const fetched = await fetchMomentumCandles({
+      mint: position.base_mint,
+      maxRetries: config.momentum.maxRetries,
+      retryDelayMs: config.momentum.retryDelayMs,
+    });
+    if (!fetched.success) {
+      if (graceExpired) {
+        return {
+          action: "DANGER_GRACE",
+          reason: `Danger drawdown: PnL ${currentPnlPct.toFixed(2)}% still <= ${dangerPct}% after ${elapsed}m; live signal unavailable (${fetched.errorType || "fetch_error"})`,
+        };
+      }
+      log("cron_warn", `Danger check skipped for ${position.pair}: momentum candles unavailable (${fetched.errorType || "fetch_error"})`);
+      return null;
+    }
+
+    const validated = validateMomentumCandles(fetched.candles, {
+      maxCandleAgeMinutes: config.momentum.maxCandleAgeMinutes,
+    });
+    if (!validated.valid) {
+      if (graceExpired) {
+        return {
+          action: "DANGER_GRACE",
+          reason: `Danger drawdown: PnL ${currentPnlPct.toFixed(2)}% still <= ${dangerPct}% after ${elapsed}m; live signal stale (${validated.reason})`,
+        };
+      }
+      log("cron_warn", `Danger check skipped for ${position.pair}: stale momentum (${validated.reason})`);
+      return null;
+    }
+
+    const interval = config.chartIndicators.entryInterval || config.chartIndicators.interval || "5m";
+    const closedCandles = closedCandlesOnly(fetched.candles, interval);
+    const supertrend = confirmSupertrendFromCandles(closedCandles, {
+      interval,
+      period: config.chartIndicators.stPeriod || 10,
+      multiplier: config.chartIndicators.stMultiplier || 3,
+    });
+
+    let momentum = calculateMomentum({
+      candles: fetched.candles,
+      feeActiveTvlRatio: pool.fee_active_tvl_ratio,
+      minFeeActiveTvlRatio: config.screening.minFeeActiveTvlRatio,
+      volatility: pool.volatility,
+      strongThreshold: config.momentum.strongThreshold,
+      strongMinBins: config.momentum.strongMinBins,
+      strongMaxBins: config.momentum.strongMaxBins,
+      weakMinBins: config.momentum.weakMinBins,
+      weakMaxBins: config.momentum.weakMaxBins,
+      tokenAgeHours: pool.token_age_hours,
+      ageBands: {
+        newMaxHours: config.momentum.ageNewMaxHours,
+        youngMaxHours: config.momentum.ageYoungMaxHours,
+        matureMaxHours: config.momentum.ageMatureMaxHours,
+        newMinBins: config.momentum.newMinBins,
+        newMaxBins: config.momentum.newMaxBins,
+        youngMinBins: config.momentum.youngMinBins,
+        youngMaxBins: config.momentum.youngMaxBins,
+        matureMinBins: config.momentum.matureMinBins,
+        matureMaxBins: config.momentum.matureMaxBins,
+        oldMinBins: config.momentum.oldMinBins,
+        oldMaxBins: config.momentum.oldMaxBins,
+      },
+      maxCandleAgeMinutes: config.momentum.maxCandleAgeMinutes,
+    });
+    if (!momentum.valid) {
+      momentum = calculateWeakMomentumFallback({
+        validatedCandles: validated,
+        volatility: pool.volatility,
+        weakMinBins: config.momentum.weakMinBins,
+        weakMaxBins: config.momentum.weakMaxBins,
+        tokenAgeHours: pool.token_age_hours,
+        ageBands: {
+          newMaxHours: config.momentum.ageNewMaxHours,
+          youngMaxHours: config.momentum.ageYoungMaxHours,
+          matureMaxHours: config.momentum.ageMatureMaxHours,
+          newMinBins: config.momentum.newMinBins,
+          newMaxBins: config.momentum.newMaxBins,
+          youngMinBins: config.momentum.youngMinBins,
+          youngMaxBins: config.momentum.youngMaxBins,
+          matureMinBins: config.momentum.matureMinBins,
+          matureMaxBins: config.momentum.matureMaxBins,
+          oldMinBins: config.momentum.oldMinBins,
+          oldMaxBins: config.momentum.oldMaxBins,
+        },
+        reason: `danger_momentum_fallback: ${momentum.reason}`,
+      });
+    }
+
+    const badReasons = [];
+    if (!supertrend.confirmed) badReasons.push(`Supertrend ${supertrend.direction || "block"}: ${supertrend.reason}`);
+
+    const momentumScore = Number(momentum.score);
+    const minMomentum = Number(config.management.dangerCloseMomentumBelow ?? 40);
+    if (Number.isFinite(momentumScore) && Number.isFinite(minMomentum) && momentumScore < minMomentum) {
+      badReasons.push(`momentum ${momentumScore} < ${minMomentum}`);
+    }
+
+    const priceChange5m = Number(momentum.priceChange5m);
+    const minPriceChange = Number(config.management.dangerClosePriceChange5mPct ?? -1);
+    if (Number.isFinite(priceChange5m) && Number.isFinite(minPriceChange) && priceChange5m <= minPriceChange) {
+      badReasons.push(`price change 5m ${priceChange5m.toFixed(2)}% <= ${minPriceChange}%`);
+    }
+
+    if (badReasons.length > 0) {
+      return {
+        action: "DANGER_DRAWDOWN",
+        reason: `Danger drawdown: PnL ${currentPnlPct.toFixed(2)}% <= ${dangerPct}%; ${badReasons.join("; ")}`,
+      };
+    }
+
+    if (graceExpired) {
+      return {
+        action: "DANGER_GRACE",
+        reason: `Danger drawdown: PnL ${currentPnlPct.toFixed(2)}% still <= ${dangerPct}% after ${elapsed}m; live signal not bad enough to override grace`,
+      };
+    }
+
+    log(
+      "state",
+      `Danger hold for ${position.pair}: PnL ${currentPnlPct.toFixed(2)}%, momentum ${Number.isFinite(momentumScore) ? momentumScore : "?"}, Supertrend ${supertrend.direction || "?"}, elapsed ${elapsed}m/${graceMinutes}m`
+    );
+    return null;
+  } catch (error) {
+    if (graceExpired) {
+      return {
+        action: "DANGER_GRACE",
+        reason: `Danger drawdown: PnL ${currentPnlPct.toFixed(2)}% still <= ${dangerPct}% after ${elapsed}m; live check failed (${error.message})`,
+      };
+    }
+    log("cron_warn", `Danger check failed for ${position.pair}: ${error.message}`);
+    return null;
+  }
+}
+
 async function evaluateAutoExit(position) {
   if (config.management.whaleGuardEnabled) {
     try {
@@ -167,6 +350,9 @@ async function evaluateAutoExit(position) {
 
   const coreExit = updatePnlAndCheckExits(position.position, position, config.management);
   if (coreExit) return coreExit;
+
+  const dangerExit = await evaluateDangerDrawdownExit(position);
+  if (dangerExit) return dangerExit;
 
   if (
     config.chartIndicators.enabled &&
@@ -2071,6 +2257,11 @@ if (isTTY) {
       ["whaleGuardMinDropUsd", "Whale drop USD"],
       ["whaleGuardMinDropPct", "Whale drop %"],
       ["stopLossPct", "Stop loss %"],
+      ["dangerDrawdownPct", "Danger %"],
+      ["dangerHardClosePct", "Danger hard %"],
+      ["dangerGraceMinutes", "Danger grace min"],
+      ["dangerCloseMomentumBelow", "Danger momentum <"],
+      ["dangerClosePriceChange5mPct", "Danger 5m change %"],
       ["maxPositions", "Max positions"],
     ],
     manage: [
@@ -2093,6 +2284,9 @@ if (isTTY) {
     exits: [
       ["takeProfitFeePct", "Take profit %"],
       ["stopLossPct", "Stop loss %"],
+      ["dangerDrawdownPct", "Danger %"],
+      ["dangerHardClosePct", "Danger hard %"],
+      ["dangerGraceMinutes", "Danger grace min"],
       ["trailingTakeProfit", "Trailing"],
       ["trailingTriggerPct", "Trail trigger %"],
       ["trailingDropPct", "Trail drop %"],

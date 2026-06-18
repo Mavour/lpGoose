@@ -73,6 +73,14 @@ try {
     "LOW_YIELD",
   );
   assert.equal(updatePnlAndCheckExits("stay", position("stay"), config), null);
+  assert.equal(updatePnlAndCheckExits("danger", position("danger", { pnl_pct: -5.2 }), {
+    ...config,
+    stopLossPct: -10,
+    dangerDrawdownPct: -5,
+  }), null);
+  const state = JSON.parse(fs.readFileSync(path.join(tempDir, "state.json"), "utf8"));
+  assert.ok(state.positions.danger.danger_drawdown_since);
+  assert.equal(state.positions.danger.min_pnl_pct, -5.2);
 } finally {
   process.chdir(originalCwd);
   fs.rmSync(tempDir, { recursive: true, force: true });
@@ -133,5 +141,9 @@ assert.doesNotMatch(indexSource, /Poll-triggered management/);
 assert.doesNotMatch(indexSource, /_pollTriggeredAt/);
 assert.doesNotMatch(indexSource, /action:\s*"SUPERTREND_EXIT"/);
 assert.match(indexSource, /notifySupertrendWarning\(/);
+assert.match(indexSource, /evaluateDangerDrawdownExit\(position\)/);
+assert.match(indexSource, /Danger hard close/);
+assert.match(configSource, /dangerDrawdownPct:\s+u\.dangerDrawdownPct\s+\?\?\s+-5/);
+assert.match(configSource, /dangerHardClosePct:\s+u\.dangerHardClosePct\s+\?\?\s+-7/);
 
 console.log("Immediate auto-close tests passed");
