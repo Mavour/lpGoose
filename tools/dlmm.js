@@ -1423,6 +1423,15 @@ export async function claimFees({ position_address }) {
 }
 
 // ─── Close Position ────────────────────────────────────────────
+function isClosedPositionLookupError(error, positionAddress) {
+  const message = String(error?.message || error || "");
+  if (!message) return false;
+  if (/position account .*not found/i.test(message)) return true;
+  if (/account .*not found/i.test(message) && message.includes(positionAddress)) return true;
+  if (/fallback pnl missing/i.test(message) && message.includes(positionAddress)) return true;
+  return false;
+}
+
 export async function closePosition({ position_address, reason }) {
   position_address = normalizeMint(position_address);
   if (process.env.DRY_RUN === "true") {
@@ -1549,6 +1558,11 @@ export async function closePosition({ position_address, reason }) {
         }
         log("close_warn", `Position ${position_address} still appears open after close txs (attempt ${attempt + 1}/8)`);
       } catch (e) {
+        if (isClosedPositionLookupError(e, position_address)) {
+          log("close", `Close verification treated missing position account as success: ${e.message}`);
+          closedConfirmed = true;
+          break;
+        }
         log("close_warn", `Close verification failed (attempt ${attempt + 1}/8): ${e.message}`);
       }
       if (attempt < 7) await new Promise((r) => setTimeout(r, 1000));

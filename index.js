@@ -280,6 +280,116 @@ async function executeAutoClose(position, exit, source) {
   return locked.result;
 }
 
+function parseFastCloseCommand(text) {
+  const match = String(text || "").trim().match(/^\/?(?:close|exit|sell)\s+(.+)$/i);
+  if (!match) return null;
+  const target = match[1].trim();
+  if (!target || /^\d+$/.test(target)) return null;
+  return target;
+}
+
+function normalizeCloseTarget(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\b(sol|dlmm|pool|position)\b/g, "")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function positionSearchTerms(position) {
+  return [
+    position.pair,
+    position.pool_name,
+    position.symbol,
+    position.base_symbol,
+    position.base?.symbol,
+    position.position,
+    position.pool,
+  ].filter(Boolean).map(normalizeCloseTarget).filter(Boolean);
+}
+
+function resolveCloseMatches(positions, target) {
+  const normalizedTarget = normalizeCloseTarget(target);
+  if (!normalizedTarget) return [];
+  return (positions || []).map((position, index) => ({ ...position, _closeIndex: index + 1 })).filter((position) => {
+    const terms = positionSearchTerms(position);
+    return terms.some((term) =>
+      term === normalizedTarget ||
+      term.includes(normalizedTarget) ||
+      normalizedTarget.includes(term)
+    );
+  });
+}
+
+function formatCloseChoices(matches) {
+  return matches.map((position, index) => {
+    const pnl = position.pnl_usd != null
+      ? ` | PnL: ${position.pnl_usd >= 0 ? "+" : ""}$${formatDecimal(position.pnl_usd, 2)}`
+      : "";
+    const age = position.age_minutes != null ? ` | ${position.age_minutes}m` : "";
+    return `${position._closeIndex || index + 1}. ${position.pair || position.pool_name || position.position}${pnl}${age}`;
+  }).join("\n");
+}
+
+async function executeTelegramClose(position, reason = "telegram fast close") {
+  const label = position.pair || position.pool_name || position.position;
+  const locked = await _autoCloseCoordinator.run(position.position, async () => {
+    try {
+      log("close", `Telegram fast close: ${label} (${position.position})`);
+      await sendMessage(`Closing ${label}...`);
+      const result = await closePosition({
+        position_address: position.position,
+        reason,
+      });
+
+      if (!(result.success || result.dry_run)) {
+        await sendMessage(`Close failed: ${result.error || JSON.stringify(result)}`);
+        return result;
+      }
+
+      let autoSwap = null;
+      if (result.success && result.base_mint) {
+        autoSwap = await autoSwapBaseToSol(result.base_mint, "telegram close").catch((error) => ({
+          swapped: false,
+          error: error.message,
+        }));
+      }
+
+      await notifyClose({
+        pair: label,
+        pnlUsd: result.pnl_usd ?? 0,
+        pnlPct: result.pnl_pct ?? 0,
+        pnlSol: result.pnl_sol,
+        feesEarnedUsd: result.fees_earned_usd,
+        feesEarnedSol: result.fees_earned_sol,
+        deployedSol: result.deployed_sol,
+        strategy: result.strategy,
+        holdMinutes: result.minutes_held,
+        reason: result.close_reason || reason,
+      });
+
+      const closeTxs = result.close_txs?.length ? result.close_txs : result.txs;
+      const swapLine = autoSwap?.swapped
+        ? "\nAuto-swap: done"
+        : autoSwap?.error
+          ? `\nAuto-swap failed: ${autoSwap.error}`
+          : "";
+      await sendMessage(`Close txs: ${closeTxs?.join(", ") || "n/a"}${swapLine}`);
+      return { ...result, auto_swap: autoSwap };
+    } catch (error) {
+      log("close_error", `Telegram fast close failed for ${label}: ${error.message}`);
+      await sendMessage(`Close failed: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+  });
+
+  if (!locked.acquired) {
+    log("close", `Duplicate telegram close ignored for ${label}`);
+    await sendMessage(`Close already in progress for ${label}.`);
+    return { skipped: true, reason: "close already in progress" };
+  }
+  return locked.result;
+}
+
 async function runBriefing() {
   log("cron", "Starting morning briefing");
   try {
@@ -734,6 +844,28 @@ async function attemptStandardDeploy(candidate, deployAmount) {
       pool: pool.pool,
       mint: pool.base?.mint,
       result: { ...momentum, ...freshCandles },
+      gmgnAttempt: pool.momentum_gmgn_attempt,
+      poolFeesSol: pool.pool_fees_sol,
+      poolFeesSource: pool.pool_fees_source,
+      feeTimeframe: pool.pool_fees_timeframe,
+      decision: "skip",
+      reason,
+    }));
+    return { status: "failed", report: `Deploy skipped: ${reason}` };
+  }
+
+  const minMomentumScore = config.screening.minMomentumScore;
+  const momentumScore = Number(momentum.score);
+  if (
+    minMomentumScore != null &&
+    (!Number.isFinite(momentumScore) || momentumScore < Number(minMomentumScore))
+  ) {
+    const scoreText = Number.isFinite(momentumScore) ? momentumScore : "unavailable";
+    const reason = `Momentum score ${scoreText} < min ${minMomentumScore}`;
+    log("momentum", formatMomentumLog({
+      pool: pool.pool,
+      mint: pool.base?.mint,
+      result: momentum,
       gmgnAttempt: pool.momentum_gmgn_attempt,
       poolFeesSol: pool.pool_fees_sol,
       poolFeesSource: pool.pool_fees_source,
@@ -1539,6 +1671,8 @@ if (isTTY) {
       ["minTvl", "Min TVL"],
       ["maxTvl", "Max TVL"],
       ["minVolume", "Min volume"],
+      ["minVolumeToActiveTvlRatio", "Min vol/TVL"],
+      ["minMomentumScore", "Min momentum"],
       ["minOrganic", "Min organic"],
       ["minTokenFeesSol", "Min fee SOL"],
       ["maxBotHoldersPct", "Max bots %"],
@@ -1841,6 +1975,32 @@ if (isTTY) {
   async function telegramHandler(text) {
     log("telegram", `Incoming: ${text}`);
 
+    const fastCloseTarget = parseFastCloseCommand(text);
+    if (fastCloseTarget) {
+      try {
+        const { positions = [], total_positions = 0 } = await getMyPositions({ force: true });
+        if (total_positions === 0 || positions.length === 0) {
+          await sendMessage("No open positions to close.");
+          return;
+        }
+
+        const matches = resolveCloseMatches(positions, fastCloseTarget);
+        if (matches.length === 0) {
+          await sendMessage(`No open position matched "${fastCloseTarget}". Use /positions or /close <n>.`);
+          return;
+        }
+        if (matches.length > 1) {
+          await sendMessage(`Multiple positions matched "${fastCloseTarget}". Use /close <n>:\n\n${formatCloseChoices(matches)}`);
+          return;
+        }
+
+        await executeTelegramClose(matches[0], `telegram fast close: ${fastCloseTarget}`);
+      } catch (e) {
+        await sendMessage(`Close failed: ${e.message}`).catch(() => {});
+      }
+      return;
+    }
+
     if (pendingMenuEdit && !text.startsWith("/")) {
       const { key, section, preset } = pendingMenuEdit;
       pendingMenuEdit = null;
@@ -2006,27 +2166,8 @@ if (isTTY) {
         const { positions } = await getMyPositions({ force: true });
         if (idx < 0 || idx >= positions.length) { await sendMessage(`Invalid number. Use /positions first.`); return; }
         const pos = positions[idx];
-        await sendMessage(`Closing ${pos.pair}...`);
-        const result = await closePosition({ position_address: pos.position });
-        if (result.success) {
-          const closeTxs = result.close_txs?.length ? result.close_txs : result.txs;
-          await notifyClose({
-            pair: pos.pair,
-            pnlUsd: result.pnl_usd ?? 0,
-            pnlPct: result.pnl_pct ?? 0,
-            pnlSol: result.pnl_sol,
-            feesEarnedUsd: result.fees_earned_usd,
-            feesEarnedSol: result.fees_earned_sol,
-            deployedSol: result.deployed_sol,
-            strategy: result.strategy,
-            holdMinutes: result.minutes_held,
-            reason: result.close_reason,
-          });
-          await sendMessage(`Close txs: ${closeTxs?.join(", ") || "n/a"}`);
-          return;
-        } else {
-          await sendMessage(`❌ Close failed: ${JSON.stringify(result)}`);
-        }
+        await executeTelegramClose(pos, "telegram /close number");
+        return;
       } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => { }); }
       return;
     }

@@ -30,6 +30,8 @@ export const config = {
     minTvl:            u.minTvl            ?? 10_000,
     maxTvl:            u.maxTvl            ?? 150_000,
     minVolume:         u.minVolume         ?? 500,
+    minVolumeToActiveTvlRatio: u.minVolumeToActiveTvlRatio ?? null,
+    minMomentumScore:  u.minMomentumScore  ?? null,
     minOrganic:        u.minOrganic        ?? 60,
     minHolders:        u.minHolders        ?? 500,
     minMcap:           u.minMcap           ?? 150_000,
@@ -221,6 +223,8 @@ const RUNTIME_CONFIG_FIELDS = {
     minTvl: ["minTvl"],
     maxTvl: ["maxTvl"],
     minVolume: ["minVolume"],
+    minVolumeToActiveTvlRatio: ["minVolumeToActiveTvlRatio"],
+    minMomentumScore: ["minMomentumScore"],
     minOrganic: ["minOrganic"],
     minHolders: ["minHolders"],
     minMcap: ["minMcap"],
@@ -317,6 +321,9 @@ export function formatRuntimeConfigSnapshot() {
   const c = config.chartIndicators;
   return [
     `min_fee_active_tvl=${s.minFeeActiveTvlRatio}%`,
+    `min_volume=${s.minVolume}`,
+    `min_volume_tvl=${s.minVolumeToActiveTvlRatio ?? "off"}`,
+    `min_momentum=${s.minMomentumScore ?? "off"}`,
     `momentum_threshold=${m.strongThreshold}`,
     `strong_band=${m.strongMinBins}-${m.strongMaxBins}`,
     `weak_band=${m.weakMinBins}-${m.weakMaxBins}`,

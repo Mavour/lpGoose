@@ -875,6 +875,17 @@ export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
   if (pool.active_tvl != null && pool.active_tvl < s.minTvl) return fail(`tvl ${pool.active_tvl} < min ${s.minTvl}`);
   if (pool.active_tvl != null && pool.active_tvl > s.maxTvl) return fail(`tvl ${pool.active_tvl} > max ${s.maxTvl}`);
   if (pool.volume_window != null && pool.volume_window < s.minVolume) return fail(`volume ${pool.volume_window} < min ${s.minVolume}`);
+  if (
+    s.minVolumeToActiveTvlRatio != null &&
+    pool.volume_window != null &&
+    pool.active_tvl != null &&
+    Number(pool.active_tvl) > 0
+  ) {
+    const volumeTvlRatio = Number(pool.volume_window) / Number(pool.active_tvl);
+    if (Number.isFinite(volumeTvlRatio) && volumeTvlRatio < s.minVolumeToActiveTvlRatio) {
+      return fail(`volume/tvl ${volumeTvlRatio.toFixed(4)} < min ${s.minVolumeToActiveTvlRatio}`);
+    }
+  }
   if (pool.organic_score != null && pool.organic_score < s.minOrganic) return fail(`organic ${pool.organic_score} < min ${s.minOrganic}`);
   if (pool.mcap != null && pool.mcap < s.minMcap) return fail(`mcap ${pool.mcap} < min ${s.minMcap}`);
   if (pool.mcap != null && pool.mcap > s.maxMcap) return fail(`mcap ${pool.mcap} > max ${s.maxMcap}`);
