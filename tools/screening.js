@@ -86,6 +86,62 @@ function normalizeSymbol(symbol) {
   return String(symbol || "").trim().toUpperCase();
 }
 
+function normalizeIdentityText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function normalizeHandle(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  return raw
+    .replace(/^https?:\/\/(www\.)?/i, "")
+    .replace(/^(x\.com|twitter\.com|t\.me|telegram\.me)\//i, "")
+    .replace(/^@/, "")
+    .replace(/\/+$/, "")
+    .split(/[/?#]/)[0];
+}
+
+function normalizeHost(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  try {
+    const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    return new URL(withProtocol).hostname.replace(/^www\./, "");
+  } catch {
+    return raw.replace(/^www\./, "").split("/")[0];
+  }
+}
+
+function hasMeaningfulIdentityOverlap(ownAsset, rivalAsset) {
+  const reasons = [];
+  const ownName = normalizeIdentityText(ownAsset?.name);
+  const rivalName = normalizeIdentityText(rivalAsset?.name);
+  if (ownName && rivalName) {
+    if (ownName === rivalName) {
+      reasons.push("same name");
+    } else if (ownName.includes(rivalName) || rivalName.includes(ownName)) {
+      reasons.push("overlapping name");
+    }
+  }
+
+  const ownWebsite = normalizeHost(ownAsset?.website);
+  const rivalWebsite = normalizeHost(rivalAsset?.website);
+  if (ownWebsite && rivalWebsite && ownWebsite === rivalWebsite) reasons.push("same website");
+
+  const ownTwitter = normalizeHandle(ownAsset?.twitter);
+  const rivalTwitter = normalizeHandle(rivalAsset?.twitter);
+  if (ownTwitter && rivalTwitter && ownTwitter === rivalTwitter) reasons.push("same twitter");
+
+  const ownTelegram = normalizeHandle(ownAsset?.telegram);
+  const rivalTelegram = normalizeHandle(rivalAsset?.telegram);
+  if (ownTelegram && rivalTelegram && ownTelegram === rivalTelegram) reasons.push("same telegram");
+
+  return { match: reasons.length > 0, reasons };
+}
+
 function clearPvpRival(pool) {
   delete pool.pvp_rival_name;
   delete pool.pvp_rival_mint;
@@ -282,6 +338,23 @@ export function evaluatePvpAssets(pool, assets, rivalAssessments = new Map()) {
   if (establishedRivals.length > 0) {
     const { asset: rival, createdAt } = establishedRivals[0];
     const assessment = rivalAssessments.get(rival.id);
+    const identity = hasMeaningfulIdentityOverlap(ownAsset, rival);
+    if (!identity.match) {
+      pool.is_pvp = false;
+      pool.pvp_risk = "medium";
+      pool.pvp_rival_name = rival.name || pool.pvp_symbol;
+      pool.pvp_rival_mint = rival.id;
+      pool.pvp_rival_created_at = new Date(createdAt).toISOString();
+      pool.pvp_rival_liquidity = assessment.liquidity;
+      pool.pvp_rival_volume_24h = assessment.volume24h;
+      pool.pvp_rival_holders = assessment.holders;
+      pool.pvp_rival_pool = assessment.pool;
+      pool.pvp_rival_tvl = assessment.tvl;
+      pool.pvp_rival_fee_tvl = assessment.feeTvl;
+      pool.pvp_check_status = "symbol_collision";
+      pool.pvp_check_reason = `same symbol as established ${pool.pvp_rival_name}, but identity differs (name/social/website mismatch)`;
+      return pool;
+    }
     pool.is_pvp = true;
     pool.pvp_risk = "high";
     pool.pvp_rival_name = rival.name || pool.pvp_symbol;
@@ -294,7 +367,7 @@ export function evaluatePvpAssets(pool, assets, rivalAssessments = new Map()) {
     pool.pvp_rival_tvl = assessment.tvl;
     pool.pvp_rival_fee_tvl = assessment.feeTvl;
     pool.pvp_check_status = "copycat";
-    pool.pvp_check_reason = `established older same-symbol mint created ${pool.pvp_rival_created_at}`;
+    pool.pvp_check_reason = `established older same-symbol mint created ${pool.pvp_rival_created_at}; identity overlap: ${identity.reasons.join(", ")}`;
     return pool;
   }
 
@@ -430,6 +503,8 @@ export async function enrichPvpRisk(pools, {
 
     if (pool.pvp_check_status === "copycat") {
       log("screening", `PVP guard: ${pool.name} (${pool.base.mint.slice(0, 8)}) is a copycat of ${pool.pvp_rival_name} (${pool.pvp_rival_mint.slice(0, 8)}), created ${pool.pvp_rival_created_at}`);
+    } else if (pool.pvp_check_status === "symbol_collision") {
+      log("screening", `PVP guard: ${pool.name} (${pool.base.mint.slice(0, 8)}) shares symbol with ${pool.pvp_rival_name} (${pool.pvp_rival_mint.slice(0, 8)}) but identity differs; warning only`);
     } else if (pool.pvp_check_status === "unverified") {
       log("screening", `PVP guard: symbol=${pool.base.symbol} mint=${pool.base.mint} unverified - ${pool.pvp_check_reason}`);
     }
