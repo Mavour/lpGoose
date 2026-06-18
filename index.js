@@ -1631,6 +1631,7 @@ if (isTTY) {
       return config.confidence?.[field] ?? "?";
     }
     const momentumFields = {
+      momentumStrongThreshold: "strongThreshold",
       momentumAgeNewMaxHours: "ageNewMaxHours",
       momentumAgeYoungMaxHours: "ageYoungMaxHours",
       momentumAgeMatureMaxHours: "ageMatureMaxHours",
@@ -1743,6 +1744,7 @@ if (isTTY) {
       ["mixedRatio", "Mixed ratio"],
       ["minBinsBelow", "Min bins"],
       ["maxBinsBelow", "Max bins"],
+      ["momentumStrongThreshold", "Strong threshold"],
       ["momentumAgeNewMaxHours", "New max age h"],
       ["momentumNewMinBins", "New min bins"],
       ["momentumNewMaxBins", "New max bins"],
