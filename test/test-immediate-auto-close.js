@@ -143,6 +143,9 @@ assert.doesNotMatch(indexSource, /action:\s*"SUPERTREND_EXIT"/);
 assert.match(indexSource, /notifySupertrendWarning\(/);
 assert.match(indexSource, /evaluateDangerDrawdownExit\(position\)/);
 assert.match(indexSource, /Danger hard close/);
+assert.match(indexSource, /config\.chartIndicators\.exitInterval/);
+assert.match(indexSource, /fetchKlineGMGN\(position\.base_mint, interval, 80\)/);
+assert.doesNotMatch(indexSource, /Number\(momentum\.score\)/);
 assert.match(configSource, /dangerDrawdownPct:\s+u\.dangerDrawdownPct\s+\?\?\s+-5/);
 assert.match(configSource, /dangerHardClosePct:\s+u\.dangerHardClosePct\s+\?\?\s+-7/);
 

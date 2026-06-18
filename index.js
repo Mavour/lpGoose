@@ -215,8 +215,9 @@ async function evaluateDangerDrawdownExit(position) {
       return null;
     }
 
-    const interval = config.chartIndicators.entryInterval || config.chartIndicators.interval || "5m";
-    const closedCandles = closedCandlesOnly(fetched.candles, interval);
+    const interval = config.chartIndicators.exitInterval || config.chartIndicators.interval || "15m";
+    const supertrendCandles = await fetchKlineGMGN(position.base_mint, interval, 80);
+    const closedCandles = closedCandlesOnly(supertrendCandles, interval);
     const supertrend = confirmSupertrendFromCandles(closedCandles, {
       interval,
       period: config.chartIndicators.stPeriod || 10,
@@ -276,15 +277,15 @@ async function evaluateDangerDrawdownExit(position) {
     const badReasons = [];
     if (!supertrend.confirmed) badReasons.push(`Supertrend ${supertrend.direction || "block"}: ${supertrend.reason}`);
 
-    const momentumScore = Number(momentum.score);
+    const momentumScore = finiteNumberOrNull(momentum.score);
     const minMomentum = Number(config.management.dangerCloseMomentumBelow ?? 40);
-    if (Number.isFinite(momentumScore) && Number.isFinite(minMomentum) && momentumScore < minMomentum) {
+    if (momentumScore != null && Number.isFinite(minMomentum) && momentumScore < minMomentum) {
       badReasons.push(`momentum ${momentumScore} < ${minMomentum}`);
     }
 
-    const priceChange5m = Number(momentum.priceChange5m);
+    const priceChange5m = finiteNumberOrNull(momentum.priceChange5m);
     const minPriceChange = Number(config.management.dangerClosePriceChange5mPct ?? -1);
-    if (Number.isFinite(priceChange5m) && Number.isFinite(minPriceChange) && priceChange5m <= minPriceChange) {
+    if (priceChange5m != null && Number.isFinite(minPriceChange) && priceChange5m <= minPriceChange) {
       badReasons.push(`price change 5m ${priceChange5m.toFixed(2)}% <= ${minPriceChange}%`);
     }
 
@@ -304,7 +305,7 @@ async function evaluateDangerDrawdownExit(position) {
 
     log(
       "state",
-      `Danger hold for ${position.pair}: PnL ${currentPnlPct.toFixed(2)}%, momentum ${Number.isFinite(momentumScore) ? momentumScore : "?"}, Supertrend ${supertrend.direction || "?"}, elapsed ${elapsed}m/${graceMinutes}m`
+      `Danger hold for ${position.pair}: PnL ${currentPnlPct.toFixed(2)}%, momentum ${momentumScore ?? "unavailable"}, Supertrend ${supertrend.direction || "?"} ${interval}, elapsed ${elapsed}m/${graceMinutes}m`
     );
     return null;
   } catch (error) {
@@ -573,6 +574,12 @@ function numberValue(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function finiteNumberOrNull(value) {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 function poolDetailToGatePool(detail, token) {
   const activeTvl = numberValue(detail.active_tvl ?? detail.tvl);
   const feeWindow = numberValue(detail.fee);
@@ -733,13 +740,13 @@ async function evaluateLiveDeploySignals(pool) {
       reason: `fast_explain_momentum_fallback: ${momentum.reason}`,
     });
   }
-  const momentumScore = Number(momentum.score);
-  lines.push(`Momentum: ${Number.isFinite(momentumScore) ? momentumScore : "unavailable"} (${momentum.classification}) | bins ${momentum.binsBelow ?? "?"}`);
+  const momentumScore = finiteNumberOrNull(momentum.score);
+  lines.push(`Momentum: ${momentumScore ?? "unavailable"} (${momentum.classification}) | bins ${momentum.binsBelow ?? "?"}`);
   if (
     config.screening.minMomentumScore != null &&
-    (!Number.isFinite(momentumScore) || momentumScore < Number(config.screening.minMomentumScore))
+    (momentumScore == null || momentumScore < Number(config.screening.minMomentumScore))
   ) {
-    blockers.push(`momentum ${Number.isFinite(momentumScore) ? momentumScore : "unavailable"} < ${config.screening.minMomentumScore}`);
+    blockers.push(`momentum ${momentumScore ?? "unavailable"} < ${config.screening.minMomentumScore}`);
   }
 
   return { blockers, lines, confidence, sizing, momentum, supertrend };
@@ -1416,12 +1423,12 @@ async function attemptStandardDeploy(candidate, deployAmount) {
   }
 
   const minMomentumScore = config.screening.minMomentumScore;
-  const momentumScore = Number(momentum.score);
+  const momentumScore = finiteNumberOrNull(momentum.score);
   if (
     minMomentumScore != null &&
-    (!Number.isFinite(momentumScore) || momentumScore < Number(minMomentumScore))
+    (momentumScore == null || momentumScore < Number(minMomentumScore))
   ) {
-    const scoreText = Number.isFinite(momentumScore) ? momentumScore : "unavailable";
+    const scoreText = momentumScore ?? "unavailable";
     const reason = `Momentum score ${scoreText} < min ${minMomentumScore}`;
     log("momentum", formatMomentumLog({
       pool: pool.pool,
