@@ -281,11 +281,15 @@ async function executeAutoClose(position, exit, source) {
 }
 
 function parseFastCloseCommand(text) {
-  const match = String(text || "").trim().match(/^\/?(?:close|exit|sell)\s+(.+)$/i);
+  const trimmed = String(text || "").trim();
+  if (/^\/?(?:close|exit|sell)$/i.test(trimmed)) {
+    return { target: null, singleOpenPosition: true };
+  }
+  const match = trimmed.match(/^\/?(?:close|exit|sell)\s+(.+)$/i);
   if (!match) return null;
   const target = match[1].trim();
   if (!target || /^\d+$/.test(target)) return null;
-  return target;
+  return { target, singleOpenPosition: false };
 }
 
 function normalizeCloseTarget(value) {
@@ -1975,8 +1979,8 @@ if (isTTY) {
   async function telegramHandler(text) {
     log("telegram", `Incoming: ${text}`);
 
-    const fastCloseTarget = parseFastCloseCommand(text);
-    if (fastCloseTarget) {
+    const fastCloseCommand = parseFastCloseCommand(text);
+    if (fastCloseCommand) {
       try {
         const { positions = [], total_positions = 0 } = await getMyPositions({ force: true });
         if (total_positions === 0 || positions.length === 0) {
@@ -1984,17 +1988,21 @@ if (isTTY) {
           return;
         }
 
-        const matches = resolveCloseMatches(positions, fastCloseTarget);
+        const matches = fastCloseCommand.singleOpenPosition
+          ? positions.map((position, index) => ({ ...position, _closeIndex: index + 1 }))
+          : resolveCloseMatches(positions, fastCloseCommand.target);
         if (matches.length === 0) {
-          await sendMessage(`No open position matched "${fastCloseTarget}". Use /positions or /close <n>.`);
+          await sendMessage(`No open position matched "${fastCloseCommand.target}". Use /positions or /close <n>.`);
           return;
         }
         if (matches.length > 1) {
-          await sendMessage(`Multiple positions matched "${fastCloseTarget}". Use /close <n>:\n\n${formatCloseChoices(matches)}`);
+          await sendMessage(`Multiple positions matched${fastCloseCommand.target ? ` "${fastCloseCommand.target}"` : ""}. Use /close <n>:\n\n${formatCloseChoices(matches)}`);
           return;
         }
 
-        await executeTelegramClose(matches[0], `telegram fast close: ${fastCloseTarget}`);
+        await executeTelegramClose(matches[0], fastCloseCommand.target
+          ? `telegram fast close: ${fastCloseCommand.target}`
+          : "telegram fast close: single open position");
       } catch (e) {
         await sendMessage(`Close failed: ${e.message}`).catch(() => {});
       }
