@@ -27,12 +27,19 @@ import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
 import { BottomSpotLPStrategy } from "./strategies/index.js";
 import { fetchKlineGMGN } from "./tools/chart-indicators.js";
 import {
+  calculateConfidence,
   getConfidenceSizing,
   rankConfidenceCandidates,
   runRankedCandidateAttempts,
 } from "./confidence.js";
 import { PositionCloseCoordinator } from "./position-close-coordinator.js";
-import { formatMomentumLog, validateMomentumCandles } from "./tools/momentum.js";
+import {
+  calculateMomentum,
+  calculateWeakMomentumFallback,
+  fetchMomentumCandles,
+  formatMomentumLog,
+  validateMomentumCandles,
+} from "./tools/momentum.js";
 import { getGmgnPoolFees } from "./tools/gmgn.js";
 import {
   addToBlacklist,
@@ -402,6 +409,7 @@ function poolDetailToGatePool(detail, token) {
     mcap: numberValue(detail.token_x?.market_cap ?? token?.mcap),
     bin_step: numberValue(detail.dlmm_params?.bin_step),
     fee_active_tvl_ratio: feeTvl != null ? Number(feeTvl.toFixed(4)) : null,
+    volatility: numberValue(detail.volatility),
     token_age_hours: detail.token_x?.created_at
       ? Math.floor((Date.now() - Number(detail.token_x.created_at)) / 3_600_000)
       : null,
@@ -427,8 +435,128 @@ function formatGateMetrics(pool) {
     `Organic: ${formatDecimal(pool.organic_score, 0)} (min ${config.screening.minOrganic})`,
     `Mcap: $${formatDecimal(pool.mcap, 0)} (${config.screening.minMcap}-${config.screening.maxMcap})`,
     `Bin step: ${pool.bin_step ?? "?"} (${config.screening.minBinStep}-${config.screening.maxBinStep})`,
+    `Volatility: ${formatDecimal(pool.volatility, 2)}`,
     `Token age: ${pool.token_age_hours ?? "?"}h`,
   ].join("\n");
+}
+
+async function evaluateLiveDeploySignals(pool) {
+  const blockers = [];
+  const lines = [];
+
+  const smartWallets = await checkSmartWalletsOnPool({ pool_address: pool.pool }).catch((error) => ({
+    in_pool: [],
+    error: error.message,
+  }));
+  const confidence = calculateConfidence(pool, smartWallets, config.confidence);
+  const sizing = getConfidenceSizing(confidence.total, config.management.deployAmountSol, config.confidence);
+  lines.push(`Confidence: ${confidence.total} (${sizing.action}) | vol ${confidence.volatility_score}/40, fee ${confidence.fee_active_tvl_score}/40, smart ${confidence.smart_wallet_score}/20`);
+  if (sizing.action === "skip") {
+    blockers.push(`confidence ${confidence.total} < ${config.confidence.skipThreshold}`);
+  }
+  if (smartWallets.error) lines.push(`Smart wallets: lookup failed (${smartWallets.error})`);
+
+  const fetched = await fetchMomentumCandles({
+    mint: pool.base?.mint,
+    maxRetries: config.momentum.maxRetries,
+    retryDelayMs: config.momentum.retryDelayMs,
+  });
+  if (!fetched.success) {
+    blockers.push(`momentum candles unavailable: ${fetched.errorType || "error"} ${fetched.error || ""}`.trim());
+    lines.push(`Supertrend: not checked (candles unavailable)`);
+    lines.push(`Momentum: not checked (candles unavailable)`);
+    return { blockers, lines, confidence, sizing, momentum: null, supertrend: null };
+  }
+
+  const validated = validateMomentumCandles(fetched.candles, {
+    maxCandleAgeMinutes: config.momentum.maxCandleAgeMinutes,
+  });
+  if (!validated.valid) {
+    blockers.push(`momentum snapshot stale: ${validated.reason}`);
+    lines.push(`Supertrend: not checked (${validated.reason})`);
+    lines.push(`Momentum: stale (${validated.reason})`);
+    return { blockers, lines, confidence, sizing, momentum: validated, supertrend: null };
+  }
+
+  const {
+    closedCandlesOnly,
+    confirmSupertrendFromCandles,
+    evaluateEntrySupertrend,
+  } = await import("./tools/chart-indicators.js");
+  const entryInterval = config.chartIndicators.entryInterval || config.chartIndicators.interval || "5m";
+  const closedCandles = closedCandlesOnly(fetched.candles, entryInterval);
+  const supertrend = evaluateEntrySupertrend(confirmSupertrendFromCandles(closedCandles, {
+    interval: entryInterval,
+    period: config.chartIndicators.stPeriod || 10,
+    multiplier: config.chartIndicators.stMultiplier || 3,
+  }), {
+    entryPreset: config.chartIndicators.entryPreset,
+    ath: pool.ath,
+    athFilterPct: config.screening.athFilterPct,
+    minPriceChangePct: config.chartIndicators.entryMinPriceChangePct,
+  });
+  lines.push(`Supertrend: ${supertrend.confirmed ? "PASS" : "BLOCK"} - ${supertrend.reason}`);
+  if (!supertrend.confirmed) blockers.push(`Supertrend: ${supertrend.reason}`);
+
+  let momentum = calculateMomentum({
+    candles: fetched.candles,
+    feeActiveTvlRatio: pool.fee_active_tvl_ratio,
+    minFeeActiveTvlRatio: config.screening.minFeeActiveTvlRatio,
+    volatility: pool.volatility,
+    strongThreshold: config.momentum.strongThreshold,
+    strongMinBins: config.momentum.strongMinBins,
+    strongMaxBins: config.momentum.strongMaxBins,
+    weakMinBins: config.momentum.weakMinBins,
+    weakMaxBins: config.momentum.weakMaxBins,
+    tokenAgeHours: pool.token_age_hours,
+    ageBands: {
+      newMaxHours: config.momentum.ageNewMaxHours,
+      youngMaxHours: config.momentum.ageYoungMaxHours,
+      matureMaxHours: config.momentum.ageMatureMaxHours,
+      newMinBins: config.momentum.newMinBins,
+      newMaxBins: config.momentum.newMaxBins,
+      youngMinBins: config.momentum.youngMinBins,
+      youngMaxBins: config.momentum.youngMaxBins,
+      matureMinBins: config.momentum.matureMinBins,
+      matureMaxBins: config.momentum.matureMaxBins,
+      oldMinBins: config.momentum.oldMinBins,
+      oldMaxBins: config.momentum.oldMaxBins,
+    },
+    maxCandleAgeMinutes: config.momentum.maxCandleAgeMinutes,
+  });
+  if (!momentum.valid) {
+    momentum = calculateWeakMomentumFallback({
+      validatedCandles: validated,
+      volatility: pool.volatility,
+      weakMinBins: config.momentum.weakMinBins,
+      weakMaxBins: config.momentum.weakMaxBins,
+      tokenAgeHours: pool.token_age_hours,
+      ageBands: {
+        newMaxHours: config.momentum.ageNewMaxHours,
+        youngMaxHours: config.momentum.ageYoungMaxHours,
+        matureMaxHours: config.momentum.ageMatureMaxHours,
+        newMinBins: config.momentum.newMinBins,
+        newMaxBins: config.momentum.newMaxBins,
+        youngMinBins: config.momentum.youngMinBins,
+        youngMaxBins: config.momentum.youngMaxBins,
+        matureMinBins: config.momentum.matureMinBins,
+        matureMaxBins: config.momentum.matureMaxBins,
+        oldMinBins: config.momentum.oldMinBins,
+        oldMaxBins: config.momentum.oldMaxBins,
+      },
+      reason: `fast_explain_momentum_fallback: ${momentum.reason}`,
+    });
+  }
+  const momentumScore = Number(momentum.score);
+  lines.push(`Momentum: ${Number.isFinite(momentumScore) ? momentumScore : "unavailable"} (${momentum.classification}) | bins ${momentum.binsBelow ?? "?"}`);
+  if (
+    config.screening.minMomentumScore != null &&
+    (!Number.isFinite(momentumScore) || momentumScore < Number(config.screening.minMomentumScore))
+  ) {
+    blockers.push(`momentum ${Number.isFinite(momentumScore) ? momentumScore : "unavailable"} < ${config.screening.minMomentumScore}`);
+  }
+
+  return { blockers, lines, confidence, sizing, momentum, supertrend };
 }
 
 async function explainWhyNoDeploy(target) {
@@ -482,12 +610,17 @@ async function explainWhyNoDeploy(target) {
   }));
 
   const best = evaluated.find((item) => item.gate.pass) || evaluated[0];
+  const signal = best.gate.pass
+    ? await evaluateLiveDeploySignals(best.gatePool).catch((error) => ({
+        blockers: [`live signal check failed: ${error.message}`],
+        lines: [`Signal check failed: ${error.message}`],
+      }))
+    : { blockers: [], lines: [] };
   const failures = [
     ...positionFailures,
     best.gate.pass ? null : best.gate.reason,
     best.fees?.error ? `fees lookup: ${best.fees.error}` : null,
-    config.screening.minMomentumScore != null ? `momentum not checked in fast explain; deploy still needs live momentum >= ${config.screening.minMomentumScore}` : null,
-    config.chartIndicators.enabled ? "Supertrend still must be bullish at live deploy time" : null,
+    ...signal.blockers,
   ].filter(Boolean);
 
   return [
@@ -495,12 +628,13 @@ async function explainWhyNoDeploy(target) {
     `Pool: ${best.gatePool.pool}`,
     `Mint: ${best.gatePool.base?.mint || mint}`,
     "",
-    best.gate.pass && !positionFailures.length
-      ? "Hard screening gates currently pass. Kalau tetap tidak deploy, blocker berikutnya biasanya live momentum/Supertrend, max positions saat cycle, duplicate exposure, atau kandidat lain ranking lebih tinggi."
+    best.gate.pass && !failures.length
+      ? "All checked gates pass right now. Kalau tetap tidak deploy saat screening, kemungkinan kandidat lain ranking lebih tinggi atau execution deploy sedang skip infrastruktur."
       : `Blocked: ${failures.join("; ")}`,
     "",
     formatGateMetrics(best.gatePool),
-  ].join("\n");
+    signal.lines?.length ? ["", "Live Signal", ...signal.lines].join("\n") : null,
+  ].filter((line) => line != null).join("\n");
 }
 
 function formatFastDeployStatus() {
