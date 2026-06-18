@@ -115,7 +115,7 @@ function setPvpUnverified(pool, reason) {
   return pool;
 }
 
-async function searchPoolsByMint(mint) {
+export async function searchPoolsByMint(mint) {
   const res = await fetch(`https://dlmm.datapi.meteora.ag/pools?query=${encodeURIComponent(mint)}`);
   if (!res.ok) throw new Error(`Meteora pool search ${res.status}`);
   const data = await res.json();

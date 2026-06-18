@@ -8,7 +8,7 @@ import { agentLoop } from "./agent.js";
 import { log, logAction } from "./logger.js";
 import { getMyPositions, closePosition, claimFees, getActiveBin, deployPosition } from "./tools/dlmm.js";
 import { getWalletBalances, swapToken } from "./tools/wallet.js";
-import { evaluateScreeningGate, getPoolDetail, getTopCandidates, verifyLiveEntryGuards } from "./tools/screening.js";
+import { evaluateScreeningGate, getPoolDetail, getTopCandidates, searchPoolsByMint, verifyLiveEntryGuards } from "./tools/screening.js";
 import {
   config,
   formatRuntimeConfigSnapshot,
@@ -33,6 +33,7 @@ import {
 } from "./confidence.js";
 import { PositionCloseCoordinator } from "./position-close-coordinator.js";
 import { formatMomentumLog, validateMomentumCandles } from "./tools/momentum.js";
+import { getGmgnPoolFees } from "./tools/gmgn.js";
 import {
   addToBlacklist,
   listBlacklist,
@@ -361,6 +362,145 @@ function parseExplicitTelegramLlmCommand(text) {
 function isDeployQuestion(text) {
   const normalized = String(text || "").toLowerCase();
   return /\bdeploy\b/.test(normalized) && /\b(kenapa|knp|why|kok|ga|gak|nggak|tidak|belum)\b/.test(normalized);
+}
+
+function parseDeployQuestionTarget(text) {
+  if (!isDeployQuestion(text)) return null;
+  const match = String(text || "").match(/[1-9A-HJ-NP-Za-km-z]{32,44}/);
+  return match?.[0] || null;
+}
+
+function poolAddressOf(rawPool) {
+  return rawPool?.address || rawPool?.pool_address || rawPool?.poolAddress || rawPool?.pool || rawPool?.id || null;
+}
+
+function numberValue(value) {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function poolDetailToGatePool(detail, token) {
+  const activeTvl = numberValue(detail.active_tvl ?? detail.tvl);
+  const feeWindow = numberValue(detail.fee);
+  const feeTvl = numberValue(detail.fee_active_tvl_ratio)
+    ?? (activeTvl > 0 && feeWindow != null ? (feeWindow / activeTvl) * 100 : null);
+  return {
+    pool: detail.pool_address,
+    name: detail.name,
+    quote: {
+      symbol: detail.token_y?.symbol,
+      mint: detail.token_y?.address,
+    },
+    base: {
+      symbol: detail.token_x?.symbol || token?.symbol,
+      mint: detail.token_x?.address || token?.mint,
+    },
+    active_tvl: activeTvl,
+    volume_window: numberValue(detail.volume),
+    organic_score: numberValue(detail.token_x?.organic_score ?? token?.organic_score),
+    mcap: numberValue(detail.token_x?.market_cap ?? token?.mcap),
+    bin_step: numberValue(detail.dlmm_params?.bin_step),
+    fee_active_tvl_ratio: feeTvl != null ? Number(feeTvl.toFixed(4)) : null,
+    token_age_hours: detail.token_x?.created_at
+      ? Math.floor((Date.now() - Number(detail.token_x.created_at)) / 3_600_000)
+      : null,
+    pool_fees_sol: null,
+    pool_fees_source: null,
+    pool_fees_timeframe: null,
+    pool_fees_unit: null,
+    ath: null,
+    current_price: numberValue(detail.pool_price),
+  };
+}
+
+function formatGateMetrics(pool) {
+  const volumeTvl = pool.active_tvl > 0 && pool.volume_window != null
+    ? pool.volume_window / pool.active_tvl
+    : null;
+  return [
+    `TVL: $${formatDecimal(pool.active_tvl, 0)} (min $${config.screening.minTvl})`,
+    `Volume: $${formatDecimal(pool.volume_window, 0)} (min $${config.screening.minVolume})`,
+    `Volume/TVL: ${volumeTvl == null ? "?" : formatDecimal(volumeTvl, 4)} (min ${config.screening.minVolumeToActiveTvlRatio ?? "off"})`,
+    `Fee/TVL: ${formatDecimal(pool.fee_active_tvl_ratio, 4)}% (min ${config.screening.minFeeActiveTvlRatio}%)`,
+    `Pool fees: ${pool.pool_fees_sol ?? "?"} SOL (min ${config.screening.minTokenFeesSol})`,
+    `Organic: ${formatDecimal(pool.organic_score, 0)} (min ${config.screening.minOrganic})`,
+    `Mcap: $${formatDecimal(pool.mcap, 0)} (${config.screening.minMcap}-${config.screening.maxMcap})`,
+    `Bin step: ${pool.bin_step ?? "?"} (${config.screening.minBinStep}-${config.screening.maxBinStep})`,
+    `Token age: ${pool.token_age_hours ?? "?"}h`,
+  ].join("\n");
+}
+
+async function explainWhyNoDeploy(target) {
+  const tokenInfo = await getTokenInfo({ query: target }).catch((error) => ({ found: false, error: error.message }));
+  const token = tokenInfo?.results?.[0] || null;
+  const mint = token?.mint || target;
+  const positionsResult = await getMyPositions({ force: true, silent: true }).catch(() => ({ positions: [], total_positions: 0 }));
+  const positionFailures = [];
+  if ((positionsResult.total_positions || 0) >= config.risk.maxPositions) {
+    positionFailures.push(`max positions reached: ${positionsResult.total_positions}/${config.risk.maxPositions}`);
+  }
+  if (positionsResult.positions?.some((p) => p.base_mint === mint)) {
+    positionFailures.push("already holding same base mint");
+  }
+
+  const rawPools = SOLANA_ADDRESS_RE.test(target)
+    ? await searchPoolsByMint(target).catch(() => [])
+    : [];
+  const poolAddresses = [
+    target,
+    ...rawPools.map(poolAddressOf).filter(Boolean),
+  ].filter((addr, index, arr) => SOLANA_ADDRESS_RE.test(addr) && arr.indexOf(addr) === index);
+
+  const details = [];
+  for (const address of poolAddresses.slice(0, 4)) {
+    const detail = await getPoolDetail({ pool_address: address, timeframe: config.screening.timeframe }).catch(() => null);
+    if (detail) details.push(detail);
+  }
+
+  if (!details.length) {
+    return [
+      `Deploy check: ${token?.symbol || target}`,
+      `Mint: ${mint}`,
+      tokenInfo?.error ? `Token lookup error: ${tokenInfo.error}` : null,
+      "No Meteora DLMM pool detail found for this address/mint.",
+      positionFailures.length ? `Position gate: ${positionFailures.join("; ")}` : null,
+    ].filter(Boolean).join("\n");
+  }
+
+  const evaluated = await Promise.all(details.map(async (detail) => {
+    const gatePool = poolDetailToGatePool(detail, token);
+    const fees = await getGmgnPoolFees({ mint: gatePool.base?.mint || mint, pool_address: gatePool.pool });
+    gatePool.pool_fees_sol = fees.pool_fees_sol;
+    gatePool.pool_fees_source = fees.source;
+    gatePool.pool_fees_timeframe = fees.timeframe || null;
+    gatePool.pool_fees_unit = fees.pool_fees_sol != null ? "SOL" : null;
+    gatePool.ath = fees.ath ?? null;
+    if (fees.price != null) gatePool.current_price = fees.price;
+    const gate = evaluateScreeningGate(gatePool, { tokenInfo: token });
+    return { detail, gatePool, gate, fees };
+  }));
+
+  const best = evaluated.find((item) => item.gate.pass) || evaluated[0];
+  const failures = [
+    ...positionFailures,
+    best.gate.pass ? null : best.gate.reason,
+    best.fees?.error ? `fees lookup: ${best.fees.error}` : null,
+    config.screening.minMomentumScore != null ? `momentum not checked in fast explain; deploy still needs live momentum >= ${config.screening.minMomentumScore}` : null,
+    config.chartIndicators.enabled ? "Supertrend still must be bullish at live deploy time" : null,
+  ].filter(Boolean);
+
+  return [
+    `Deploy check: ${best.gatePool.name || token?.symbol || target}`,
+    `Pool: ${best.gatePool.pool}`,
+    `Mint: ${best.gatePool.base?.mint || mint}`,
+    "",
+    best.gate.pass && !positionFailures.length
+      ? "Hard screening gates currently pass. Kalau tetap tidak deploy, blocker berikutnya biasanya live momentum/Supertrend, max positions saat cycle, duplicate exposure, atau kandidat lain ranking lebih tinggi."
+      : `Blocked: ${failures.join("; ")}`,
+    "",
+    formatGateMetrics(best.gatePool),
+  ].join("\n");
 }
 
 function formatFastDeployStatus() {
@@ -2363,6 +2503,16 @@ if (isTTY) {
         await sendMessage(`Screening failed: ${e.message}`).catch(() => {});
       } finally {
         drainTelegramQueue().catch(() => {});
+      }
+      return;
+    }
+
+    const deployQuestionTarget = parseDeployQuestionTarget(text);
+    if (deployQuestionTarget) {
+      try {
+        await sendMessage(await explainWhyNoDeploy(deployQuestionTarget));
+      } catch (e) {
+        await sendMessage(`Deploy check failed: ${e.message}`).catch(() => {});
       }
       return;
     }
