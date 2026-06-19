@@ -41,6 +41,7 @@ import {
   validateMomentumCandles,
 } from "./tools/momentum.js";
 import { evaluateWhaleExit, selectAdaptivePnlPollIntervalMs } from "./tools/polling.js";
+import { parseFastCloseCommand, resolveCloseMatches } from "./tools/telegram-close.js";
 import { getGmgnPoolFees } from "./tools/gmgn.js";
 import {
   addToBlacklist,
@@ -500,50 +501,6 @@ function isAutoCloseInFlight(positionAddress) {
   return _autoCloseCoordinator.has(positionAddress);
 }
 
-function parseFastCloseCommand(text) {
-  const trimmed = String(text || "").trim();
-  if (/^\/?(?:close|exit|sell)$/i.test(trimmed)) {
-    return { target: null, singleOpenPosition: true };
-  }
-  const match = trimmed.match(/^\/?(?:close|exit|sell)\s+(.+)$/i);
-  if (!match) return null;
-  const target = match[1].trim();
-  if (!target || /^\d+$/.test(target)) return null;
-  return { target, singleOpenPosition: false };
-}
-
-function normalizeCloseTarget(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/\b(sol|dlmm|pool|position)\b/g, "")
-    .replace(/[^a-z0-9]/g, "");
-}
-
-function positionSearchTerms(position) {
-  return [
-    position.pair,
-    position.pool_name,
-    position.symbol,
-    position.base_symbol,
-    position.base?.symbol,
-    position.position,
-    position.pool,
-  ].filter(Boolean).map(normalizeCloseTarget).filter(Boolean);
-}
-
-function resolveCloseMatches(positions, target) {
-  const normalizedTarget = normalizeCloseTarget(target);
-  if (!normalizedTarget) return [];
-  return (positions || []).map((position, index) => ({ ...position, _closeIndex: index + 1 })).filter((position) => {
-    const terms = positionSearchTerms(position);
-    return terms.some((term) =>
-      term === normalizedTarget ||
-      term.includes(normalizedTarget) ||
-      normalizedTarget.includes(term)
-    );
-  });
-}
-
 function formatCloseChoices(matches) {
   return matches.map((position, index) => {
     const pnl = position.pnl_usd != null
@@ -566,6 +523,7 @@ function isDirectTelegramCommand(text) {
   const trimmed = String(text || "").trim();
   return (
     /^\/?(?:screen|menu|config|learning|briefing|positions)$/i.test(trimmed) ||
+    /^\/?(?:close|exit|sell)\s+(?:all|semua)$/i.test(trimmed) ||
     /^\/close\s+\d+$/i.test(trimmed) ||
     /^\/set\s+\S+\s+.+$/i.test(trimmed) ||
     /^\/?(?:ask|agent)\s+.+$/i.test(trimmed)
@@ -1890,9 +1848,11 @@ Summarize the current portfolio health, total fees earned, and performance of al
   // Adaptive poller — evaluates and directly executes deterministic auto-exits.
   let _pnlPollBusy = false;
   let _pnlPollTimer = null;
+  let _pnlPollDelayMs = config.schedule.pnlPollIntervalMs;
   const pnlPollInterval = () => _pnlPollTimer;
   // Fast floor remains config.schedule.pnlPollIntervalMs; adaptive polling only lengthens safe periods.
   const scheduleNextPnlPoll = (delayMs) => {
+    _pnlPollDelayMs = Math.max(1_000, delayMs);
     _pnlPollTimer = setTimeout(runPnlPoll, Math.max(1_000, delayMs));
     _pnlPollTimer.unref?.();
     if (_cronTasks) _cronTasks._pnlPollInterval = _pnlPollTimer;
@@ -1917,6 +1877,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
         force: true,
         silent: true,
         liveOnly: true,
+        urgent: _pnlPollDelayMs <= config.schedule.pnlPollIntervalMs,
       }).catch(() => null);
       nextDelayMs = selectAdaptivePnlPollIntervalMs({
         trackedPositions,
@@ -2630,7 +2591,7 @@ if (isTTY) {
   }
 
   async function sendTelegramPositionsSnapshot() {
-    const { positions, total_positions } = await getMyPositions({ force: true });
+    const { positions, total_positions } = await getMyPositions({ force: true, urgent: true });
     if (total_positions === 0) {
       await sendMessage("No open positions.");
       return;
@@ -2643,7 +2604,7 @@ if (isTTY) {
       const oor = !p.in_range ? " ⚠️OOR" : "";
       return `${i + 1}. ${p.pair} | ${cur}${formatDecimal(p.total_value_usd, pnlDecimals)} | PnL: ${pnl} | fees: ${cur}${formatDecimal(p.unclaimed_fees_usd, pnlDecimals)} | ${age}${oor}`;
     });
-    await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /set <n> <note> to set instruction`);
+    await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /close all to close all | /set <n> <note> to set instruction`);
   }
 
   async function telegramHandler(text) {
@@ -2686,9 +2647,18 @@ if (isTTY) {
     const fastCloseCommand = parseFastCloseCommand(text);
     if (fastCloseCommand) {
       try {
-        const { positions = [], total_positions = 0 } = await getMyPositions({ force: true });
+        const { positions = [], total_positions = 0 } = await getMyPositions({ force: true, urgent: true });
         if (total_positions === 0 || positions.length === 0) {
           await sendMessage("No open positions to close.");
+          return;
+        }
+
+        if (fastCloseCommand.closeAll) {
+          await sendMessage(`Closing all ${positions.length} open position(s) sequentially...`);
+          for (const position of positions.map((p, index) => ({ ...p, _closeIndex: index + 1 }))) {
+            await executeTelegramClose(position, "telegram close all");
+          }
+          await sendMessage("Close all command finished.");
           return;
         }
 
@@ -2867,7 +2837,7 @@ if (isTTY) {
 
     if (text === "/positions") {
       try {
-        const { positions, total_positions } = await getMyPositions({ force: true });
+        const { positions, total_positions } = await getMyPositions({ force: true, urgent: true });
         if (total_positions === 0) { await sendMessage("No open positions."); return; }
         const cur = config.management.solMode ? "◎" : "$";
         const lines = positions.map((p, i) => {
@@ -2877,7 +2847,7 @@ if (isTTY) {
           const oor = !p.in_range ? " ⚠️OOR" : "";
           return `${i + 1}. ${p.pair} | ${cur}${formatDecimal(p.total_value_usd, pnlDecimals)} | PnL: ${pnl} | fees: ${cur}${formatDecimal(p.unclaimed_fees_usd, pnlDecimals)} | ${age}${oor}`;
         });
-        await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /set <n> <note> to set instruction`);
+        await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /close all to close all | /set <n> <note> to set instruction`);
       } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => { }); }
       return;
     }
@@ -2886,7 +2856,7 @@ if (isTTY) {
     if (closeMatch) {
       try {
         const idx = parseInt(closeMatch[1]) - 1;
-        const { positions } = await getMyPositions({ force: true });
+        const { positions } = await getMyPositions({ force: true, urgent: true });
         if (idx < 0 || idx >= positions.length) { await sendMessage(`Invalid number. Use /positions first.`); return; }
         const pos = positions[idx];
         await executeTelegramClose(pos, "telegram /close number");

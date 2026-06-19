@@ -30,6 +30,7 @@ import { normalizeMint } from "./wallet.js";
 import {
   calculateMeteoraPositionPnl,
   calculatePnl,
+  fetchLPAgentWalletPnl,
   fetchJupiterPrices,
   fetchMeteoraPoolPnl,
   fetchMeteoraPortfolio,
@@ -586,6 +587,7 @@ const _pnlCostBasis = new Map();
 const _closingPositions = new Set();
 const _deployingPositions = new Set();
 const _pnlPendingReasons = new Map();
+const _lpAgentPnlCache = new Map();
 
 const PNL_DEPOSIT_TOLERANCE_PCT = 1;
 
@@ -715,6 +717,28 @@ async function fetchClosedPnlForPosition(poolAddress, positionAddress, walletAdd
   }
 }
 
+async function fetchLPAgentClosedPnlForPosition(positionAddress, walletAddress, { urgent = true } = {}) {
+  try {
+    const lpAgentMap = await fetchLPAgentPnlMap(walletAddress, { urgent });
+    const entry = lpAgentMap.get(positionAddress);
+    if (!entry) return null;
+    return {
+      pnl_sol: numberOrNull(entry.pnlSol),
+      pnl_pct: numberOrNull(entry.pnlPct),
+      pnl_usd: numberOrNull(entry.pnlUsd),
+      fees_earned_sol: null,
+      fees_earned_usd: numberOrNull(entry.feesCollected),
+      final_value_usd: numberOrNull(entry.currentValue),
+      initial_value_usd: null,
+      pnl_source: "lpagent_fallback",
+      pnl_trusted: true,
+    };
+  } catch (error) {
+    log("close_warn", `LPAgent closed PnL fallback failed for ${positionAddress}: ${error.message}`);
+    return null;
+  }
+}
+
 async function recordExternalClose(tracked, walletAddress) {
   const snapshot = tracked.last_snapshot || {};
   let closedPnl = null;
@@ -737,6 +761,9 @@ async function recordExternalClose(tracked, walletAddress) {
   } else {
     closedPnl = await fetchClosedPnlForPosition(tracked.pool, tracked.position, walletAddress);
     if (closedPnl) closedPnl.pnl_source = "meteora_closed_api";
+    if (!closedPnl) {
+      closedPnl = await fetchLPAgentClosedPnlForPosition(tracked.position, walletAddress, { urgent: true });
+    }
   }
   const performance = buildManualClosePerformance(tracked, closedPnl);
 
@@ -777,7 +804,10 @@ async function refreshPnlDiscovery(walletAddress, { force = false } = {}) {
   const portfolio = await fetchMeteoraPortfolio(walletAddress);
   const pools = Array.isArray(portfolio?.pools) ? portfolio.pools : [];
   const fallbackMaps = await Promise.all(
-    pools.map((pool) => fetchMeteoraPoolPnl(pool.poolAddress, walletAddress))
+    pools.map((pool) => fetchMeteoraPoolPnl(pool.poolAddress, walletAddress).catch((error) => {
+      log("pnl_api", `Meteora cost basis fetch failed for ${pool.poolAddress.slice(0, 8)}: ${error.message}`);
+      return new Map();
+    }))
   );
 
   for (let index = 0; index < pools.length; index++) {
@@ -785,7 +815,10 @@ async function refreshPnlDiscovery(walletAddress, { force = false } = {}) {
     const fallbackMap = fallbackMaps[index];
     for (const positionAddress of pool.listPositions || []) {
       const raw = fallbackMap.get(positionAddress);
-      if (!raw) throw new Error(`Meteora cost basis missing for ${positionAddress}`);
+      if (!raw) {
+        log("pnl_api", `Meteora cost basis missing for ${positionAddress}`);
+        continue;
+      }
       const previous = _pnlCostBasis.get(positionAddress);
       _pnlCostBasis.set(positionAddress, {
         poolAddress: pool.poolAddress,
@@ -887,6 +920,97 @@ function fallbackPosition(pool, positionAddress, raw) {
     minutes_out_of_range: minutesOutOfRange(positionAddress),
     instruction: tracked?.instruction ?? null,
   }, raw);
+}
+
+function unknownPnlPosition(pool, positionAddress, reason) {
+  const tracked = getTrackedPosition(positionAddress);
+  return {
+    position: positionAddress,
+    pool: pool.poolAddress,
+    pair: tracked?.pool_name || `${pool.tokenX}/${pool.tokenY}`,
+    base_mint: pool.tokenXMint,
+    lower_bin: tracked?.bin_range?.min ?? null,
+    upper_bin: tracked?.bin_range?.max ?? null,
+    active_bin: tracked?.bin_range?.active ?? null,
+    strategy: tracked?.strategy ?? null,
+    in_range: !(pool.outOfRange || pool.positionsOutOfRange?.includes(positionAddress)),
+    unclaimed_fees_usd: 0,
+    total_value_usd: null,
+    total_value_true_usd: null,
+    collected_fees_usd: 0,
+    collected_fees_true_usd: 0,
+    pnl_usd: null,
+    pnl_true_usd: null,
+    pnl_sol: null,
+    pnl_pct: null,
+    pnl_source: "unknown",
+    pnl_trusted: false,
+    pnl_pending_reason: reason,
+    unclaimed_fees_true_usd: 0,
+    fees_earned_sol: null,
+    fee_per_tvl_24h: null,
+    age_minutes: tracked?.deployed_at
+      ? Math.floor((Date.now() - new Date(tracked.deployed_at).getTime()) / 60000)
+      : null,
+    minutes_out_of_range: minutesOutOfRange(positionAddress),
+    instruction: tracked?.instruction ?? null,
+  };
+}
+
+function applyLpAgentPnl(position, lpAgentPnl) {
+  if (!lpAgentPnl) return position;
+  const pnlPct = numberOrNull(lpAgentPnl.pnlPct);
+  const pnlUsd = numberOrNull(lpAgentPnl.pnlUsd);
+  const pnlSol = numberOrNull(lpAgentPnl.pnlSol);
+  if (pnlPct == null && pnlUsd == null && pnlSol == null) return position;
+
+  const tracked = getTrackedPosition(position.position);
+  const maxAbsPct = 500;
+  if (pnlPct != null && Math.abs(pnlPct) > maxAbsPct) {
+    log("positions_warn", `Rejected implausible LPAgent PnL for ${position.pair}: ${pnlPct}%`);
+    return position;
+  }
+
+  position.pnl_source = "lpagent_fallback";
+  position.pnl_trusted = true;
+  position.pnl_pending_reason = null;
+  if (pnlPct != null) position.pnl_pct = roundOrNull(pnlPct, 4);
+  if (pnlUsd != null) {
+    position.pnl_true_usd = pnlUsd;
+    if (!config.management.solMode) position.pnl_usd = pnlUsd;
+  }
+  if (pnlSol != null) {
+    position.pnl_sol = pnlSol;
+    if (config.management.solMode) position.pnl_usd = pnlSol;
+  } else if (config.management.solMode && pnlPct != null && tracked?.amount_sol) {
+    position.pnl_sol = tracked.amount_sol * (pnlPct / 100);
+    position.pnl_usd = position.pnl_sol;
+  }
+  if (lpAgentPnl.currentValue != null && Number.isFinite(Number(lpAgentPnl.currentValue))) {
+    position.total_value_true_usd = Number(lpAgentPnl.currentValue);
+    if (!config.management.solMode) position.total_value_usd = Number(lpAgentPnl.currentValue);
+  }
+  if (lpAgentPnl.feesCollected != null && Number.isFinite(Number(lpAgentPnl.feesCollected))) {
+    position.collected_fees_true_usd = Number(lpAgentPnl.feesCollected);
+    if (!config.management.solMode) position.collected_fees_usd = Number(lpAgentPnl.feesCollected);
+  }
+  return position;
+}
+
+async function fetchLPAgentPnlMap(walletAddress, { urgent = false } = {}) {
+  const ttl = Math.max(1_000, Number(
+    urgent
+      ? config.schedule.lpAgentPnlUrgentTtlMs
+      : config.schedule.lpAgentPnlNormalTtlMs
+  ) || (urgent ? 15_000 : 30_000));
+  const cacheKey = walletAddress;
+  const cached = _lpAgentPnlCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < ttl) return cached.map;
+
+  const walletPnl = await fetchLPAgentWalletPnl(walletAddress);
+  const map = new Map((walletPnl.positions || []).map((position) => [position.positionAddress, position]));
+  _lpAgentPnlCache.set(cacheKey, { at: Date.now(), map });
+  return map;
 }
 
 async function fetchOnChainPoolPositions(poolMeta, priceMap) {
@@ -1021,7 +1145,7 @@ export async function getPositionPnl({ pool_address, position_address }) {
 }
 
 // ─── Get My Positions ──────────────────────────────────────────
-export async function getMyPositions({ force = false, silent = false, liveOnly = false } = {}) {
+export async function getMyPositions({ force = false, silent = false, liveOnly = false, urgent = false } = {}) {
   if (!force && !liveOnly && _positionsCache && Date.now() - _positionsCacheAt < POSITIONS_CACHE_TTL) {
     return _positionsCache;
   }
@@ -1064,17 +1188,36 @@ export async function getMyPositions({ force = false, silent = false, liveOnly =
           return await fetchOnChainPoolPositions(poolMeta, priceMap);
         } catch (error) {
           log("pnl_rpc_fallback", `${poolMeta.poolAddress.slice(0, 8)}: ${error.message}`);
-          const latest = await fetchMeteoraPoolPnl(poolMeta.poolAddress, walletAddress);
-          return (poolMeta.listPositions || []).map((positionAddress) => {
-            const raw = latest.get(positionAddress);
-            if (!raw) throw new Error(`Fallback PnL missing for ${positionAddress}`);
-            _pnlCostBasis.set(positionAddress, {
-              poolAddress: poolMeta.poolAddress,
-              raw,
-              signature: _pnlCostBasis.get(positionAddress)?.signature ?? null,
+          let meteoraError = null;
+          try {
+            const latest = await fetchMeteoraPoolPnl(poolMeta.poolAddress, walletAddress);
+            return (poolMeta.listPositions || []).map((positionAddress) => {
+              const raw = latest.get(positionAddress);
+              if (!raw) throw new Error(`Fallback PnL missing for ${positionAddress}`);
+              _pnlCostBasis.set(positionAddress, {
+                poolAddress: poolMeta.poolAddress,
+                raw,
+                signature: _pnlCostBasis.get(positionAddress)?.signature ?? null,
+              });
+              return fallbackPosition(poolMeta, positionAddress, raw);
             });
-            return fallbackPosition(poolMeta, positionAddress, raw);
-          });
+          } catch (fallbackError) {
+            meteoraError = fallbackError;
+            log("pnl_lpagent_fallback", `${poolMeta.poolAddress.slice(0, 8)}: Meteora fallback failed: ${fallbackError.message}`);
+          }
+
+          try {
+            const lpAgentMap = await fetchLPAgentPnlMap(walletAddress, { urgent });
+            return (poolMeta.listPositions || []).map((positionAddress) => {
+              const base = unknownPnlPosition(poolMeta, positionAddress, meteoraError?.message || error.message);
+              return applyLpAgentPnl(base, lpAgentMap.get(positionAddress));
+            });
+          } catch (lpAgentError) {
+            log("pnl_unknown", `${poolMeta.poolAddress.slice(0, 8)}: LPAgent fallback failed: ${lpAgentError.message}`);
+            return (poolMeta.listPositions || []).map((positionAddress) =>
+              unknownPnlPosition(poolMeta, positionAddress, lpAgentError.message)
+            );
+          }
         }
       }));
 
@@ -1562,6 +1705,11 @@ export async function closePosition({ position_address, reason }) {
     let closedConfirmed = false;
     for (let attempt = 0; attempt < 8; attempt++) {
       try {
+        const accountInfo = await getConnection().getAccountInfo(positionPubKey);
+        if (!accountInfo) {
+          closedConfirmed = true;
+          break;
+        }
         const refreshed = await getMyPositions({ force: true, silent: true });
         const stillOpen = refreshed?.positions?.some((p) => p.position === position_address);
         if (!stillOpen) {
@@ -1609,13 +1757,13 @@ export async function closePosition({ position_address, reason }) {
         preClosePnl?.pnl_trusted !== false
         ? preClosePnl
         : null;
-      let pnlUsd = rpcSnapshot?.pnl_true_usd ?? rpcSnapshot?.pnl_usd ?? 0;
-      let pnlPct = rpcSnapshot?.pnl_pct ?? 0;
-      let finalValueUsd = rpcSnapshot?.total_value_true_usd ?? rpcSnapshot?.total_value_usd ?? 0;
-      let initialUsd = tracked.initial_value_usd || 0;
+      let pnlUsd = rpcSnapshot?.pnl_true_usd ?? rpcSnapshot?.pnl_usd ?? null;
+      let pnlPct = rpcSnapshot?.pnl_pct ?? null;
+      let finalValueUsd = rpcSnapshot?.total_value_true_usd ?? rpcSnapshot?.total_value_usd ?? null;
+      let initialUsd = tracked.initial_value_usd ?? null;
       let feesUsd = rpcSnapshot
         ? (rpcSnapshot.collected_fees_true_usd || 0) + (rpcSnapshot.unclaimed_fees_true_usd || 0)
-        : tracked.total_fees_claimed_usd || 0;
+        : tracked.total_fees_claimed_usd ?? null;
       let pnlSol = rpcSnapshot?.pnl_sol ?? null;
       let feesSol = rpcSnapshot?.fees_earned_sol ?? null;
       let pnlSource = rpcSnapshot ? "rpc" : null;
@@ -1629,19 +1777,22 @@ export async function closePosition({ position_address, reason }) {
             const data = await res.json();
             posEntry = (data.positions || []).find(p => p.positionAddress === position_address);
             if (posEntry) {
-              pnlSol        = parseFloat(posEntry.pnlSol ?? 0);
-              feesSol       = parseFloat(posEntry.allTimeFees?.total?.sol ?? 0);
-              pnlUsd        = parseFloat(posEntry.pnlUsd || 0);
+              pnlSol        = numberOrNull(posEntry.pnlSol);
+              feesSol       = numberOrNull(posEntry.allTimeFees?.total?.sol);
+              pnlUsd        = numberOrNull(posEntry.pnlUsd);
               pnlPct        = config.management.solMode
-                ? parseFloat(posEntry.pnlSolPctChange ?? posEntry.pnlPctChange ?? 0)
-                : parseFloat(posEntry.pnlPctChange ?? 0);
-              finalValueUsd = parseFloat(posEntry.allTimeWithdrawals?.total?.usd || 0);
-              initialUsd    = parseFloat(posEntry.allTimeDeposits?.total?.usd || 0);
-              feesUsd       = parseFloat(posEntry.allTimeFees?.total?.usd || 0) || feesUsd;
-              pnlSource     = "meteora_closed_api";
-              pnlTrusted    = true;
-              log("close", `Closed PnL API fallback: pnl=${pnlUsd.toFixed(2)} USD (${pnlPct.toFixed(2)}%), withdrawn=${finalValueUsd.toFixed(2)}, deposited=${initialUsd.toFixed(2)}`);
-              break;
+                ? numberOrNull(posEntry.pnlSolPctChange ?? posEntry.pnlPctChange)
+                : numberOrNull(posEntry.pnlPctChange);
+              finalValueUsd = numberOrNull(posEntry.allTimeWithdrawals?.total?.usd);
+              initialUsd    = numberOrNull(posEntry.allTimeDeposits?.total?.usd);
+              feesUsd       = numberOrNull(posEntry.allTimeFees?.total?.usd) ?? feesUsd;
+              pnlSource     = (pnlSol != null || pnlUsd != null || pnlPct != null)
+                ? "meteora_closed_api"
+                : null;
+              pnlTrusted    = pnlSource != null;
+              log("close", `Closed PnL API fallback: pnl=${pnlUsd ?? "?"} USD (${pnlPct ?? "?"}%), withdrawn=${finalValueUsd ?? "?"}, deposited=${initialUsd ?? "?"}`);
+              if (pnlSource) break;
+              log("close_warn", `Closed PnL retry ${retry + 1}/3: Meteora entry had no usable PnL`);
             }
             log("close_warn", `Closed PnL retry ${retry + 1}/3: position not settled yet`);
           }
@@ -1651,25 +1802,43 @@ export async function closePosition({ position_address, reason }) {
         if (retry < 2) await new Promise(r => setTimeout(r, 2000));
       }
       // Fallback to pre-close cache snapshot if closed API had no data
-      if (finalValueUsd === 0) {
+      if (finalValueUsd == null || finalValueUsd === 0) {
         const cachedPos = preClosePnl || _positionsCache?.positions?.find(p => p.position === position_address);
         if (cachedPos) {
-          pnlUsd        = cachedPos.pnl_true_usd ?? cachedPos.pnl_usd ?? 0;
-          pnlPct        = cachedPos.pnl_pct   ?? 0;
+          pnlUsd        = cachedPos.pnl_true_usd ?? cachedPos.pnl_usd ?? null;
+          pnlPct        = cachedPos.pnl_pct   ?? null;
           feesUsd       = (cachedPos.collected_fees_true_usd || 0) + (cachedPos.unclaimed_fees_true_usd || 0);
-          initialUsd    = tracked.initial_value_usd || 0;
-          pnlSol        = cachedPos.pnl_sol ?? (tracked.amount_sol ? tracked.amount_sol * (pnlPct / 100) : 0);
-          feesSol       = cachedPos.fees_earned_sol ?? 0;
-          pnlSource     = cachedPos.pnl_source || "last_open_snapshot";
-          pnlTrusted    = cachedPos.pnl_trusted !== false;
-          if (initialUsd > 0) {
+          initialUsd    = tracked.initial_value_usd ?? null;
+          pnlSol        = cachedPos.pnl_sol ?? (tracked.amount_sol && pnlPct != null ? tracked.amount_sol * (pnlPct / 100) : null);
+          feesSol       = cachedPos.fees_earned_sol ?? null;
+          pnlSource     = (pnlUsd != null || pnlPct != null || pnlSol != null)
+            ? (cachedPos.pnl_source || "last_open_snapshot")
+            : null;
+          pnlTrusted    = pnlSource != null && cachedPos.pnl_trusted !== false;
+          if (initialUsd > 0 && pnlUsd != null) {
             finalValueUsd = Math.max(0, initialUsd + pnlUsd - feesUsd);
             pnlPct = (pnlUsd / initialUsd) * 100;
           } else {
-            finalValueUsd = cachedPos.total_value_true_usd ?? cachedPos.total_value_usd ?? 0;
-            initialUsd = Math.max(0, finalValueUsd + feesUsd - pnlUsd);
+            finalValueUsd = cachedPos.total_value_true_usd ?? cachedPos.total_value_usd ?? null;
+            if (finalValueUsd != null && pnlUsd != null) {
+              initialUsd = Math.max(0, finalValueUsd + (feesUsd || 0) - pnlUsd);
+            }
           }
           log("close_warn", `Using cached PnL fallback because canonical RPC data was unavailable`);
+        }
+      }
+      if (!pnlSource) {
+        const lpAgentClosed = await fetchLPAgentClosedPnlForPosition(position_address, wallet.publicKey.toString(), { urgent: true });
+        if (lpAgentClosed) {
+          pnlUsd = lpAgentClosed.pnl_usd;
+          pnlPct = lpAgentClosed.pnl_pct;
+          pnlSol = lpAgentClosed.pnl_sol ?? (tracked.amount_sol && pnlPct != null ? tracked.amount_sol * (pnlPct / 100) : null);
+          feesUsd = lpAgentClosed.fees_earned_usd;
+          feesSol = lpAgentClosed.fees_earned_sol;
+          finalValueUsd = lpAgentClosed.final_value_usd;
+          initialUsd = tracked.initial_value_usd ?? lpAgentClosed.initial_value_usd;
+          pnlSource = "lpagent_fallback";
+          pnlTrusted = true;
         }
       }
 

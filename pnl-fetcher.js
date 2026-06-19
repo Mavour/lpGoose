@@ -155,8 +155,95 @@ export async function fetchJupiterPrices(mints) {
   return new Map(rows.map((row) => [row.id, pnlNumber(row.usdPrice, null)]));
 }
 
+function firstFinite(...values) {
+  for (const value of values) {
+    const number = Number.parseFloat(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
+}
+
+function unwrapLpAgentRows(payload) {
+  const candidates = [
+    payload?.positions,
+    payload?.data?.positions,
+    payload?.data?.tokenPositions,
+    payload?.data,
+    payload?.wallet?.positions,
+    payload,
+  ];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate;
+  }
+  return [];
+}
+
+function normalizeLpAgentPnlRow(row) {
+  const positionAddress =
+    row?.positionAddress ||
+    row?.position_address ||
+    row?.address ||
+    row?.position ||
+    row?.pubkey;
+  if (!positionAddress) return null;
+
+  return {
+    positionAddress,
+    pnlPct: firstFinite(
+      row?.pnlPct,
+      row?.pnl_pct,
+      row?.pnlPercentage,
+      row?.pnl_percentage,
+      row?.pnlSolPctChange,
+      row?.pnlPctChange,
+      row?.pnl?.percent,
+      row?.pnl?.percentage
+    ),
+    pnlUsd: firstFinite(
+      row?.pnlUsd,
+      row?.pnl_usd,
+      row?.totalPnl,
+      row?.total_pnl,
+      row?.pnl?.usd,
+      row?.pnl?.value
+    ),
+    pnlSol: firstFinite(row?.pnlSol, row?.pnl_sol),
+    currentValue: firstFinite(
+      row?.currentValue,
+      row?.current_value,
+      row?.currentValueUsd,
+      row?.current_value_usd,
+      row?.valueUsd,
+      row?.value_usd
+    ),
+    feesCollected: firstFinite(
+      row?.feesCollected,
+      row?.fees_collected,
+      row?.allTimeFeesUsd,
+      row?.all_time_fees_usd,
+      row?.allTimeFees?.total?.usd
+    ),
+    raw: row,
+  };
+}
+
+export async function fetchLPAgentWalletPnl(walletAddress) {
+  const apiKey = getLpAgentKey();
+  if (!apiKey) throw new Error("LPAgent API key missing");
+
+  const payload = await fetchJsonWithOneRetry(
+    `${LPAGENT_BASE_URL}/wallets/${encodeURIComponent(walletAddress)}/pnl`,
+    { headers: { "x-api-key": apiKey } },
+    `LPAgent wallet PnL ${walletAddress}`
+  );
+  const positions = unwrapLpAgentRows(payload)
+    .map(normalizeLpAgentPnlRow)
+    .filter(Boolean);
+  return { source: "lpagent", positions, raw: payload };
+}
+
 /**
- * LPAgent remains available only for the premium top-LPers feature.
+ * LPAgent top-LPers uses the same premium API key as the PnL fallback.
  */
 export async function getPoolTopLpers(poolAddress, limit = 10) {
   const apiKey = getLpAgentKey();
