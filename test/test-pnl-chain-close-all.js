@@ -70,6 +70,9 @@ const dlmmSource = fs.readFileSync("./tools/dlmm.js", "utf8");
 assert.match(dlmmSource, /pnl_source:\s+"unknown"/);
 assert.match(dlmmSource, /pnl_source = "lpagent_fallback"/);
 assert.match(dlmmSource, /fetchLPAgentPnlMap\(walletAddress, \{ urgent \}\)/);
+assert.match(dlmmSource, /function needsLpAgentFallback\(position\)/);
+assert.match(dlmmSource, /if \(!meteoraPositions\.some\(needsLpAgentFallback\)\)/);
+assert.match(dlmmSource, /needsLpAgentFallback\(position\)\s*\?\s*applyLpAgentPnl\(position, lpAgentMap\.get\(position\.position\)\)/);
 assert.doesNotMatch(dlmmSource, /pnlPct \?\? 0/);
 
 console.log("PnL chain and close-all tests passed");

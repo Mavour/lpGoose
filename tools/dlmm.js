@@ -997,6 +997,16 @@ function applyLpAgentPnl(position, lpAgentPnl) {
   return position;
 }
 
+function needsLpAgentFallback(position) {
+  return position?.pnl_trusted === false ||
+    (
+      position?.pnl_pct == null &&
+      position?.pnl_sol == null &&
+      position?.pnl_true_usd == null &&
+      position?.pnl_usd == null
+    );
+}
+
 async function fetchLPAgentPnlMap(walletAddress, { urgent = false } = {}) {
   const ttl = Math.max(1_000, Number(
     urgent
@@ -1191,7 +1201,7 @@ export async function getMyPositions({ force = false, silent = false, liveOnly =
           let meteoraError = null;
           try {
             const latest = await fetchMeteoraPoolPnl(poolMeta.poolAddress, walletAddress);
-            return (poolMeta.listPositions || []).map((positionAddress) => {
+            const meteoraPositions = (poolMeta.listPositions || []).map((positionAddress) => {
               const raw = latest.get(positionAddress);
               if (!raw) throw new Error(`Fallback PnL missing for ${positionAddress}`);
               _pnlCostBasis.set(positionAddress, {
@@ -1201,6 +1211,22 @@ export async function getMyPositions({ force = false, silent = false, liveOnly =
               });
               return fallbackPosition(poolMeta, positionAddress, raw);
             });
+
+            if (!meteoraPositions.some(needsLpAgentFallback)) {
+              return meteoraPositions;
+            }
+
+            try {
+              const lpAgentMap = await fetchLPAgentPnlMap(walletAddress, { urgent });
+              return meteoraPositions.map((position) =>
+                needsLpAgentFallback(position)
+                  ? applyLpAgentPnl(position, lpAgentMap.get(position.position))
+                  : position
+              );
+            } catch (lpAgentError) {
+              log("pnl_lpagent_fallback", `${poolMeta.poolAddress.slice(0, 8)}: Meteora fallback had no trusted PnL; LPAgent fallback failed: ${lpAgentError.message}`);
+              return meteoraPositions;
+            }
           } catch (fallbackError) {
             meteoraError = fallbackError;
             log("pnl_lpagent_fallback", `${poolMeta.poolAddress.slice(0, 8)}: Meteora fallback failed: ${fallbackError.message}`);
