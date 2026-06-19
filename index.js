@@ -919,11 +919,33 @@ async function executeFastCheck(target) {
   log("telegram", `Fast check: ${target}`);
   const [tokenInfo, poolResult] = await Promise.all([
     getTokenInfo({ query: target }).catch((error) => ({ found: false, error: error.message })),
-    getPoolDetail({ pool_address: target, timeframe: config.screening.timeframe })
+    resolveFastCheckPool(target)
       .then((pool) => ({ pool }))
       .catch((error) => ({ error: error.message })),
   ]);
   return formatTokenCheckResult(target, tokenInfo, poolResult.pool, poolResult.error);
+}
+
+async function resolveFastCheckPool(target) {
+  try {
+    return await getPoolDetail({ pool_address: target, timeframe: config.screening.timeframe });
+  } catch (directError) {
+    const pools = await searchPoolsByMint(target);
+    const best = pools
+      .filter((pool) => {
+        const name = String(pool?.name || "").toUpperCase();
+        const quoteMint = pool?.mint_y || pool?.token_y?.address;
+        const quoteSymbol = String(pool?.token_y?.symbol || "").toUpperCase();
+        return name.endsWith("-SOL") ||
+          quoteMint === config.tokens.SOL ||
+          quoteSymbol === "SOL";
+      })
+      .sort((a, b) => Number(b?.tvl || b?.liquidity || 0) - Number(a?.tvl || a?.liquidity || 0))[0]
+      || pools.sort((a, b) => Number(b?.tvl || b?.liquidity || 0) - Number(a?.tvl || a?.liquidity || 0))[0];
+    const poolAddress = poolAddressOf(best);
+    if (!poolAddress) throw directError;
+    return getPoolDetail({ pool_address: poolAddress, timeframe: config.screening.timeframe });
+  }
 }
 
 async function executeTelegramClose(position, reason = "telegram fast close") {
@@ -1641,10 +1663,10 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
     const deployAmount = computeDeployAmount(currentBalance.sol);
     log("cron", `Computed deploy amount: ${deployAmount} SOL (wallet: ${currentBalance.sol} SOL)`);
 
-    // Check at most three Meteora-ranked pools sequentially and stop on the
+    // Check at most five Meteora-ranked pools sequentially and stop on the
     // first candidate that passes the expensive GMGN-backed gates.
     let candidates = [];
-    for (let rank = 0; rank < 3; rank++) {
+    for (let rank = 0; rank < 5; rank++) {
       const result = await getTopCandidates({
         limit: 1,
         evaluationLimit: 1,

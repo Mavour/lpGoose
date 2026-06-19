@@ -843,6 +843,24 @@ export async function getTopCandidates({
           });
         }
 
+        const minMomentumScore = config.screening.minMomentumScore;
+        const momentumScore = numberOrNull(momentum.score);
+        if (
+          minMomentumScore != null &&
+          (momentumScore == null || momentumScore < Number(minMomentumScore))
+        ) {
+          return {
+            valid: true,
+            momentum,
+            supertrend: {
+              ...supertrend,
+              confirmed: false,
+              reason: `Momentum score ${momentumScore ?? "unavailable"} < min ${minMomentumScore}`,
+            },
+            gmgnAttempt: fetched.attempt,
+          };
+        }
+
         return {
           valid: true,
           momentum,
