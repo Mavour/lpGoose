@@ -354,7 +354,7 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   }
   if (pos.closed) return null;
 
-  if (positionData.pnl_trusted === false || pos.deploying) {
+  if ((positionData.pnl_trusted === false && positionData.pnl_exit_trusted !== true) || pos.deploying) {
     return null;
   }
 

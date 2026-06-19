@@ -179,6 +179,41 @@ try {
   assert.equal(pendingState.peak_pnl_pct, 0);
   assert.equal(pendingState.trailing_active, false);
 
+  fs.writeFileSync(statePath, JSON.stringify({
+    positions: {
+      exit_trusted_fallback: {
+        position: "exit_trusted_fallback",
+        peak_pnl_pct: 0,
+        trailing_active: false,
+        closed: false,
+        amount_sol: 0.2,
+      },
+    },
+    recentEvents: [],
+  }));
+  const guardedExit = updatePnlAndCheckExits(
+    "exit_trusted_fallback",
+    {
+      pnl_pct: 3.2,
+      pnl_trusted: false,
+      pnl_exit_trusted: true,
+      pnl_pending_reason: "indexed deposit ? SOL below expected 0.2 SOL",
+      in_range: true,
+      fee_per_tvl_24h: 0,
+    },
+    {
+      trailingTakeProfit: true,
+      trailingTriggerPct: 2,
+      trailingDropPct: 0.15,
+      stopLossPct: -5,
+      takeProfitFeePct: null,
+    }
+  );
+  assert.equal(guardedExit, null);
+  const guardedState = JSON.parse(fs.readFileSync(statePath, "utf8")).positions.exit_trusted_fallback;
+  assert.equal(guardedState.peak_pnl_pct, 3.2);
+  assert.equal(guardedState.trailing_active, true);
+
   console.log("PnL integrity tests passed");
 } finally {
   if (originalState == null) {

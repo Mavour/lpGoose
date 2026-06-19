@@ -673,13 +673,16 @@ function calculatePnlWithDepositFallback({ calculated, balance, withdrawals, cla
   const fallback = Number.parseFloat(fallbackDeposits);
   if (Number.isFinite(indexed) && indexed > 0) return calculated;
   if (!Number.isFinite(fallback) || fallback <= 0) return calculated;
-  return calculatePnl({
-    balance,
-    withdrawals,
-    claimableFees,
-    claimedFees,
-    deposits: fallback,
-  });
+  return {
+    ...calculatePnl({
+      balance,
+      withdrawals,
+      claimableFees,
+      claimedFees,
+      deposits: fallback,
+    }),
+    depositFallback: true,
+  };
 }
 
 async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
@@ -953,6 +956,7 @@ function fallbackPosition(pool, positionAddress, raw) {
     pnl_true_usd: usd.pnl,
     pnl_sol: sol.pnl,
     pnl_pct: roundOrNull(selected.pnlPct, 4),
+    pnl_exit_trusted: selected.depositFallback === true,
     pnl_source: "meteora_fallback",
     unclaimed_fees_true_usd: unclaimedUsd,
     fees_earned_sol: pnlNumber(raw?.allTimeFees?.total?.sol) + unclaimedSol,
@@ -1196,6 +1200,7 @@ async function fetchOnChainPoolPositions(poolMeta, priceMap) {
       pnl_true_usd: usdPnl.pnl,
       pnl_sol: solPnl.pnl,
       pnl_pct: roundOrNull(selected.pnlPct, 4),
+      pnl_exit_trusted: selected.depositFallback === true,
       pnl_source: "rpc",
       unclaimed_fees_true_usd: claimableUsd,
       fees_earned_sol: pnlNumber(costBasis?.allTimeFees?.total?.sol) + claimableSol,
