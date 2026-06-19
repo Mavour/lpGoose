@@ -29,6 +29,13 @@ try {
     /pnlSignatureCheckIntervalMs \?\? 60_000/,
     "position signature RPC checks must be throttled",
   );
+  assert.match(
+    dlmmSource,
+    /function calculatePnlWithDepositFallback/,
+    "PnL display must fall back to tracked deposit when Meteora has not indexed deposits",
+  );
+  assert.match(dlmmSource, /tracked\?\.expected_deposit_sol/);
+  assert.match(dlmmSource, /fallbackDeposits: expectedSol/);
 
   const indexSource = fs.readFileSync("./index.js", "utf8");
   const pollerSource = indexSource.slice(

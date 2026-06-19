@@ -659,6 +659,29 @@ function applyPnlTrust(position, raw) {
 }
 
 // ─── Fetch DLMM PnL API for all positions in a pool ────────────
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    const number = Number.parseFloat(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
+}
+
+function calculatePnlWithDepositFallback({ calculated, balance, withdrawals, claimableFees, claimedFees, indexedDeposits, fallbackDeposits }) {
+  if (Number.isFinite(calculated?.pnlPct)) return calculated;
+  const indexed = Number.parseFloat(indexedDeposits);
+  const fallback = Number.parseFloat(fallbackDeposits);
+  if (Number.isFinite(indexed) && indexed > 0) return calculated;
+  if (!Number.isFinite(fallback) || fallback <= 0) return calculated;
+  return calculatePnl({
+    balance,
+    withdrawals,
+    claimableFees,
+    claimedFees,
+    deposits: fallback,
+  });
+}
+
 async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
   const url = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${walletAddress}&status=open&pageSize=100&page=1`;
   try {
@@ -873,15 +896,39 @@ async function refreshChangedCostBasis(discovery, walletAddress) {
 
 function fallbackPosition(pool, positionAddress, raw) {
   const tracked = getTrackedPosition(positionAddress);
-  const usd = calculateMeteoraPositionPnl(raw, "usd");
-  const sol = calculateMeteoraPositionPnl(raw, "sol");
-  const selected = config.management.solMode ? sol : usd;
   const unclaimedUsd =
     pnlNumber(raw?.unrealizedPnl?.unclaimedFeeTokenX?.usd) +
     pnlNumber(raw?.unrealizedPnl?.unclaimedFeeTokenY?.usd);
   const unclaimedSol =
     pnlNumber(raw?.unrealizedPnl?.unclaimedFeeTokenX?.amountSol) +
     pnlNumber(raw?.unrealizedPnl?.unclaimedFeeTokenY?.amountSol);
+  const expectedSol = firstFiniteNumber(
+    tracked?.expected_deposit_sol,
+    tracked?.amount_sol,
+    tracked?.requested_deposit_sol
+  );
+  const expectedUsd = firstFiniteNumber(tracked?.initial_value_usd);
+  const rawUsd = calculateMeteoraPositionPnl(raw, "usd");
+  const rawSol = calculateMeteoraPositionPnl(raw, "sol");
+  const usd = calculatePnlWithDepositFallback({
+    calculated: rawUsd,
+    balance: raw?.unrealizedPnl?.balances,
+    withdrawals: raw?.allTimeWithdrawals?.total?.usd,
+    claimableFees: unclaimedUsd,
+    claimedFees: raw?.allTimeFees?.total?.usd,
+    indexedDeposits: raw?.allTimeDeposits?.total?.usd,
+    fallbackDeposits: expectedUsd,
+  });
+  const sol = calculatePnlWithDepositFallback({
+    calculated: rawSol,
+    balance: raw?.unrealizedPnl?.balancesSol,
+    withdrawals: raw?.allTimeWithdrawals?.total?.sol,
+    claimableFees: unclaimedSol,
+    claimedFees: raw?.allTimeFees?.total?.sol,
+    indexedDeposits: raw?.allTimeDeposits?.total?.sol,
+    fallbackDeposits: expectedSol,
+  });
+  const selected = config.management.solMode ? sol : usd;
 
   return applyPnlTrust({
     position: positionAddress,
@@ -1062,6 +1109,7 @@ async function fetchOnChainPoolPositions(poolMeta, priceMap) {
     const positionAddress = positionAddresses[index];
     const costBasis = _pnlCostBasis.get(positionAddress)?.raw;
     if (!costBasis) throw new Error(`Cost basis unavailable for ${positionAddress}`);
+    const tracked = getTrackedPosition(positionAddress);
 
     const data = position.positionData;
     if (!data.rewardOne.isZero() || !data.rewardTwo.isZero()) {
@@ -1074,12 +1122,26 @@ async function fetchOnChainPoolPositions(poolMeta, priceMap) {
     const feeY = pnlNumber(data.feeY) / (10 ** tokenYDecimals);
     const balanceSol = amountX * tokenXPriceSol + amountY;
     const claimableSol = feeX * tokenXPriceSol + feeY;
-    const solPnl = calculatePnl({
+    const expectedSol = firstFiniteNumber(
+      tracked?.expected_deposit_sol,
+      tracked?.amount_sol,
+      tracked?.requested_deposit_sol
+    );
+    const rawSolPnl = calculatePnl({
       balance: balanceSol,
       withdrawals: costBasis?.allTimeWithdrawals?.total?.sol,
       claimableFees: claimableSol,
       claimedFees: costBasis?.allTimeFees?.total?.sol,
       deposits: costBasis?.allTimeDeposits?.total?.sol,
+    });
+    const solPnl = calculatePnlWithDepositFallback({
+      calculated: rawSolPnl,
+      balance: balanceSol,
+      withdrawals: costBasis?.allTimeWithdrawals?.total?.sol,
+      claimableFees: claimableSol,
+      claimedFees: costBasis?.allTimeFees?.total?.sol,
+      indexedDeposits: costBasis?.allTimeDeposits?.total?.sol,
+      fallbackDeposits: expectedSol,
     });
 
     if (!Number.isFinite(tokenXPriceUsd) || !Number.isFinite(solPriceUsd)) {
@@ -1087,19 +1149,31 @@ async function fetchOnChainPoolPositions(poolMeta, priceMap) {
     }
     const balanceUsd = amountX * tokenXPriceUsd + amountY * solPriceUsd;
     const claimableUsd = feeX * tokenXPriceUsd + feeY * solPriceUsd;
-    const usdPnl = calculatePnl({
+    const expectedUsd = firstFiniteNumber(
+      tracked?.initial_value_usd,
+      expectedSol != null && Number.isFinite(solPriceUsd) ? expectedSol * solPriceUsd : null
+    );
+    const rawUsdPnl = calculatePnl({
       balance: balanceUsd,
       withdrawals: costBasis?.allTimeWithdrawals?.total?.usd,
       claimableFees: claimableUsd,
       claimedFees: costBasis?.allTimeFees?.total?.usd,
       deposits: costBasis?.allTimeDeposits?.total?.usd,
     });
+    const usdPnl = calculatePnlWithDepositFallback({
+      calculated: rawUsdPnl,
+      balance: balanceUsd,
+      withdrawals: costBasis?.allTimeWithdrawals?.total?.usd,
+      claimableFees: claimableUsd,
+      claimedFees: costBasis?.allTimeFees?.total?.usd,
+      indexedDeposits: costBasis?.allTimeDeposits?.total?.usd,
+      fallbackDeposits: expectedUsd,
+    });
     const selected = config.management.solMode ? solPnl : usdPnl;
     if (!Number.isFinite(selected.pnlPct)) {
       throw new Error(`Invalid on-chain PnL for ${positionAddress}`);
     }
 
-    const tracked = getTrackedPosition(positionAddress);
     const inRange = activeBin.binId >= data.lowerBinId && activeBin.binId <= data.upperBinId;
     return applyPnlTrust({
       position: positionAddress,
