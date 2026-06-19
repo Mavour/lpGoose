@@ -40,6 +40,7 @@ import {
   formatMomentumLog,
   validateMomentumCandles,
 } from "./tools/momentum.js";
+import { evaluateWhaleExit, selectAdaptivePnlPollIntervalMs } from "./tools/polling.js";
 import { getGmgnPoolFees } from "./tools/gmgn.js";
 import {
   addToBlacklist,
@@ -114,6 +115,7 @@ let _screeningBusy = false;  // prevents overlapping screening cycles
 let _screeningLastTriggered = 0; // epoch ms — prevents management from spamming screening
 const _autoCloseCoordinator = new PositionCloseCoordinator();
 const _supertrendWarningCandles = new Map();
+const _whaleGuardCheckedAt = new Map();
 const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 /** Strip <think>...</think> reasoning blocks that some models leak into output */
@@ -344,24 +346,21 @@ async function evaluateDangerDrawdownExit(position) {
 async function evaluateAutoExit(position) {
   if (config.management.whaleGuardEnabled) {
     try {
-      const poolUrl = `https://pool-discovery-api.datapi.meteora.ag/pools?page_size=1&filter_by=${encodeURIComponent(`pool_address=${position.pool}`)}&timeframe=5m`;
-      const poolRes = await fetch(poolUrl);
-      if (poolRes.ok) {
-        const poolData = await poolRes.json();
-        const poolDetail = (poolData.data || [])[0];
-        if (poolDetail) {
-          const currentTvl = poolDetail.active_tvl ?? poolDetail.tvl ?? 0;
-          const previous = getPoolTvl(position.pool);
-          updatePoolTvl(position.pool, currentTvl);
-          if (previous) {
-            const dropUsd = previous.tvl - currentTvl;
-            const dropPct = previous.tvl > 0 ? (dropUsd / previous.tvl) * 100 : 0;
-            if (dropUsd >= config.management.whaleGuardMinDropUsd || dropPct >= config.management.whaleGuardMinDropPct) {
-              return {
-                action: "WHALE_EXIT",
-                reason: `Whale exit: TVL dropped $${dropUsd.toFixed(0)} (${dropPct.toFixed(1)}%)`,
-              };
-            }
+      const cooldownMs = Math.max(0, Number(config.management.whaleGuardCooldownMin ?? 30)) * 60_000;
+      const lastCheckedAt = _whaleGuardCheckedAt.get(position.pool) || 0;
+      if (Date.now() - lastCheckedAt >= cooldownMs) {
+        _whaleGuardCheckedAt.set(position.pool, Date.now());
+        const poolUrl = `https://pool-discovery-api.datapi.meteora.ag/pools?page_size=1&filter_by=${encodeURIComponent(`pool_address=${position.pool}`)}&timeframe=5m`;
+        const poolRes = await fetch(poolUrl);
+        if (poolRes.ok) {
+          const poolData = await poolRes.json();
+          const poolDetail = (poolData.data || [])[0];
+          if (poolDetail) {
+            const currentTvl = poolDetail.active_tvl ?? poolDetail.tvl ?? 0;
+            const previous = getPoolTvl(position.pool);
+            updatePoolTvl(position.pool, currentTvl);
+            const whaleExit = evaluateWhaleExit({ previous, currentTvl, position, management: config.management });
+            if (whaleExit) return whaleExit;
           }
         }
       }
@@ -1042,7 +1041,7 @@ async function maybeRunMissedBriefing() {
 
 function stopCronJobs() {
   for (const task of _cronTasks) task.stop();
-  if (_cronTasks._pnlPollInterval) clearInterval(_cronTasks._pnlPollInterval);
+  if (_cronTasks._pnlPollInterval) clearTimeout(_cronTasks._pnlPollInterval);
   if (_cronTasks._pnlSlowCheckInterval) clearInterval(_cronTasks._pnlSlowCheckInterval);
   _cronTasks = [];
 }
@@ -1888,18 +1887,44 @@ Summarize the current portfolio health, total fees earned, and performance of al
     await maybeRunMissedBriefing();
   }, { timezone: 'UTC' });
 
-  // Lightweight 30s poller — evaluates and directly executes deterministic auto-exits.
+  // Adaptive poller — evaluates and directly executes deterministic auto-exits.
   let _pnlPollBusy = false;
-  const pnlPollInterval = setInterval(async () => {
+  let _pnlPollTimer = null;
+  const pnlPollInterval = () => _pnlPollTimer;
+  // Fast floor remains config.schedule.pnlPollIntervalMs; adaptive polling only lengthens safe periods.
+  const scheduleNextPnlPoll = (delayMs) => {
+    _pnlPollTimer = setTimeout(runPnlPoll, Math.max(1_000, delayMs));
+    _pnlPollTimer.unref?.();
+    if (_cronTasks) _cronTasks._pnlPollInterval = _pnlPollTimer;
+  };
+  const runPnlPoll = async () => {
     if (_pnlPollBusy) return;
     _pnlPollBusy = true;
+    let nextDelayMs = config.schedule.pnlNoPositionPollIntervalMs;
     try {
-      if (getTrackedPositions(true).length === 0) return;
+      const trackedPositions = getTrackedPositions(true);
+      if (trackedPositions.length === 0) {
+        nextDelayMs = selectAdaptivePnlPollIntervalMs({
+          trackedPositions,
+          result: { positions: [] },
+          schedule: config.schedule,
+          management: config.management,
+          getTracked: getTrackedPosition,
+        });
+        return;
+      }
       const result = await getMyPositions({
         force: true,
         silent: true,
         liveOnly: true,
       }).catch(() => null);
+      nextDelayMs = selectAdaptivePnlPollIntervalMs({
+        trackedPositions,
+        result,
+        schedule: config.schedule,
+        management: config.management,
+        getTracked: getTrackedPosition,
+      });
 
       // Publish only a complete, current PnL snapshot.
       try {
@@ -1930,8 +1955,10 @@ Summarize the current portfolio health, total fees earned, and performance of al
       if (closeTasks.length > 0) await Promise.allSettled(closeTasks);
     } finally {
       _pnlPollBusy = false;
+      scheduleNextPnlPoll(nextDelayMs);
     }
-  }, Math.max(1_000, config.schedule.pnlPollIntervalMs));
+  };
+  scheduleNextPnlPoll(1_000);
 
   let _pnlSlowCheckBusy = false;
   const pnlSlowCheckInterval = setInterval(async () => {
@@ -1955,8 +1982,8 @@ Summarize the current portfolio health, total fees earned, and performance of al
   }, Math.max(3_000, config.schedule.pnlSlowCheckIntervalMs));
 
   _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog];
-  // Store interval ref so stopCronJobs can clear it
-  _cronTasks._pnlPollInterval = pnlPollInterval;
+  // Store timer refs so stopCronJobs can clear them
+  _cronTasks._pnlPollInterval = _pnlPollTimer;
   _cronTasks._pnlSlowCheckInterval = pnlSlowCheckInterval;
   log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
 }

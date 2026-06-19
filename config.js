@@ -170,8 +170,12 @@ export const config = {
     screeningIntervalMin:   u.screeningIntervalMin   ?? 30,
     healthCheckIntervalMin: u.healthCheckIntervalMin ?? 60,
     pnlPollIntervalMs:      u.pnlPollIntervalMs      ?? 3_000,
+    pnlNormalPollIntervalMs: u.pnlNormalPollIntervalMs ?? 15_000,
+    pnlNoPositionPollIntervalMs: u.pnlNoPositionPollIntervalMs ?? 60_000,
     pnlSlowCheckIntervalMs: u.pnlSlowCheckIntervalMs ?? 30_000,
     pnlSignatureCheckIntervalMs: u.pnlSignatureCheckIntervalMs ?? 60_000,
+    pnlDiscoveryTtlMs:      u.pnlDiscoveryTtlMs      ?? 120_000,
+    emptyPositionsCacheTtlMs: u.emptyPositionsCacheTtlMs ?? 120_000,
   },
 
   // ─── LLM Settings ──────────────────────

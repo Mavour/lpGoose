@@ -15,6 +15,7 @@ import {
   recordClaim,
   recordClose,
   getTrackedPosition,
+  getTrackedPositions,
   minutesOutOfRange,
   syncOpenPositions,
   updatePositionSnapshots,
@@ -34,6 +35,7 @@ import {
   fetchMeteoraPortfolio,
   pnlNumber,
 } from "../pnl-fetcher.js";
+import { instrumentConnection } from "./rpc-telemetry.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
 // @meteora-ag/dlmm → @coral-xyz/anchor uses CJS directory imports
@@ -59,7 +61,7 @@ let _wallet = null;
 
 function getConnection() {
   if (!_connection) {
-    _connection = new Connection(process.env.RPC_URL, "confirmed");
+    _connection = instrumentConnection(new Connection(process.env.RPC_URL, "confirmed"), "dlmm");
   }
   return _connection;
 }
@@ -571,7 +573,8 @@ export async function deployPosition({
 }
 
 const POSITIONS_CACHE_TTL = 5 * 60_000;
-const PNL_DISCOVERY_TTL = 30_000;
+const PNL_DISCOVERY_TTL = Math.max(30_000, config.schedule.pnlDiscoveryTtlMs ?? 120_000);
+const EMPTY_POSITIONS_CACHE_TTL = Math.max(30_000, config.schedule.emptyPositionsCacheTtlMs ?? 120_000);
 
 let _positionsCache = null;
 let _positionsCacheAt = 0;
@@ -1020,6 +1023,15 @@ export async function getPositionPnl({ pool_address, position_address }) {
 // ─── Get My Positions ──────────────────────────────────────────
 export async function getMyPositions({ force = false, silent = false, liveOnly = false } = {}) {
   if (!force && !liveOnly && _positionsCache && Date.now() - _positionsCacheAt < POSITIONS_CACHE_TTL) {
+    return _positionsCache;
+  }
+  if (
+    force &&
+    !liveOnly &&
+    _positionsCache?.total_positions === 0 &&
+    getTrackedPositions(true).length === 0 &&
+    Date.now() - _positionsCacheAt < EMPTY_POSITIONS_CACHE_TTL
+  ) {
     return _positionsCache;
   }
   if (_positionsInflight) return _positionsInflight;

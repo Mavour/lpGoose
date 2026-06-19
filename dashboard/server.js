@@ -6,6 +6,8 @@ const path = require('path');
 const PORT = process.env.PORT || 3456;
 const ROOT = path.resolve(__dirname, '..');
 const LOGS_DIR = path.join(ROOT, 'logs');
+const BALANCE_CACHE_TTL_MS = Number(process.env.DASHBOARD_BALANCE_CACHE_TTL_MS || 90_000);
+let balanceCache = { value: null, updatedAt: 0 };
 
 // load .env
 try {
@@ -328,8 +330,14 @@ function fetchRpcBalance(cb) {
 
 // ─── API: balance ─────────────────────────────────────────
 function apiBalance(req, res) {
+  if (balanceCache.value && Date.now() - balanceCache.updatedAt < BALANCE_CACHE_TTL_MS) {
+    return json(res, { ...balanceCache.value, cached: true });
+  }
   fetchRpcBalance((sol) => {
-    if (sol !== null) return json(res, { balance: +sol.toFixed(2) });
+    if (sol !== null) {
+      balanceCache = { value: { balance: +sol.toFixed(2) }, updatedAt: Date.now() };
+      return json(res, { ...balanceCache.value, cached: false });
+    }
     // fallback: last wallet line from agent log
     try {
       const files = fs.readdirSync(LOGS_DIR)
@@ -337,10 +345,14 @@ function apiBalance(req, res) {
       for (const f of files) {
         const txt = fs.readFileSync(path.join(LOGS_DIR, f), 'utf-8');
         const m = txt.match(/(?:wallet)\s*[:\s]\s*([\d.]+)\s*SOL/i);
-        if (m) return json(res, { balance: +Number(m[1]).toFixed(2) });
+        if (m) {
+          balanceCache = { value: { balance: +Number(m[1]).toFixed(2) }, updatedAt: Date.now() };
+          return json(res, { ...balanceCache.value, cached: false });
+        }
       }
     } catch {}
-    json(res, { balance: 0 });
+    balanceCache = { value: { balance: 0 }, updatedAt: Date.now() };
+    json(res, { ...balanceCache.value, cached: false });
   });
 }
 
