@@ -1015,12 +1015,31 @@ async function fetchLPAgentPnlMap(walletAddress, { urgent = false } = {}) {
   ) || (urgent ? 15_000 : 30_000));
   const cacheKey = walletAddress;
   const cached = _lpAgentPnlCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < ttl) return cached.map;
+  const now = Date.now();
+  if (cached && now - cached.at < ttl) return cached.map;
+  if (cached?.retryAfterAt && now < cached.retryAfterAt) {
+    if (cached.map?.size > 0) return cached.map;
+    const waitSeconds = Math.ceil((cached.retryAfterAt - now) / 1000);
+    throw new Error(`LPAgent fallback cooling down after ${cached.error || "rate limit"} (${waitSeconds}s)`);
+  }
 
-  const walletPnl = await fetchLPAgentWalletPnl(walletAddress);
-  const map = new Map((walletPnl.positions || []).map((position) => [position.positionAddress, position]));
-  _lpAgentPnlCache.set(cacheKey, { at: Date.now(), map });
-  return map;
+  try {
+    const walletPnl = await fetchLPAgentWalletPnl(walletAddress);
+    const map = new Map((walletPnl.positions || []).map((position) => [position.positionAddress, position]));
+    _lpAgentPnlCache.set(cacheKey, { at: now, map });
+    return map;
+  } catch (error) {
+    const backoffMs = error.status === 429
+      ? Math.max(ttl, Number(config.schedule.lpAgentPnlRateLimitBackoffMs) || 60_000)
+      : ttl;
+    _lpAgentPnlCache.set(cacheKey, {
+      at: cached?.at || 0,
+      map: cached?.map || new Map(),
+      error: error.message,
+      retryAfterAt: now + backoffMs,
+    });
+    throw error;
+  }
 }
 
 async function fetchOnChainPoolPositions(poolMeta, priceMap) {

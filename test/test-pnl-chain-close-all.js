@@ -119,11 +119,17 @@ try {
 const configSource = fs.readFileSync("./config.js", "utf8");
 assert.match(configSource, /lpAgentPnlNormalTtlMs:\s+u\.lpAgentPnlNormalTtlMs\s+\?\?\s+30_000/);
 assert.match(configSource, /lpAgentPnlUrgentTtlMs:\s+u\.lpAgentPnlUrgentTtlMs\s+\?\?\s+15_000/);
+assert.match(configSource, /lpAgentPnlRateLimitBackoffMs:\s+u\.lpAgentPnlRateLimitBackoffMs\s+\?\?\s+60_000/);
+
+const fetcherSource = fs.readFileSync("./pnl-fetcher.js", "utf8");
+assert.doesNotMatch(fetcherSource, /status === 429 \|\| status >= 500/);
 
 const dlmmSource = fs.readFileSync("./tools/dlmm.js", "utf8");
 assert.match(dlmmSource, /pnl_source:\s+"unknown"/);
 assert.match(dlmmSource, /pnl_source = "lpagent_fallback"/);
 assert.match(dlmmSource, /fetchLPAgentPnlMap\(walletAddress, \{ urgent \}\)/);
+assert.match(dlmmSource, /retryAfterAt/);
+assert.match(dlmmSource, /LPAgent fallback cooling down/);
 assert.match(dlmmSource, /function needsLpAgentFallback\(position\)/);
 assert.match(dlmmSource, /if \(!meteoraPositions\.some\(needsLpAgentFallback\)\)/);
 assert.match(dlmmSource, /needsLpAgentFallback\(position\)\s*\?\s*applyLpAgentPnl\(position, lpAgentMap\.get\(position\.position\)\)/);

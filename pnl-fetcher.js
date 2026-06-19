@@ -44,7 +44,7 @@ function logError(context, error) {
 }
 
 function isRetryableStatus(status) {
-  return status === 429 || status >= 500;
+  return status >= 500;
 }
 
 export function pnlNumber(value, fallback = 0) {

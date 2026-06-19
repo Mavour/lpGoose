@@ -177,6 +177,7 @@ export const config = {
     pnlDiscoveryTtlMs:      u.pnlDiscoveryTtlMs      ?? 120_000,
     lpAgentPnlNormalTtlMs:  u.lpAgentPnlNormalTtlMs  ?? 30_000,
     lpAgentPnlUrgentTtlMs:  u.lpAgentPnlUrgentTtlMs  ?? 15_000,
+    lpAgentPnlRateLimitBackoffMs: u.lpAgentPnlRateLimitBackoffMs ?? 60_000,
     emptyPositionsCacheTtlMs: u.emptyPositionsCacheTtlMs ?? 120_000,
   },
 
