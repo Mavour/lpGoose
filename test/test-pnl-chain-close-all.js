@@ -56,6 +56,60 @@ try {
   assert.equal(pnl.source, "lpagent");
   assert.equal(pnl.positions[0].positionAddress, "PositionOne");
   assert.equal(pnl.positions[0].pnlPct, 12.5);
+
+  const fallbackUrls = [];
+  globalThis.fetch = async (url, options) => {
+    fallbackUrls.push(String(url));
+    assert.equal(options.headers["x-api-key"], "test-key");
+    if (fallbackUrls.length === 1) {
+      return {
+        ok: false,
+        status: 404,
+        text: async () => JSON.stringify({ error: "not found" }),
+      };
+    }
+    return {
+      ok: true,
+      text: async () => JSON.stringify({
+        positions: [{
+          positionAddress: "PositionTwo",
+          pnlPct: 4.2,
+          pnlUsd: 1.1,
+        }],
+      }),
+    };
+  };
+  const fallbackPnl = await fetchLPAgentWalletPnl("WalletTwo");
+  assert.match(fallbackUrls[0], /\/wallets\/WalletTwo\/pnl$/);
+  assert.match(fallbackUrls[1], /\/wallets\/WalletTwo\/positions$/);
+  assert.equal(fallbackPnl.positions[0].positionAddress, "PositionTwo");
+  assert.equal(fallbackPnl.positions[0].pnlPct, 4.2);
+
+  const emptyFirstUrls = [];
+  globalThis.fetch = async (url) => {
+    emptyFirstUrls.push(String(url));
+    if (emptyFirstUrls.length === 1) {
+      return {
+        ok: true,
+        text: async () => JSON.stringify({ positions: [] }),
+      };
+    }
+    return {
+      ok: true,
+      text: async () => JSON.stringify({
+        positions: [{
+          positionAddress: "PositionThree",
+          pnlPct: -1.5,
+          pnlUsd: -0.7,
+        }],
+      }),
+    };
+  };
+  const emptyFirstPnl = await fetchLPAgentWalletPnl("WalletThree");
+  assert.match(emptyFirstUrls[0], /\/wallets\/WalletThree\/pnl$/);
+  assert.match(emptyFirstUrls[1], /\/wallets\/WalletThree\/positions$/);
+  assert.equal(emptyFirstPnl.positions[0].positionAddress, "PositionThree");
+  assert.equal(emptyFirstPnl.positions[0].pnlPct, -1.5);
 } finally {
   globalThis.fetch = originalFetch;
   if (originalKey == null) delete process.env.LPAGENT_API_KEY;

@@ -13,6 +13,32 @@ function getLpAgentKey() {
     .filter(Boolean)[0] || null;
 }
 
+function getLpAgentWalletPnlUrls(walletAddress) {
+  const wallet = encodeURIComponent(walletAddress);
+  const templates = (process.env.LPAGENT_WALLET_PNL_URL || "")
+    .split(",")
+    .map((url) => url.trim())
+    .filter(Boolean);
+
+  const defaults = [
+    `${LPAGENT_BASE_URL}/wallets/${wallet}/pnl`,
+    `${LPAGENT_BASE_URL}/wallets/${wallet}/positions`,
+    `${LPAGENT_BASE_URL}/wallets/${wallet}/positions/pnl`,
+    `${LPAGENT_BASE_URL}/wallet/${wallet}/pnl`,
+    `${LPAGENT_BASE_URL}/wallet/${wallet}/positions`,
+    `${LPAGENT_BASE_URL}/pnl/wallets/${wallet}`,
+    `${LPAGENT_BASE_URL}/pnl?wallet=${wallet}`,
+    `${LPAGENT_BASE_URL}/positions?wallet=${wallet}`,
+    `${LPAGENT_BASE_URL}/positions/pnl?wallet=${wallet}`,
+  ];
+
+  return [...templates, ...defaults].map((url) =>
+    url
+      .replaceAll("{wallet}", wallet)
+      .replaceAll("{walletAddress}", wallet)
+  );
+}
+
 function logError(context, error) {
   log("pnl_fetcher_warn", `${context}: ${error?.message || error}`);
 }
@@ -231,15 +257,35 @@ export async function fetchLPAgentWalletPnl(walletAddress) {
   const apiKey = getLpAgentKey();
   if (!apiKey) throw new Error("LPAgent API key missing");
 
-  const payload = await fetchJsonWithOneRetry(
-    `${LPAGENT_BASE_URL}/wallets/${encodeURIComponent(walletAddress)}/pnl`,
-    { headers: { "x-api-key": apiKey } },
-    `LPAgent wallet PnL ${walletAddress}`
-  );
-  const positions = unwrapLpAgentRows(payload)
-    .map(normalizeLpAgentPnlRow)
-    .filter(Boolean);
-  return { source: "lpagent", positions, raw: payload };
+  const urls = getLpAgentWalletPnlUrls(walletAddress);
+  let lastError = null;
+  let lastPayload = null;
+  let lastSourceUrl = null;
+  for (const url of urls) {
+    try {
+      const payload = await fetchJsonWithOneRetry(
+        url,
+        { headers: { "x-api-key": apiKey } },
+        `LPAgent wallet PnL ${walletAddress}`
+      );
+      const positions = unwrapLpAgentRows(payload)
+        .map(normalizeLpAgentPnlRow)
+        .filter(Boolean);
+      if (positions.length > 0) {
+        return { source: "lpagent", positions, url, raw: payload };
+      }
+      lastPayload = payload;
+      lastSourceUrl = url;
+    } catch (error) {
+      lastError = error;
+      if (error.status && error.status !== 404) throw error;
+    }
+  }
+  if (!lastPayload) {
+    throw new Error(`LPAgent wallet PnL unavailable: ${lastError?.message || "no endpoint returned data"}`);
+  }
+
+  return { source: "lpagent", positions: [], url: lastSourceUrl, raw: lastPayload };
 }
 
 /**
