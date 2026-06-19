@@ -645,10 +645,6 @@ function applyPnlTrust(position, raw) {
   position.indexed_deposit_sol = Number.isFinite(actualDepositSol) ? actualDepositSol : null;
   if (!trust.trusted) {
     _pnlDiscoveryAt = 0;
-    position.pnl_pct = null;
-    position.pnl_usd = null;
-    position.pnl_true_usd = null;
-    position.pnl_sol = null;
     if (_pnlPendingReasons.get(position.position) !== trust.reason) {
       _pnlPendingReasons.set(position.position, trust.reason);
       log(
@@ -1243,7 +1239,9 @@ export async function getMyPositions({ force = false, silent = false, liveOnly =
                   : position
               );
             } catch (lpAgentError) {
-              log("pnl_lpagent_fallback", `${poolMeta.poolAddress.slice(0, 8)}: Meteora fallback had no trusted PnL; LPAgent fallback failed: ${lpAgentError.message}`);
+              if (!/cooling down/i.test(lpAgentError.message)) {
+                log("pnl_lpagent_fallback", `${poolMeta.poolAddress.slice(0, 8)}: Meteora fallback had no trusted PnL; LPAgent fallback failed: ${lpAgentError.message}`);
+              }
               return meteoraPositions;
             }
           } catch (fallbackError) {

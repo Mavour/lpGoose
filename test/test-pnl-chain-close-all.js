@@ -130,6 +130,8 @@ assert.match(dlmmSource, /pnl_source = "lpagent_fallback"/);
 assert.match(dlmmSource, /fetchLPAgentPnlMap\(walletAddress, \{ urgent \}\)/);
 assert.match(dlmmSource, /retryAfterAt/);
 assert.match(dlmmSource, /LPAgent fallback cooling down/);
+assert.doesNotMatch(dlmmSource, /position\.pnl_pct = null/);
+assert.match(dlmmSource, /!\/cooling down\/i\.test\(lpAgentError\.message\)/);
 assert.match(dlmmSource, /function needsLpAgentFallback\(position\)/);
 assert.match(dlmmSource, /if \(!meteoraPositions\.some\(needsLpAgentFallback\)\)/);
 assert.match(dlmmSource, /needsLpAgentFallback\(position\)\s*\?\s*applyLpAgentPnl\(position, lpAgentMap\.get\(position\.position\)\)/);
