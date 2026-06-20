@@ -155,6 +155,26 @@ function dangerElapsedMinutes(positionAddress) {
   return Math.max(0, Math.floor((Date.now() - started) / 60_000));
 }
 
+function evaluateFastDangerHardExit(position) {
+  const currentPnlPct = Number(position.pnl_pct);
+  const tracked = getTrackedPosition(position.position);
+  if (
+    currentPnlPct <= -90 &&
+    tracked?.amount_sol &&
+    (position.total_value_usd ?? 0) > 0.01
+  ) {
+    return null;
+  }
+
+  const decision = buildDangerDrawdownDecision({
+    currentPnlPct,
+    dangerPct: Number(config.management.dangerDrawdownPct),
+    hardClosePct: Number(config.management.dangerHardClosePct),
+    graceExpired: false,
+  });
+  return decision?.action === "DANGER_DRAWDOWN" ? decision : null;
+}
+
 async function evaluateDangerDrawdownExit(position) {
   const currentPnlPct = Number(position.pnl_pct);
   const dangerPct = Number(config.management.dangerDrawdownPct);
@@ -1909,10 +1929,11 @@ Summarize the current portfolio health, total fees earned, and performance of al
       const exitResults = result.positions.map((p) =>
         updatePnlAndCheckExits(p.position, p, config.management)
       );
+      const hardDangerResults = result.positions.map((p) => evaluateFastDangerHardExit(p));
       for (let i = 0; i < result.positions.length; i++) {
         const p = result.positions[i];
         if (isAutoCloseInFlight(p.position)) continue;
-        const exit = exitResults[i];
+        const exit = hardDangerResults[i] || exitResults[i];
         const tp = getTrackedPosition(p.position);
         const trail = tp?.trailing_active ? "ON" : "OFF";
         const peak = tp?.peak_pnl_pct != null ? tp.peak_pnl_pct.toFixed(2) : "?";

@@ -82,6 +82,7 @@ export const config = {
     whaleGuardMinDropUsd:  u.whaleGuardMinDropUsd  ?? 25_000,
     whaleGuardMinDropPct:  u.whaleGuardMinDropPct  ?? 25,
     whaleGuardCooldownMin: u.whaleGuardCooldownMin ?? 30,
+    tokenCloseCooldownMinutes: u.tokenCloseCooldownMinutes ?? null,
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD
     solMode:               u.solMode               ?? false,
   },
@@ -296,6 +297,7 @@ const RUNTIME_CONFIG_FIELDS = {
     dangerGraceMinutes: ["dangerGraceMinutes", "management", "dangerGraceMinutes"],
     dangerCloseMomentumBelow: ["dangerCloseMomentumBelow", "management", "dangerCloseMomentumBelow"],
     dangerClosePriceChange5mPct: ["dangerClosePriceChange5mPct", "management", "dangerClosePriceChange5mPct"],
+    tokenCloseCooldownMinutes: ["tokenCloseCooldownMinutes", "management", "tokenCloseCooldownMinutes"],
   },
 };
 

@@ -138,9 +138,14 @@ export function setTokenCloseCooldown({
   if (!base_mint) return { saved: false, reason: "base_mint required" };
 
   const requestedDuration = duration_minutes == null ? NaN : Number(duration_minutes);
+  const normalizedReason = String(reason || "").toLowerCase();
+  const riskClose = /stop loss|danger|whale|rug|pnl -|loss/.test(normalizedReason);
+  const defaultDuration = riskClose
+    ? (Number(config.management.whaleGuardCooldownMin) || 30)
+    : (Number(config.management.tokenCloseCooldownMinutes) || Number(config.schedule.managementIntervalMin) || 1);
   const duration = Number.isFinite(requestedDuration) && requestedDuration > 0
     ? requestedDuration
-    : Math.max(1, Number(config.schedule.managementIntervalMin) || 1);
+    : Math.max(1, defaultDuration);
   const now = Date.now();
   const cooldownUntil = new Date(now + duration * 60_000).toISOString();
   const db = load();
