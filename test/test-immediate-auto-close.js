@@ -42,6 +42,8 @@ try {
   process.chdir(tempDir);
   const stateModuleUrl = pathToFileURL(path.join(repoRoot, "state.js")).href;
   const { updatePnlAndCheckExits } = await import(stateModuleUrl);
+  const dangerExitModuleUrl = pathToFileURL(path.join(repoRoot, "danger-exit.js")).href;
+  const { buildDangerDrawdownDecision } = await import(dangerExitModuleUrl);
 
   assert.equal(
     updatePnlAndCheckExits("stop", position("stop", { pnl_pct: -6 }), config)?.action,
@@ -81,6 +83,46 @@ try {
   const state = JSON.parse(fs.readFileSync(path.join(tempDir, "state.json"), "utf8"));
   assert.ok(state.positions.danger.danger_drawdown_since);
   assert.equal(state.positions.danger.min_pnl_pct, -5.2);
+  assert.equal(updatePnlAndCheckExits("danger", position("danger", { pnl_pct: -4.5 }), {
+    ...config,
+    stopLossPct: -10,
+    dangerDrawdownPct: -5,
+  }), null);
+  const recoveredState = JSON.parse(fs.readFileSync(path.join(tempDir, "state.json"), "utf8"));
+  assert.equal(recoveredState.positions.danger.danger_drawdown_since, null);
+  assert.equal(recoveredState.positions.danger.min_pnl_pct, -5.2);
+
+  assert.equal(buildDangerDrawdownDecision({
+    currentPnlPct: -5.3,
+    dangerPct: -5,
+    hardClosePct: -8,
+    graceExpired: false,
+    elapsed: 0,
+    badReasons: ["Supertrend bearish", "momentum 0 < 40"],
+  })?.action, "DANGER_HOLD");
+  assert.equal(buildDangerDrawdownDecision({
+    currentPnlPct: -8.1,
+    dangerPct: -5,
+    hardClosePct: -8,
+    graceExpired: false,
+    badReasons: ["Supertrend bearish"],
+  })?.action, "DANGER_DRAWDOWN");
+  assert.equal(buildDangerDrawdownDecision({
+    currentPnlPct: -5.3,
+    dangerPct: -5,
+    hardClosePct: -8,
+    graceExpired: true,
+    elapsed: 10,
+    badReasons: ["Supertrend bearish", "momentum 0 < 40"],
+  })?.action, "DANGER_DRAWDOWN");
+  assert.equal(buildDangerDrawdownDecision({
+    currentPnlPct: -5.3,
+    dangerPct: -5,
+    hardClosePct: -8,
+    graceExpired: true,
+    elapsed: 10,
+    badReasons: [],
+  })?.action, "DANGER_HOLD");
 } finally {
   process.chdir(originalCwd);
   fs.rmSync(tempDir, { recursive: true, force: true });
@@ -127,6 +169,7 @@ assert.equal(maxConcurrent, 2);
 const indexSource = fs.readFileSync(path.join(repoRoot, "index.js"), "utf8");
 const configSource = fs.readFileSync(path.join(repoRoot, "config.js"), "utf8");
 const dlmmSource = fs.readFileSync(path.join(repoRoot, "tools", "dlmm.js"), "utf8");
+const dangerExitSource = fs.readFileSync(path.join(repoRoot, "danger-exit.js"), "utf8");
 assert.match(indexSource, /closeTasks\.push\(executeAutoClose\(p, exit, "poller"\)\)/);
 assert.match(indexSource, /liveOnly:\s*true/);
 assert.match(indexSource, /pnlPollIntervalMs/);
@@ -142,11 +185,14 @@ assert.doesNotMatch(indexSource, /_pollTriggeredAt/);
 assert.doesNotMatch(indexSource, /action:\s*"SUPERTREND_EXIT"/);
 assert.match(indexSource, /notifySupertrendWarning\(/);
 assert.match(indexSource, /evaluateDangerDrawdownExit\(position\)/);
-assert.match(indexSource, /Danger hard close/);
+assert.match(indexSource, /DANGER_HOLD/);
 assert.match(indexSource, /config\.chartIndicators\.exitInterval/);
 assert.match(indexSource, /fetchKlineGMGN\(position\.base_mint, interval, 80\)/);
 assert.doesNotMatch(indexSource, /Number\(momentum\.score\)/);
+assert.match(dangerExitSource, /Danger hard close/);
+assert.match(dangerExitSource, /grace active/);
 assert.match(configSource, /dangerDrawdownPct:\s+u\.dangerDrawdownPct\s+\?\?\s+-5/);
-assert.match(configSource, /dangerHardClosePct:\s+u\.dangerHardClosePct\s+\?\?\s+-7/);
+assert.match(configSource, /dangerHardClosePct:\s+u\.dangerHardClosePct\s+\?\?\s+-8/);
+assert.match(configSource, /dangerGraceMinutes:\s+u\.dangerGraceMinutes\s+\?\?\s+10/);
 
 console.log("Immediate auto-close tests passed");

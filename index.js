@@ -51,6 +51,7 @@ import {
   resolveBlacklistMint,
 } from "./token-blacklist.js";
 import { safeBuildEntrySnapshot } from "./journal.js";
+import { buildDangerDrawdownDecision } from "./danger-exit.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -171,10 +172,16 @@ async function evaluateDangerDrawdownExit(position) {
   }
 
   const hardClosePct = Number(config.management.dangerHardClosePct);
-  if (Number.isFinite(hardClosePct) && currentPnlPct <= hardClosePct) {
+  const hardCloseDecision = buildDangerDrawdownDecision({
+    currentPnlPct,
+    dangerPct,
+    hardClosePct,
+    graceExpired: false,
+  });
+  if (hardCloseDecision?.action === "DANGER_DRAWDOWN") {
     return {
-      action: "DANGER_DRAWDOWN",
-      reason: `Danger hard close: PnL ${currentPnlPct.toFixed(2)}% <= ${hardClosePct}%`,
+      action: hardCloseDecision.action,
+      reason: hardCloseDecision.reason,
     };
   }
 
@@ -312,19 +319,21 @@ async function evaluateDangerDrawdownExit(position) {
       badReasons.push(`price change 5m ${priceChange5m.toFixed(2)}% <= ${minPriceChange}%`);
     }
 
-    if (badReasons.length > 0) {
-      const noteText = signalNotes.length > 0 ? `; note: ${signalNotes.join("; ")}` : "";
-      return {
-        action: "DANGER_DRAWDOWN",
-        reason: `Danger drawdown: PnL ${currentPnlPct.toFixed(2)}% <= ${dangerPct}%; ${badReasons.join("; ")}${noteText}`,
-      };
+    const dangerDecision = buildDangerDrawdownDecision({
+      currentPnlPct,
+      dangerPct,
+      hardClosePct,
+      graceExpired,
+      elapsed,
+      badReasons,
+      signalNotes,
+    });
+    if (dangerDecision?.action === "DANGER_DRAWDOWN") {
+      return dangerDecision;
     }
-
-    if (graceExpired) {
-      return {
-        action: "DANGER_GRACE",
-        reason: `Danger drawdown: PnL ${currentPnlPct.toFixed(2)}% still <= ${dangerPct}% after ${elapsed}m; live signal not bad enough to override grace`,
-      };
+    if (dangerDecision?.action === "DANGER_HOLD") {
+      log("state", `${dangerDecision.reason}; elapsed ${elapsed}m/${graceMinutes}m`);
+      return null;
     }
 
     log(
