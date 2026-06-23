@@ -35,6 +35,7 @@ const position = (id, overrides = {}) => ({
   fee_per_tvl_24h: 2,
   age_minutes: 30,
   total_value_usd: 10,
+  amount_sol: 0.2,
   ...overrides,
 });
 
@@ -52,6 +53,16 @@ try {
   assert.equal(
     updatePnlAndCheckExits("take", position("take", { pnl_pct: 11 }), config)?.action,
     "TAKE_PROFIT",
+  );
+  assert.equal(
+    updatePnlAndCheckExits("take-fees", position("take-fees", {
+      pnl_pct: 0.1,
+      fees_earned_sol: 0.011,
+    }), {
+      ...config,
+      takeProfitFeePct: 5,
+    })?.action,
+    "TAKE_PROFIT_FEES",
   );
 
   assert.equal(updatePnlAndCheckExits("trail", position("trail", { pnl_pct: 3 }), config), null);
@@ -184,6 +195,8 @@ assert.doesNotMatch(indexSource, /Poll-triggered management/);
 assert.doesNotMatch(indexSource, /_pollTriggeredAt/);
 assert.doesNotMatch(indexSource, /action:\s*"SUPERTREND_EXIT"/);
 assert.match(indexSource, /notifySupertrendWarning\(/);
+assert.match(indexSource, /screening_watchdog/);
+assert.match(indexSource, /releaseStaleScreeningLock\(\)/);
 assert.match(indexSource, /evaluateDangerDrawdownExit\(position\)/);
 assert.match(indexSource, /DANGER_HOLD/);
 assert.match(indexSource, /config\.chartIndicators\.exitInterval/);
@@ -194,5 +207,8 @@ assert.match(dangerExitSource, /grace active/);
 assert.match(configSource, /dangerDrawdownPct:\s+u\.dangerDrawdownPct\s+\?\?\s+-5/);
 assert.match(configSource, /dangerHardClosePct:\s+u\.dangerHardClosePct\s+\?\?\s+-8/);
 assert.match(configSource, /dangerGraceMinutes:\s+u\.dangerGraceMinutes\s+\?\?\s+10/);
+assert.match(configSource, /screeningWatchdogMs:\s+u\.screeningWatchdogMs/);
+assert.match(dlmmSource, /urgent position fetch timed out/);
+assert.match(dlmmSource, /state_fallback/);
 
 console.log("Immediate auto-close tests passed");

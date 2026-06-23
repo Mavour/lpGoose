@@ -86,6 +86,12 @@ Closes a position. Auto-swaps base token to SOL unless --skip-swap.
 Output: { success, pnl_pct, pnl_usd, txs, base_mint }
 \`\`\`
 
+### meridian recover-close --position <addr> [--observed-pnl-pct 5.43] [--observed-fees-sol 0.01] [--reason "..."]
+Marks an already-closed/deallocated position as externally closed and records performance for dashboard history.
+\`\`\`
+Output: { success, already_closed_external, pnl_pct, pnl_sol, performance_recorded }
+\`\`\`
+
 ### meridian swap --from <mint> --to <mint> --amount <n> [--dry-run]
 Swaps tokens via Jupiter. Use "SOL" as mint shorthand.
 \`\`\`
@@ -255,6 +261,12 @@ const { values: flags } = parseArgs({
     "skip-swap":  { type: "boolean" },
     "dry-run":    { type: "boolean" },
     "silent":     { type: "boolean" },
+    "observed-pnl-pct":   { type: "string" },
+    "observed-pnl-sol":   { type: "string" },
+    "observed-fees-sol":  { type: "string" },
+    "stuck-since":        { type: "string" },
+    "missed-take-profit": { type: "boolean" },
+    "bot-stuck":          { type: "boolean" },
     limit:        { type: "string" },
   },
   allowPositionals: true,
@@ -481,6 +493,22 @@ switch (subcommand) {
   }
 
   // ── swap ─────────────────────────────────────────────────────────
+  case "recover-close": {
+    if (!flags.position) die("Usage: meridian recover-close --position <addr> [--observed-pnl-pct <n>]");
+    const { recoverClosedPosition } = await import("./tools/dlmm.js");
+    out(await recoverClosedPosition({
+      position_address: flags.position,
+      reason: flags.reason || "Operator recovery for externally closed position",
+      observed_pnl_pct: flags["observed-pnl-pct"] ?? null,
+      observed_pnl_sol: flags["observed-pnl-sol"] ?? null,
+      observed_fees_sol: flags["observed-fees-sol"] ?? null,
+      stuck_since: flags["stuck-since"] ?? null,
+      missed_take_profit: flags["missed-take-profit"] ?? false,
+      bot_stuck: flags["bot-stuck"] ?? false,
+    }));
+    break;
+  }
+
   case "swap": {
     if (!flags.from || !flags.to || !flags.amount) die("Usage: meridian swap --from <mint> --to <mint> --amount <n>");
     const { executeTool } = await import("./tools/executor.js");

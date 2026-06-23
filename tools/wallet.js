@@ -9,6 +9,7 @@ import bs58 from "bs58";
 import { log } from "../logger.js";
 import { config } from "../config.js";
 import { instrumentConnection } from "./rpc-telemetry.js";
+import { fetchWithTimeout } from "./http.js";
 
 let _connection = null;
 let _wallet = null;
@@ -51,7 +52,7 @@ export async function getWalletBalances() {
 
   try {
     const url = `https://api.helius.xyz/v1/wallet/${walletAddress}/balances?api-key=${HELIUS_KEY}`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     
     if (!res.ok) {
       throw new Error(`Helius API error: ${res.status} ${res.statusText}`);
@@ -158,7 +159,7 @@ export async function swapToken({
       `&amount=${amountStr}` +
       `&taker=${wallet.publicKey.toString()}`;
 
-    const orderRes = await fetch(orderUrl, {
+    const orderRes = await fetchWithTimeout(orderUrl, {
       headers: { "x-api-key": JUPITER_API_KEY },
     });
     if (!orderRes.ok) {
@@ -184,7 +185,7 @@ export async function swapToken({
     const signedTx = Buffer.from(tx.serialize()).toString("base64");
 
     // ─── Execute ───────────────────────────────────────────────
-    const execRes = await fetch(`${JUPITER_ULTRA_API}/execute`, {
+    const execRes = await fetchWithTimeout(`${JUPITER_ULTRA_API}/execute`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -219,7 +220,7 @@ export async function swapToken({
 
 async function swapViaQuoteApi({ wallet, connection, input_mint, output_mint, amountStr }) {
   // ─── Get quote ─────────────────────────────────────────────
-  const quoteRes = await fetch(
+  const quoteRes = await fetchWithTimeout(
     `${JUPITER_QUOTE_API}/quote?inputMint=${input_mint}&outputMint=${output_mint}&amount=${amountStr}&slippageBps=300`,
     { headers: { "x-api-key": JUPITER_API_KEY } }
   );
@@ -228,7 +229,7 @@ async function swapViaQuoteApi({ wallet, connection, input_mint, output_mint, am
   if (quote.error) throw new Error(`Quote error: ${quote.error}`);
 
   // ─── Get swap tx ───────────────────────────────────────────
-  const swapRes = await fetch(`${JUPITER_QUOTE_API}/swap`, {
+  const swapRes = await fetchWithTimeout(`${JUPITER_QUOTE_API}/swap`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": JUPITER_API_KEY },
     body: JSON.stringify({

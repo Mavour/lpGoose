@@ -441,6 +441,29 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   }
 
   // ── Trailing TP ────────────────────────────────────────────────
+  const feesEarnedSol = Number(positionData.fees_earned_sol ?? positionData.unclaimed_fees_usd);
+  const deployedSol = Number(
+    pos.amount_sol ??
+    positionData.expected_deposit_sol ??
+    positionData.indexed_deposit_sol ??
+    positionData.amount_sol
+  );
+  if (
+    !pnlSuspect &&
+    mgmtConfig.takeProfitFeePct != null &&
+    Number.isFinite(feesEarnedSol) &&
+    Number.isFinite(deployedSol) &&
+    deployedSol > 0
+  ) {
+    const feeProfitPct = (feesEarnedSol / deployedSol) * 100;
+    if (feeProfitPct >= mgmtConfig.takeProfitFeePct) {
+      return {
+        action: "TAKE_PROFIT_FEES",
+        reason: `Take profit: fees ${feeProfitPct.toFixed(2)}% >= ${mgmtConfig.takeProfitFeePct}%`,
+      };
+    }
+  }
+
   if (!pnlSuspect && pos.trailing_active && currentPnlPct != null) {
     const dropFromPeak = pos.peak_pnl_pct - currentPnlPct;
     if (dropFromPeak >= mgmtConfig.trailingDropPct) {

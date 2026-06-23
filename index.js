@@ -43,6 +43,7 @@ import {
 import { evaluateWhaleExit, selectAdaptivePnlPollIntervalMs } from "./tools/polling.js";
 import { parseFastCloseCommand, resolveCloseMatches } from "./tools/telegram-close.js";
 import { getGmgnPoolFees } from "./tools/gmgn.js";
+import { fetchWithTimeout } from "./tools/http.js";
 import {
   addToBlacklist,
   listBlacklist,
@@ -115,6 +116,9 @@ let _cronTasks = [];
 let _managementBusy = false; // prevents overlapping management cycles
 let _screeningBusy = false;  // prevents overlapping screening cycles
 let _screeningLastTriggered = 0; // epoch ms — prevents management from spamming screening
+let _screeningBusySince = 0;
+let _screeningRunId = 0;
+let _shuttingDown = false;
 const _autoCloseCoordinator = new PositionCloseCoordinator();
 const _supertrendWarningCandles = new Map();
 const _whaleGuardCheckedAt = new Map();
@@ -124,6 +128,34 @@ const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 function stripThink(text) {
   if (!text) return text;
   return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+}
+
+function releaseStaleScreeningLock() {
+  if (!_screeningBusy) return false;
+  const maxMs = Math.max(60_000, Number(config.schedule.screeningWatchdogMs ?? 10 * 60_000));
+  const ageMs = Date.now() - (_screeningBusySince || _screeningLastTriggered || Date.now());
+  if (ageMs < maxMs) return false;
+
+  const previousRunId = _screeningRunId;
+  _screeningBusy = false;
+  _screeningBusySince = 0;
+  _screeningRunId += 1;
+  log(
+    "screening_watchdog",
+    `Released stale screening lock after ${Math.round(ageMs / 1000)}s (run ${previousRunId})`
+  );
+  return true;
+}
+
+function withTimeout(promise, ms, label) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 async function autoSwapBaseToSol(baseMint, context = "") {
@@ -381,7 +413,7 @@ async function evaluateAutoExit(position) {
       if (Date.now() - lastCheckedAt >= cooldownMs) {
         _whaleGuardCheckedAt.set(position.pool, Date.now());
         const poolUrl = `https://pool-discovery-api.datapi.meteora.ag/pools?page_size=1&filter_by=${encodeURIComponent(`pool_address=${position.pool}`)}&timeframe=5m`;
-        const poolRes = await fetch(poolUrl);
+        const poolRes = await fetchWithTimeout(poolUrl);
         if (poolRes.ok) {
           const poolData = await poolRes.json();
           const poolDetail = (poolData.data || [])[0];
@@ -1589,6 +1621,11 @@ async function attemptStandardDeploy(candidate, deployAmount) {
 }
 
 export async function runScreeningCycle({ silent = false, force = false } = {}) {
+  if (_shuttingDown) {
+    log("cron", "Screening skipped - shutdown in progress");
+    return null;
+  }
+  releaseStaleScreeningLock();
   const runtimeReload = reloadRuntimeConfig();
   if (runtimeReload.error) {
     log("config_warn", `Runtime config reload failed: ${runtimeReload.error}`);
@@ -1615,6 +1652,8 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
     return null;
   }
   _screeningBusy = true; // set immediately — prevents TOCTOU race with concurrent callers
+  const screeningRunId = ++_screeningRunId;
+  _screeningBusySince = Date.now();
   _screeningLastTriggered = Date.now();
 
   // Hard guards — don't even run the agent if preconditions aren't met
@@ -1623,7 +1662,10 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
     [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), getWalletBalances()]);
     if (prePositions.total_positions >= config.risk.maxPositions) {
       log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
-      _screeningBusy = false;
+      if (_screeningRunId === screeningRunId) {
+        _screeningBusy = false;
+        _screeningBusySince = 0;
+      }
       return null;
     }
     const minimumMultiplier = config.confidence.enabled
@@ -1632,12 +1674,18 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
     const minRequired = (config.management.deployAmountSol * minimumMultiplier) + config.management.gasReserve;
     if (preBalance.sol < minRequired) {
       log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
-      _screeningBusy = false;
+      if (_screeningRunId === screeningRunId) {
+        _screeningBusy = false;
+        _screeningBusySince = 0;
+      }
       return null;
     }
   } catch (e) {
     log("cron_error", `Screening pre-check failed: ${e.message}`);
-    _screeningBusy = false;
+    if (_screeningRunId === screeningRunId) {
+      _screeningBusy = false;
+      _screeningBusySince = 0;
+    }
     return null;
   }
   timers.screeningLastRun = Date.now();
@@ -1827,7 +1875,10 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
     log("cron_error", `Screening cycle failed: ${error.message}`);
     screenReport = `Screening cycle failed: ${error.message}`;
   } finally {
-    _screeningBusy = false;
+    if (_screeningRunId === screeningRunId) {
+      _screeningBusy = false;
+      _screeningBusySince = 0;
+    }
     if (!silent && telegramEnabled()) {
       if (screenReport) sendMessage(`🔍 Screening Cycle\n\n${stripThink(screenReport)}`).catch(() => { });
     }
@@ -1983,11 +2034,30 @@ Summarize the current portfolio health, total fees earned, and performance of al
 //  GRACEFUL SHUTDOWN
 // ═══════════════════════════════════════════
 async function shutdown(signal) {
+  if (_shuttingDown) return;
+  _shuttingDown = true;
   log("shutdown", `Received ${signal}. Shutting down...`);
+  const forceTimer = setTimeout(() => {
+    log("shutdown", `Forced exit after ${config.schedule.shutdownTimeoutMs}ms`);
+    process.exit(1);
+  }, Math.max(1_000, Number(config.schedule.shutdownTimeoutMs ?? 8_000)));
+  forceTimer.unref?.();
+
   stopPolling();
-  const positions = await getMyPositions();
-  log("shutdown", `Open positions at shutdown: ${positions.total_positions}`);
-  process.exit(0);
+  stopCronJobs();
+  try {
+    const positions = await withTimeout(
+      getMyPositions({ urgent: true }),
+      Math.max(1_000, Number(config.schedule.shutdownTimeoutMs ?? 8_000) - 1_000),
+      "shutdown position snapshot"
+    );
+    log("shutdown", `Open positions at shutdown: ${positions.total_positions}`);
+  } catch (error) {
+    log("shutdown_warn", `Skipped position snapshot during shutdown: ${error.message}`);
+  } finally {
+    clearTimeout(forceTimer);
+    process.exit(0);
+  }
 }
 
 process.on("SIGINT", () => shutdown("SIGINT"));

@@ -268,6 +268,14 @@ function apiHistory(req, res) {
           amount_sol:       p.amount_sol ?? 0,
           bin_range:        p.bin_range ?? null,
           bin_step:         p.bin_step ?? null,
+          close_source:     p.close_source || null,
+          pnl_source:       p.pnl_source || null,
+          bot_stuck:        !!p.bot_stuck,
+          stuck_since:      p.stuck_since || null,
+          missed_take_profit: !!p.missed_take_profit,
+          operator_observed_pnl_pct: p.operator_observed_pnl_pct ?? null,
+          operator_observed_pnl_sol: p.operator_observed_pnl_sol ?? null,
+          operator_observed_fees_sol: p.operator_observed_fees_sol ?? null,
           recorded_at:      p.recorded_at,
         };
       }).reverse();

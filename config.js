@@ -180,6 +180,9 @@ export const config = {
     lpAgentPnlUrgentTtlMs:  u.lpAgentPnlUrgentTtlMs  ?? 15_000,
     lpAgentPnlRateLimitBackoffMs: u.lpAgentPnlRateLimitBackoffMs ?? 60_000,
     emptyPositionsCacheTtlMs: u.emptyPositionsCacheTtlMs ?? 120_000,
+    screeningWatchdogMs:    u.screeningWatchdogMs    ?? 10 * 60_000,
+    urgentPositionsTimeoutMs: u.urgentPositionsTimeoutMs ?? 4_000,
+    shutdownTimeoutMs:      u.shutdownTimeoutMs      ?? 8_000,
   },
 
   // ─── LLM Settings ──────────────────────

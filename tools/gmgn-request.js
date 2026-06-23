@@ -1,4 +1,5 @@
 import { log } from "../logger.js";
+import { fetchWithTimeout } from "./http.js";
 
 const MIN_REQUEST_GAP_MS = 750;
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 60_000;
@@ -33,7 +34,10 @@ async function runRequest(url, options) {
   if (waitMs > 0) await sleep(waitMs);
 
   lastRequestStartedAt = Date.now();
-  const response = await fetch(url, options);
+  const response = await fetchWithTimeout(url, {
+    timeoutMs: Number(process.env.GMGN_REQUEST_TIMEOUT_MS || 10_000),
+    ...options,
+  });
   if (response.status === 429) {
     const cooldownMs = retryAfterMs(response);
     cooldownUntil = Date.now() + cooldownMs;

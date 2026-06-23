@@ -37,6 +37,7 @@ import {
   pnlNumber,
 } from "../pnl-fetcher.js";
 import { instrumentConnection } from "./rpc-telemetry.js";
+import { fetchWithTimeout } from "./http.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
 // @meteora-ag/dlmm → @coral-xyz/anchor uses CJS directory imports
@@ -576,10 +577,44 @@ export async function deployPosition({
 const POSITIONS_CACHE_TTL = 5 * 60_000;
 const PNL_DISCOVERY_TTL = Math.max(30_000, config.schedule.pnlDiscoveryTtlMs ?? 120_000);
 const EMPTY_POSITIONS_CACHE_TTL = Math.max(30_000, config.schedule.emptyPositionsCacheTtlMs ?? 120_000);
+const URGENT_POSITIONS_TIMEOUT_MS = Math.max(1_000, Number(config.schedule.urgentPositionsTimeoutMs ?? 4_000));
 
 let _positionsCache = null;
 let _positionsCacheAt = 0;
 let _positionsInflight = null;
+
+function trackedPositionsFallback(walletAddress, reason = "live position fetch unavailable") {
+  const positions = getTrackedPositions(true).map((tracked) => {
+    const snapshot = tracked.last_snapshot || {};
+    return {
+      position: tracked.position,
+      pool: tracked.pool,
+      pair: tracked.pool_name || tracked.pool,
+      pool_name: tracked.pool_name || tracked.pool,
+      base_mint: tracked.base_mint || null,
+      lower_bin: tracked.bin_range?.min ?? tracked.lower_bin ?? null,
+      upper_bin: tracked.bin_range?.max ?? tracked.upper_bin ?? null,
+      strategy: tracked.strategy,
+      in_range: snapshot.in_range ?? null,
+      pnl_pct: snapshot.pnl_pct ?? null,
+      pnl_sol: snapshot.pnl_sol ?? null,
+      fees_earned_sol: snapshot.fees_earned_sol ?? null,
+      age_minutes: snapshot.age_minutes ?? null,
+      source: "state_fallback",
+      stale: true,
+      error: reason,
+    };
+  });
+  return {
+    wallet: walletAddress,
+    total_positions: positions.length,
+    positions,
+    source: "state_fallback",
+    stale: true,
+    error: reason,
+    snapshot_at: Date.now(),
+  };
+}
 let _pnlDiscovery = null;
 let _pnlDiscoveryAt = 0;
 let _pnlSignaturesCheckedAt = 0;
@@ -688,7 +723,7 @@ function calculatePnlWithDepositFallback({ calculated, balance, withdrawals, cla
 async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
   const url = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${walletAddress}&status=open&pageSize=100&page=1`;
   try {
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       log("pnl_api", `HTTP ${res.status} for pool ${poolAddress.slice(0, 8)}: ${body.slice(0, 120)}`);
@@ -714,7 +749,7 @@ async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
 async function fetchClosedPnlForPosition(poolAddress, positionAddress, walletAddress) {
   const url = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${walletAddress}&status=closed&pageSize=50&page=1`;
   try {
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     if (!res.ok) return null;
     const data = await res.json();
     const entry = (data.positions || data.data || []).find((position) =>
@@ -759,6 +794,124 @@ async function fetchLPAgentClosedPnlForPosition(positionAddress, walletAddress, 
     log("close_warn", `LPAgent closed PnL fallback failed for ${positionAddress}: ${error.message}`);
     return null;
   }
+}
+
+function observedClosedPnl(tracked, {
+  observed_pnl_pct = null,
+  observed_pnl_sol = null,
+  observed_fees_sol = null,
+} = {}) {
+  const amountSol = numberOrNull(tracked?.amount_sol);
+  const pnlPct = numberOrNull(observed_pnl_pct);
+  const pnlSol = pnlPct != null && amountSol != null
+    ? amountSol * (pnlPct / 100)
+    : numberOrNull(observed_pnl_sol);
+  const feesSol = numberOrNull(observed_fees_sol);
+  if (pnlPct == null && pnlSol == null && feesSol == null) return null;
+
+  const initialUsd = numberOrNull(tracked?.initial_value_usd);
+  const pnlUsd = initialUsd != null && pnlPct != null
+    ? initialUsd * (pnlPct / 100)
+    : null;
+  return {
+    pnl_sol: pnlSol,
+    pnl_pct: pnlPct ?? (amountSol && pnlSol != null ? (pnlSol / amountSol) * 100 : null),
+    pnl_usd: pnlUsd,
+    fees_earned_sol: feesSol ?? numberOrNull(tracked?.last_snapshot?.fees_earned_sol),
+    fees_earned_usd: numberOrNull(tracked?.last_snapshot?.fees_earned_usd),
+    final_value_usd: initialUsd != null && pnlUsd != null
+      ? Math.max(0, initialUsd + pnlUsd)
+      : numberOrNull(tracked?.last_snapshot?.final_value_usd),
+    initial_value_usd: initialUsd,
+    pnl_source: "operator_observed",
+    pnl_trusted: true,
+  };
+}
+
+export async function recoverClosedPosition({
+  position_address,
+  reason = "External close detected",
+  observed_pnl_pct = null,
+  observed_pnl_sol = null,
+  observed_fees_sol = null,
+  stuck_since = null,
+  missed_take_profit = false,
+  bot_stuck = false,
+} = {}) {
+  position_address = normalizeMint(position_address);
+  const tracked = getTrackedPosition(position_address);
+  if (!tracked) {
+    return { success: false, error: `Position ${position_address} not found in state` };
+  }
+
+  let walletAddress = null;
+  try {
+    walletAddress = getWallet().publicKey.toString();
+  } catch {
+    walletAddress = null;
+  }
+
+  let closedPnl = null;
+  if (walletAddress && tracked.pool) {
+    closedPnl = await fetchClosedPnlForPosition(tracked.pool, position_address, walletAddress);
+    if (closedPnl) closedPnl.pnl_source = "meteora_closed_api";
+  }
+  if (!closedPnl && walletAddress) {
+    closedPnl = await fetchLPAgentClosedPnlForPosition(position_address, walletAddress, { urgent: true });
+  }
+  const observed = observedClosedPnl(tracked, {
+    observed_pnl_pct,
+    observed_pnl_sol,
+    observed_fees_sol,
+  });
+  if (!closedPnl && observed) closedPnl = observed;
+
+  const performance = buildManualClosePerformance(tracked, closedPnl);
+  recordClose(position_address, reason);
+
+  let performanceResult = null;
+  if (performance) {
+    performance.close_reason = reason;
+    performance.close_source = "operator_recovery";
+    performance.bot_stuck = !!bot_stuck;
+    performance.stuck_since = stuck_since || null;
+    performance.missed_take_profit = !!missed_take_profit;
+    performance.operator_observed_pnl_pct = numberOrNull(observed_pnl_pct);
+    performance.operator_observed_pnl_sol = numberOrNull(observed_pnl_sol);
+    performance.operator_observed_fees_sol = numberOrNull(observed_fees_sol);
+    performance.pnl_source = closedPnl?.pnl_source || performance.pnl_source || "operator_recovery";
+    performance.pnl_trusted = closedPnl?.pnl_trusted ?? performance.pnl_trusted;
+    performanceResult = await recordPerformance(performance);
+  } else {
+    log("manual_close_warn", `Recovered ${position_address} as closed but no reliable PnL was available`);
+  }
+
+  if (tracked.base_mint) {
+    setTokenCloseCooldown({
+      base_mint: tracked.base_mint,
+      pool_name: tracked.pool_name || tracked.pool?.slice?.(0, 8),
+      position: position_address,
+      reason,
+    });
+  }
+
+  return {
+    success: true,
+    already_closed_external: true,
+    position: position_address,
+    pool: tracked.pool,
+    pool_name: tracked.pool_name || null,
+    close_reason: reason,
+    close_source: "operator_recovery",
+    pnl_pct: performance?.pnl_pct ?? closedPnl?.pnl_pct ?? null,
+    pnl_sol: performance?.pnl_sol ?? closedPnl?.pnl_sol ?? null,
+    pnl_usd: performance?.pnl_usd ?? closedPnl?.pnl_usd ?? null,
+    fees_earned_sol: performance?.fees_earned_sol ?? closedPnl?.fees_earned_sol ?? null,
+    fees_earned_usd: performance?.fees_earned_usd ?? closedPnl?.fees_earned_usd ?? null,
+    performance_recorded: !!performanceResult?.recorded,
+    performance_duplicate: !!performanceResult?.duplicate,
+    pnl_source: performance?.pnl_source ?? closedPnl?.pnl_source ?? null,
+  };
 }
 
 async function recordExternalClose(tracked, walletAddress) {
@@ -1262,13 +1415,25 @@ export async function getMyPositions({ force = false, silent = false, liveOnly =
   ) {
     return _positionsCache;
   }
-  if (_positionsInflight) return _positionsInflight;
-
   let walletAddress;
   try {
     walletAddress = getWallet().publicKey.toString();
   } catch {
     return { wallet: null, total_positions: 0, positions: [], error: "Wallet not configured" };
+  }
+
+  if (_positionsInflight) {
+    if (!urgent) return _positionsInflight;
+    return Promise.race([
+      _positionsInflight,
+      new Promise((resolve) => {
+        setTimeout(() => {
+          const reason = `urgent position fetch timed out after ${URGENT_POSITIONS_TIMEOUT_MS}ms; using tracked state fallback`;
+          log("positions_warn", reason);
+          resolve(trackedPositionsFallback(walletAddress, reason));
+        }, URGENT_POSITIONS_TIMEOUT_MS).unref?.();
+      }),
+    ]);
   }
 
   _positionsInflight = (async () => {
@@ -1386,7 +1551,17 @@ export async function getMyPositions({ force = false, silent = false, liveOnly =
       _positionsInflight = null;
     }
   })();
-  return _positionsInflight;
+  if (!urgent) return _positionsInflight;
+  return Promise.race([
+    _positionsInflight,
+    new Promise((resolve) => {
+      setTimeout(() => {
+        const reason = `urgent position fetch timed out after ${URGENT_POSITIONS_TIMEOUT_MS}ms; using tracked state fallback`;
+        log("positions_warn", reason);
+        resolve(trackedPositionsFallback(walletAddress, reason));
+      }, URGENT_POSITIONS_TIMEOUT_MS).unref?.();
+    }),
+  ]);
 }
 
 async function getMyPositionsLegacy({ force = false, silent = false } = {}) {
@@ -1406,7 +1581,7 @@ async function getMyPositionsLegacy({ force = false, silent = false } = {}) {
     // Single portfolio API call — returns all positions with full PnL data
     if (!silent) log("positions", "Fetching portfolio via Meteora portfolio API...");
     const portfolioUrl = `https://dlmm.datapi.meteora.ag/portfolio/open?user=${walletAddress}`;
-    const res = await fetch(portfolioUrl);
+    const res = await fetchWithTimeout(portfolioUrl);
     if (!res.ok) throw new Error(`Portfolio API ${res.status}: ${await res.text().catch(() => "")}`);
     const portfolio = await res.json();
 
@@ -1632,7 +1807,7 @@ export async function getWalletPositions({ wallet_address }) {
 // ─── Search Pools by Query ─────────────────────────────────────
 export async function searchPools({ query, limit = 10 }) {
   const url = `https://dlmm.datapi.meteora.ag/pools?query=${encodeURIComponent(query)}`;
-  const res = await fetch(url);
+  const res = await fetchWithTimeout(url);
   if (!res.ok) throw new Error(`Pool search API error: ${res.status} ${res.statusText}`);
   const data = await res.json();
   const pools = (Array.isArray(data) ? data : data.data || []).slice(0, limit);
@@ -1706,6 +1881,17 @@ function isClosedPositionLookupError(error, positionAddress) {
   if (/position account .*not found/i.test(message)) return true;
   if (/account .*not found/i.test(message) && message.includes(positionAddress)) return true;
   if (/fallback pnl missing/i.test(message) && message.includes(positionAddress)) return true;
+  return false;
+}
+
+function isAlreadyClosedPositionError(error, positionAddress) {
+  const message = String(error?.message || error || "");
+  if (isClosedPositionLookupError(error, positionAddress)) return true;
+  if (/AccountOwnedByWrongProgram/i.test(message)) return true;
+  if (/owned by a different program than expected/i.test(message)) return true;
+  if (/11111111111111111111111111111111/.test(message)) return true;
+  if (/custom program error: 0xbbf/i.test(message)) return true;
+  if (/Error Number:\s*3007/i.test(message)) return true;
   return false;
 }
 
@@ -1894,7 +2080,7 @@ export async function closePosition({ position_address, reason }) {
       for (let retry = 0; !rpcSnapshot && retry < 3; retry++) {
         try {
           const closedUrl = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${wallet.publicKey.toString()}&status=closed&pageSize=50&page=1`;
-          const res = await fetch(closedUrl);
+          const res = await fetchWithTimeout(closedUrl);
           if (res.ok) {
             const data = await res.json();
             posEntry = (data.positions || []).find(p => p.positionAddress === position_address);
@@ -2044,6 +2230,13 @@ export async function closePosition({ position_address, reason }) {
     };
   } catch (error) {
     log("close_error", error.message);
+    if (tracked && isAlreadyClosedPositionError(error, position_address)) {
+      log("close", `Treating ${position_address} as already closed externally: ${error.message}`);
+      return recoverClosedPosition({
+        position_address,
+        reason: reason || "External close detected during close recovery",
+      });
+    }
     return { success: false, error: error.message };
   } finally {
     _closingPositions.delete(position_address);

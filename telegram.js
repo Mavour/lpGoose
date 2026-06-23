@@ -3,12 +3,14 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { config } from "./config.js";
+import { fetchWithTimeout } from "./tools/http.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || null;
 const BASE  = TOKEN ? `https://api.telegram.org/bot${TOKEN}` : null;
+const SEND_TIMEOUT_MS = Number(process.env.TELEGRAM_SEND_TIMEOUT_MS || 8_000);
 
 let chatId   = process.env.TELEGRAM_CHAT_ID || null;
 let _offset  = 0;
@@ -61,7 +63,8 @@ function htmlToPlainText(html) {
 export async function sendMessage(text) {
   if (!TOKEN || !chatId) return;
   try {
-    const res = await fetch(`${BASE}/sendMessage`, {
+    const res = await fetchWithTimeout(`${BASE}/sendMessage`, {
+      timeoutMs: SEND_TIMEOUT_MS,
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -81,7 +84,8 @@ export async function sendMessage(text) {
 export async function sendKeyboard(text, inlineKeyboard) {
   if (!TOKEN || !chatId) return;
   try {
-    const res = await fetch(`${BASE}/sendMessage`, {
+    const res = await fetchWithTimeout(`${BASE}/sendMessage`, {
+      timeoutMs: SEND_TIMEOUT_MS,
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -102,7 +106,8 @@ export async function sendKeyboard(text, inlineKeyboard) {
 export async function editKeyboard(chat_id, message_id, text, inlineKeyboard) {
   if (!TOKEN) return;
   try {
-    const res = await fetch(`${BASE}/editMessageText`, {
+    const res = await fetchWithTimeout(`${BASE}/editMessageText`, {
+      timeoutMs: SEND_TIMEOUT_MS,
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -124,7 +129,8 @@ export async function editKeyboard(chat_id, message_id, text, inlineKeyboard) {
 export async function answerCallback(callbackQueryId, text = "") {
   if (!TOKEN) return;
   try {
-    await fetch(`${BASE}/answerCallbackQuery`, {
+    await fetchWithTimeout(`${BASE}/answerCallbackQuery`, {
+      timeoutMs: SEND_TIMEOUT_MS,
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ callback_query_id: callbackQueryId, text: String(text).slice(0, 200) }),
@@ -138,7 +144,8 @@ export async function sendHTML(html) {
   if (!TOKEN || !chatId) return;
   try {
     const htmlText = String(html).slice(0, 4096);
-    const res = await fetch(`${BASE}/sendMessage`, {
+    const res = await fetchWithTimeout(`${BASE}/sendMessage`, {
+      timeoutMs: SEND_TIMEOUT_MS,
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -163,9 +170,9 @@ export async function sendHTML(html) {
 async function poll(onMessage, onCallback) {
   while (_polling) {
     try {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `${BASE}/getUpdates?offset=${_offset}&timeout=30`,
-        { signal: AbortSignal.timeout(35_000) }
+        { timeoutMs: 35_000 }
       );
       if (!res.ok) { await sleep(5000); continue; }
       const data = await res.json();
