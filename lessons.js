@@ -60,14 +60,21 @@ function save(data) {
  * @param {number} perf.minutes_held      - Total minutes position was held
  * @param {string} perf.close_reason   - Why it was closed
  */
-export async function recordPerformance(perf) {
+export async function recordPerformance(perf, { replace = false } = {}) {
   const data = load();
   data.performance ||= [];
   data.lessons ||= [];
 
-  if (perf.position && data.performance.some((entry) => entry.position === perf.position)) {
-    log("lessons", `Skipped duplicate performance record for ${perf.position}`);
-    return { recorded: false, duplicate: true };
+  if (perf.position) {
+    const duplicateIndex = data.performance.findIndex((entry) => entry.position === perf.position);
+    if (duplicateIndex !== -1) {
+      if (!replace) {
+        log("lessons", `Skipped duplicate performance record for ${perf.position}`);
+        return { recorded: false, duplicate: true };
+      }
+      data.performance.splice(duplicateIndex, 1);
+      log("lessons", `Replaced performance record for ${perf.position}`);
+    }
   }
 
   // Migration: derive pnl_sol from USD data for old records that don't have it yet

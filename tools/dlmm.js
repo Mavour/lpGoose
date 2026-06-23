@@ -852,6 +852,11 @@ export async function recoverClosedPosition({
   }
 
   let closedPnl = null;
+  const observed = observedClosedPnl(tracked, {
+    observed_pnl_pct,
+    observed_pnl_sol,
+    observed_fees_sol,
+  });
   if (walletAddress && tracked.pool) {
     closedPnl = await fetchClosedPnlForPosition(tracked.pool, position_address, walletAddress);
     if (closedPnl) closedPnl.pnl_source = "meteora_closed_api";
@@ -859,12 +864,9 @@ export async function recoverClosedPosition({
   if (!closedPnl && walletAddress) {
     closedPnl = await fetchLPAgentClosedPnlForPosition(position_address, walletAddress, { urgent: true });
   }
-  const observed = observedClosedPnl(tracked, {
-    observed_pnl_pct,
-    observed_pnl_sol,
-    observed_fees_sol,
-  });
-  if (!closedPnl && observed) closedPnl = observed;
+  if (observed) {
+    closedPnl = observed;
+  }
 
   const performance = buildManualClosePerformance(tracked, closedPnl);
   recordClose(position_address, reason);
@@ -881,7 +883,7 @@ export async function recoverClosedPosition({
     performance.operator_observed_fees_sol = numberOrNull(observed_fees_sol);
     performance.pnl_source = closedPnl?.pnl_source || performance.pnl_source || "operator_recovery";
     performance.pnl_trusted = closedPnl?.pnl_trusted ?? performance.pnl_trusted;
-    performanceResult = await recordPerformance(performance);
+    performanceResult = await recordPerformance(performance, { replace: !!observed });
   } else {
     log("manual_close_warn", `Recovered ${position_address} as closed but no reliable PnL was available`);
   }
