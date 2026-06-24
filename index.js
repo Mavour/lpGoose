@@ -2095,6 +2095,43 @@ const _telegramQueue = []; // queued messages received while agent was busy
 const sessionHistory = []; // persists conversation across REPL turns
 const MAX_HISTORY = 20;    // keep last 20 messages (10 exchanges)
 
+async function handleTelegramBlacklistCommand(text) {
+  const blacklistCommand = parseBlacklistCommand(text);
+  if (!blacklistCommand) return false;
+
+  try {
+    if (blacklistCommand.action === "add") {
+      const result = addToBlacklist(blacklistCommand);
+      await sendMessage(
+        result.already_blacklisted
+          ? `${result.symbol || blacklistCommand.symbol} is already blacklisted.\nMint: ${blacklistCommand.mint}`
+          : `Blacklisted ${blacklistCommand.symbol}.\nMint: ${blacklistCommand.mint}\nReason: ${blacklistCommand.reason}`
+      );
+      return true;
+    }
+
+    if (blacklistCommand.action === "remove") {
+      const mint = resolveBlacklistMint(blacklistCommand.target);
+      if (!mint) {
+        await sendMessage(`Blacklist entry not found or symbol is ambiguous: ${blacklistCommand.target}`);
+        return true;
+      }
+      const result = removeFromBlacklist({ mint });
+      await sendMessage(`Removed ${result.was?.symbol || mint} from blacklist.\nMint: ${mint}`);
+      return true;
+    }
+
+    const entries = listBlacklist();
+    const lines = entries.blacklist.map((entry, index) =>
+      `${index + 1}. ${entry.symbol || "UNKNOWN"} ${entry.mint}\n${entry.reason || "No reason"}`
+    );
+    await sendMessage(lines.length ? `Blacklist:\n\n${lines.join("\n\n")}` : "Blacklist is empty.");
+  } catch (e) {
+    await sendMessage(`Blacklist command failed: ${e.message}`).catch(() => {});
+  }
+  return true;
+}
+
 function appendHistory(userMsg, assistantMsg) {
   sessionHistory.push({ role: "user", content: userMsg });
   sessionHistory.push({ role: "assistant", content: assistantMsg });
@@ -2813,38 +2850,7 @@ if (isTTY) {
       return;
     }
 
-    const blacklistCommand = parseBlacklistCommand(text);
-    if (blacklistCommand) {
-      try {
-        if (blacklistCommand.action === "add") {
-          const result = addToBlacklist(blacklistCommand);
-          await sendMessage(
-            result.already_blacklisted
-              ? `${result.symbol || blacklistCommand.symbol} is already blacklisted.\nMint: ${blacklistCommand.mint}`
-              : `Blacklisted ${blacklistCommand.symbol}.\nMint: ${blacklistCommand.mint}\nReason: ${blacklistCommand.reason}`
-          );
-          return;
-        }
-
-        if (blacklistCommand.action === "remove") {
-          const mint = resolveBlacklistMint(blacklistCommand.target);
-          if (!mint) {
-            await sendMessage(`Blacklist entry not found or symbol is ambiguous: ${blacklistCommand.target}`);
-            return;
-          }
-          const result = removeFromBlacklist({ mint });
-          await sendMessage(`Removed ${result.was?.symbol || mint} from blacklist.\nMint: ${mint}`);
-          return;
-        }
-
-        const entries = listBlacklist();
-        const lines = entries.blacklist.map((entry, index) =>
-          `${index + 1}. ${entry.symbol || "UNKNOWN"} ${entry.mint}\n${entry.reason || "No reason"}`
-        );
-        await sendMessage(lines.length ? `Blacklist:\n\n${lines.join("\n\n")}` : "Blacklist is empty.");
-      } catch (e) {
-        await sendMessage(`Blacklist command failed: ${e.message}`);
-      }
+    if (await handleTelegramBlacklistCommand(text)) {
       return;
     }
 
@@ -3252,6 +3258,11 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   log("startup", "Non-TTY mode — starting cron cycles immediately.");
   startCronJobs();
   maybeRunMissedBriefing().catch(() => { });
+  startPolling(async (text) => {
+    log("telegram", `Incoming: ${text}`);
+    if (await handleTelegramBlacklistCommand(text)) return;
+    await sendMessage("Fast mode: command tidak dikenali di non-TTY. Pakai blacklist/list blacklist/unblacklist, atau jalankan agent dalam mode TTY untuk menu lengkap.");
+  });
   (async () => {
     try {
       await agentLoop(`
