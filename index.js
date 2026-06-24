@@ -2132,6 +2132,47 @@ async function handleTelegramBlacklistCommand(text) {
   return true;
 }
 
+async function handleTelegramCloseCommand(text) {
+  const fastCloseCommand = parseFastCloseCommand(text);
+  if (!fastCloseCommand) return false;
+
+  try {
+    const { positions = [], total_positions = 0 } = await getMyPositions({ force: true, urgent: true });
+    if (total_positions === 0 || positions.length === 0) {
+      await sendMessage("No open positions to close.");
+      return true;
+    }
+
+    if (fastCloseCommand.closeAll) {
+      await sendMessage(`Closing all ${positions.length} open position(s) sequentially...`);
+      for (const position of positions.map((p, index) => ({ ...p, _closeIndex: index + 1 }))) {
+        await executeTelegramClose(position, "telegram close all");
+      }
+      await sendMessage("Close all command finished.");
+      return true;
+    }
+
+    const matches = fastCloseCommand.singleOpenPosition
+      ? positions.map((position, index) => ({ ...position, _closeIndex: index + 1 }))
+      : resolveCloseMatches(positions, fastCloseCommand.target);
+    if (matches.length === 0) {
+      await sendMessage(`No open position matched "${fastCloseCommand.target}". Use /positions or /close <n>.`);
+      return true;
+    }
+    if (matches.length > 1) {
+      await sendMessage(`Multiple positions matched${fastCloseCommand.target ? ` "${fastCloseCommand.target}"` : ""}. Use /close <n>:\n\n${formatCloseChoices(matches)}`);
+      return true;
+    }
+
+    await executeTelegramClose(matches[0], fastCloseCommand.target
+      ? `telegram fast close: ${fastCloseCommand.target}`
+      : "telegram fast close: single open position");
+  } catch (e) {
+    await sendMessage(`Close failed: ${e.message}`).catch(() => {});
+  }
+  return true;
+}
+
 function appendHistory(userMsg, assistantMsg) {
   sessionHistory.push({ role: "user", content: userMsg });
   sessionHistory.push({ role: "assistant", content: assistantMsg });
@@ -2781,42 +2822,7 @@ if (isTTY) {
       return;
     }
 
-    const fastCloseCommand = parseFastCloseCommand(text);
-    if (fastCloseCommand) {
-      try {
-        const { positions = [], total_positions = 0 } = await getMyPositions({ force: true, urgent: true });
-        if (total_positions === 0 || positions.length === 0) {
-          await sendMessage("No open positions to close.");
-          return;
-        }
-
-        if (fastCloseCommand.closeAll) {
-          await sendMessage(`Closing all ${positions.length} open position(s) sequentially...`);
-          for (const position of positions.map((p, index) => ({ ...p, _closeIndex: index + 1 }))) {
-            await executeTelegramClose(position, "telegram close all");
-          }
-          await sendMessage("Close all command finished.");
-          return;
-        }
-
-        const matches = fastCloseCommand.singleOpenPosition
-          ? positions.map((position, index) => ({ ...position, _closeIndex: index + 1 }))
-          : resolveCloseMatches(positions, fastCloseCommand.target);
-        if (matches.length === 0) {
-          await sendMessage(`No open position matched "${fastCloseCommand.target}". Use /positions or /close <n>.`);
-          return;
-        }
-        if (matches.length > 1) {
-          await sendMessage(`Multiple positions matched${fastCloseCommand.target ? ` "${fastCloseCommand.target}"` : ""}. Use /close <n>:\n\n${formatCloseChoices(matches)}`);
-          return;
-        }
-
-        await executeTelegramClose(matches[0], fastCloseCommand.target
-          ? `telegram fast close: ${fastCloseCommand.target}`
-          : "telegram fast close: single open position");
-      } catch (e) {
-        await sendMessage(`Close failed: ${e.message}`).catch(() => {});
-      }
+    if (await handleTelegramCloseCommand(text)) {
       return;
     }
 
@@ -3260,8 +3266,9 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   maybeRunMissedBriefing().catch(() => { });
   startPolling(async (text) => {
     log("telegram", `Incoming: ${text}`);
+    if (await handleTelegramCloseCommand(text)) return;
     if (await handleTelegramBlacklistCommand(text)) return;
-    await sendMessage("Fast mode: command tidak dikenali di non-TTY. Pakai blacklist/list blacklist/unblacklist, atau jalankan agent dalam mode TTY untuk menu lengkap.");
+    await sendMessage("Fast mode: command tidak dikenali di non-TTY. Pakai close <symbol>, close all, blacklist/list blacklist/unblacklist, atau jalankan agent dalam mode TTY untuk menu lengkap.");
   });
   (async () => {
     try {
