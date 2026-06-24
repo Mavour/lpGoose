@@ -178,6 +178,7 @@ export function recordClaim(position_address, fees_usd) {
   const state = load();
   const pos = state.positions[position_address];
   if (!pos) return;
+  pos.notes ||= [];
   pos.last_claim_at = new Date().toISOString();
   pos.total_fees_claimed_usd = (pos.total_fees_claimed_usd || 0) + (fees_usd || 0);
   pos.notes.push(`Claimed ~$${fees_usd?.toFixed(2) || "?"} fees at ${pos.last_claim_at}`);
@@ -202,6 +203,7 @@ export function recordClose(position_address, reason) {
   const state = load();
   const pos = state.positions[position_address];
   if (!pos) return;
+  pos.notes ||= [];
   pos.closed = true;
   pos.closed_at = new Date().toISOString();
   pos.notes.push(`Closed at ${pos.closed_at}: ${reason}`);
@@ -217,12 +219,14 @@ export function recordRebalance(old_position, new_position) {
   const state = load();
   const old = state.positions[old_position];
   if (old) {
+    old.notes ||= [];
     old.closed = true;
     old.closed_at = new Date().toISOString();
     old.notes.push(`Rebalanced into ${new_position} at ${old.closed_at}`);
   }
   const newPos = state.positions[new_position];
   if (newPos) {
+    newPos.notes ||= [];
     newPos.rebalance_count = (old?.rebalance_count || 0) + 1;
     newPos.notes.push(`Rebalanced from ${old_position}`);
   }
