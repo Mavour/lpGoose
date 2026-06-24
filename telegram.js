@@ -11,10 +11,14 @@ const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || null;
 const BASE  = TOKEN ? `https://api.telegram.org/bot${TOKEN}` : null;
 const SEND_TIMEOUT_MS = Number(process.env.TELEGRAM_SEND_TIMEOUT_MS || 8_000);
+const POLL_TIMEOUT_SEC = Number(process.env.TELEGRAM_POLL_TIMEOUT_SEC || 30);
+const POLL_TIMEOUT_MS = Number(process.env.TELEGRAM_POLL_TIMEOUT_MS || ((POLL_TIMEOUT_SEC + 5) * 1000));
 
 let chatId   = process.env.TELEGRAM_CHAT_ID || null;
 let _offset  = 0;
 let _polling = false;
+let _lastPollError = "";
+let _webhookChecked = false;
 
 // ─── chatId persistence ──────────────────────────────────────────
 function loadChatId() {
@@ -40,9 +44,41 @@ function saveChatId(id) {
 
 loadChatId();
 
+function telegramErrorMessage(error) {
+  const message = String(error?.message || error || "unknown error");
+  return BASE ? message.replaceAll(BASE, "https://api.telegram.org/bot<redacted>") : message;
+}
+
+async function ensureLongPollingMode() {
+  if (_webhookChecked || !BASE) return;
+  _webhookChecked = true;
+  try {
+    const res = await fetchWithTimeout(`${BASE}/deleteWebhook?drop_pending_updates=false`, {
+      timeoutMs: SEND_TIMEOUT_MS,
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      log("telegram_warn", `deleteWebhook failed: HTTP ${res.status}: ${body.slice(0, 160) || res.statusText}`);
+      return;
+    }
+    log("telegram", "Long polling mode confirmed");
+  } catch (e) {
+    log("telegram_warn", `deleteWebhook check failed: ${telegramErrorMessage(e)}`);
+  }
+}
+
 // ─── Core send ───────────────────────────────────────────────────
 export function isEnabled() {
   return !!TOKEN;
+}
+
+export function getTelegramStatus() {
+  return {
+    enabled: !!TOKEN,
+    chatId: chatId || null,
+    polling: _polling,
+    lastPollError: _lastPollError,
+  };
 }
 
 export function escapeHtml(value) {
@@ -77,7 +113,7 @@ export async function sendMessage(text) {
       log("telegram_error", `sendMessage ${res.status}: ${err.slice(0, 100)}`);
     }
   } catch (e) {
-    log("telegram_error", `sendMessage failed: ${e.message}`);
+    log("telegram_error", `sendMessage failed: ${telegramErrorMessage(e)}`);
   }
 }
 
@@ -99,7 +135,7 @@ export async function sendKeyboard(text, inlineKeyboard) {
       log("telegram_error", `sendKeyboard ${res.status}: ${err.slice(0, 100)}`);
     }
   } catch (e) {
-    log("telegram_error", `sendKeyboard failed: ${e.message}`);
+    log("telegram_error", `sendKeyboard failed: ${telegramErrorMessage(e)}`);
   }
 }
 
@@ -122,7 +158,7 @@ export async function editKeyboard(chat_id, message_id, text, inlineKeyboard) {
       log("telegram_error", `editKeyboard ${res.status}: ${err.slice(0, 100)}`);
     }
   } catch (e) {
-    log("telegram_error", `editKeyboard failed: ${e.message}`);
+    log("telegram_error", `editKeyboard failed: ${telegramErrorMessage(e)}`);
   }
 }
 
@@ -136,7 +172,7 @@ export async function answerCallback(callbackQueryId, text = "") {
       body: JSON.stringify({ callback_query_id: callbackQueryId, text: String(text).slice(0, 200) }),
     });
   } catch (e) {
-    log("telegram_error", `answerCallback failed: ${e.message}`);
+    log("telegram_error", `answerCallback failed: ${telegramErrorMessage(e)}`);
   }
 }
 
@@ -160,7 +196,7 @@ export async function sendHTML(html) {
       await sendMessage(htmlToPlainText(htmlText));
     }
   } catch (e) {
-    log("telegram_error", `sendHTML failed: ${e.message}`);
+    log("telegram_error", `sendHTML failed: ${telegramErrorMessage(e)}`);
     await sendMessage(htmlToPlainText(html));
   }
 }
@@ -168,13 +204,25 @@ export async function sendHTML(html) {
 
 // ─── Long polling ────────────────────────────────────────────────
 async function poll(onMessage, onCallback) {
+  await ensureLongPollingMode();
   while (_polling) {
     try {
       const res = await fetchWithTimeout(
-        `${BASE}/getUpdates?offset=${_offset}&timeout=30`,
-        { timeoutMs: 35_000 }
+        `${BASE}/getUpdates?offset=${_offset}&timeout=${POLL_TIMEOUT_SEC}`,
+        { timeoutMs: POLL_TIMEOUT_MS }
       );
-      if (!res.ok) { await sleep(5000); continue; }
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        const detail = body.slice(0, 200) || res.statusText || "no response body";
+        _lastPollError = `HTTP ${res.status}: ${detail}`;
+        log("telegram_error", `getUpdates failed: ${_lastPollError}`);
+        if (res.status === 409) {
+          log("telegram_error", "Telegram polling conflict. Stop other bot instances or remove webhook for this bot token.");
+        }
+        await sleep(5000);
+        continue;
+      }
+      _lastPollError = "";
       const data = await res.json();
       for (const update of data.result || []) {
         _offset = update.update_id + 1;
@@ -218,7 +266,8 @@ async function poll(onMessage, onCallback) {
       }
     } catch (e) {
       if (!e.message?.includes("aborted")) {
-        log("telegram_error", `Poll error: ${e.message}`);
+        _lastPollError = telegramErrorMessage(e);
+        log("telegram_error", `Poll error: ${_lastPollError}`);
       }
       await sleep(5000);
     }
@@ -226,10 +275,21 @@ async function poll(onMessage, onCallback) {
 }
 
 export function startPolling(onMessage, onCallback = null) {
-  if (!TOKEN) return;
+  if (!TOKEN) {
+    log("telegram_warn", "Bot polling disabled: TELEGRAM_BOT_TOKEN is not configured");
+    return false;
+  }
+  if (_polling) {
+    log("telegram_warn", "Bot polling already running");
+    return true;
+  }
   _polling = true;
-  poll(onMessage, onCallback); // fire-and-forget
-  log("telegram", "Bot polling started");
+  poll(onMessage, onCallback).catch((e) => {
+    _lastPollError = telegramErrorMessage(e);
+    log("telegram_error", `Polling stopped unexpectedly: ${_lastPollError}`);
+  });
+  log("telegram", `Bot polling started${chatId ? ` for chat ${chatId}` : " without registered chat"}`);
+  return true;
 }
 
 export function stopPolling() {
