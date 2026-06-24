@@ -2133,6 +2133,22 @@ async function handleTelegramBlacklistCommand(text) {
 }
 
 async function handleTelegramCloseCommand(text) {
+  const closeNumber = String(text || "").trim().match(/^\/close\s+(\d+)$/i);
+  if (closeNumber) {
+    try {
+      const idx = parseInt(closeNumber[1], 10) - 1;
+      const { positions = [] } = await getMyPositions({ force: true, urgent: true });
+      if (idx < 0 || idx >= positions.length) {
+        await sendMessage("Invalid number. Use /positions first.");
+        return true;
+      }
+      await executeTelegramClose(positions[idx], "telegram /close number");
+    } catch (e) {
+      await sendMessage(`Close failed: ${e.message}`).catch(() => {});
+    }
+    return true;
+  }
+
   const fastCloseCommand = parseFastCloseCommand(text);
   if (!fastCloseCommand) return false;
 
@@ -2169,6 +2185,36 @@ async function handleTelegramCloseCommand(text) {
       : "telegram fast close: single open position");
   } catch (e) {
     await sendMessage(`Close failed: ${e.message}`).catch(() => {});
+  }
+  return true;
+}
+
+async function sendTelegramPositionsSnapshot() {
+  const { positions, total_positions } = await getMyPositions({ force: true, urgent: true });
+  if (total_positions === 0) {
+    await sendMessage("No open positions.");
+    return;
+  }
+  const cur = config.management.solMode ? "◎" : "$";
+  const lines = positions.map((p, i) => {
+    const pnlDecimals = config.management.solMode ? 5 : 2;
+    const pnlValue = p.pnl_usd ?? p.pnl_sol ?? 0;
+    const pnl = pnlValue >= 0
+      ? `+${cur}${formatDecimal(pnlValue, pnlDecimals)}`
+      : `-${cur}${formatDecimal(Math.abs(pnlValue), pnlDecimals)}`;
+    const age = p.age_minutes != null ? `${p.age_minutes}m` : "?";
+    const oor = !p.in_range ? " OOR" : "";
+    return `${i + 1}. ${p.pair} | ${cur}${formatDecimal(p.total_value_usd, pnlDecimals)} | PnL: ${pnl} | fees: ${cur}${formatDecimal(p.unclaimed_fees_usd, pnlDecimals)} | ${age}${oor}`;
+  });
+  await sendMessage(`Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /close all to close all`);
+}
+
+async function handleTelegramPositionsCommand(text) {
+  if (!/^\/?(?:positions|posisi|position|status)$/i.test(String(text || "").trim())) return false;
+  try {
+    await sendTelegramPositionsSnapshot();
+  } catch (e) {
+    await sendMessage(`Error: ${e.message}`).catch(() => {});
   }
   return true;
 }
@@ -3266,18 +3312,10 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   maybeRunMissedBriefing().catch(() => { });
   startPolling(async (text) => {
     log("telegram", `Incoming: ${text}`);
+    if (await handleTelegramPositionsCommand(text)) return;
     if (await handleTelegramCloseCommand(text)) return;
     if (await handleTelegramBlacklistCommand(text)) return;
-    await sendMessage("Fast mode: command tidak dikenali di non-TTY. Pakai close <symbol>, close all, blacklist/list blacklist/unblacklist, atau jalankan agent dalam mode TTY untuk menu lengkap.");
+    await sendMessage("Fast mode: command tidak dikenali di non-TTY. Pakai /positions, /close <n>, close <symbol>, close all, blacklist/list blacklist/unblacklist.");
   });
-  (async () => {
-    try {
-      await agentLoop(`
-STARTUP CHECK
-1. get_wallet_balance. 2. get_my_positions. 3. If SOL >= ${config.management.minSolToOpen}: get_top_candidates then deploy ${DEPLOY} SOL. 4. Report.
-      `, config.llm.maxSteps, [], "SCREENER");
-    } catch (e) {
-      log("startup_error", e.message);
-    }
-  })();
+  log("startup", "Non-TTY startup auto-deploy disabled; waiting for scheduled screening or explicit commands.");
 }
