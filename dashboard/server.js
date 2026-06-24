@@ -7,6 +7,7 @@ const PORT = process.env.PORT || 3456;
 const ROOT = path.resolve(__dirname, '..');
 const LOGS_DIR = path.join(ROOT, 'logs');
 const BALANCE_CACHE_TTL_MS = Number(process.env.DASHBOARD_BALANCE_CACHE_TTL_MS || 90_000);
+const LOG_STREAM_TAIL_BYTES = Number(process.env.DASHBOARD_LOG_TAIL_BYTES || 180_000);
 let balanceCache = { value: null, updatedAt: 0 };
 
 // load .env
@@ -402,8 +403,13 @@ function apiLogStream(req, res, u) {
   });
 
   try {
-    const content = fs.readFileSync(fp, 'utf-8');
-    res.write('event: full\ndata: ' + JSON.stringify(content) + '\n\n');
+    const stats = fs.statSync(fp);
+    const start = Math.max(0, stats.size - LOG_STREAM_TAIL_BYTES);
+    const fd = fs.openSync(fp, 'r');
+    const buf = Buffer.alloc(stats.size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    fs.closeSync(fd);
+    res.write('event: full\ndata: ' + JSON.stringify(buf.toString('utf-8')) + '\n\n');
   } catch { res.write('event: error\ndata: "read fail"\n\n'); }
 
   let lastSize = fs.statSync(fp).size;

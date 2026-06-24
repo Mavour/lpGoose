@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { fetchLPAgentWalletPnl } from "../pnl-fetcher.js";
-import { parseFastCloseCommand, resolveCloseMatches } from "../tools/telegram-close.js";
+import {
+  createCloseSnapshot,
+  parseFastCloseCommand,
+  resolveCloseMatches,
+  resolveSnapshotCloseIndex,
+} from "../tools/telegram-close.js";
 
 assert.deepEqual(parseFastCloseCommand("close all"), {
   target: null,
@@ -28,6 +33,15 @@ assert.equal(resolveCloseMatches([
   { pair: "GTAVI-SOL", position: "PositionOne", pool: "PoolOne" },
   { pair: "ZERO-SOL", position: "PositionTwo", pool: "PoolTwo" },
 ], "GTAVI").length, 1);
+
+const closeSnapshot = createCloseSnapshot([
+  { pair: "world-SOL", position: "WorldOne" },
+  { pair: "QUEST-SOL", position: "QuestOne" },
+  { pair: "world/SOL", position: "WorldTwo" },
+], 1_000);
+assert.equal(resolveSnapshotCloseIndex(closeSnapshot, "3", { now: 2_000 }).position.position, "WorldTwo");
+assert.equal(resolveSnapshotCloseIndex(closeSnapshot, "4", { now: 2_000 }).reason, "out_of_range");
+assert.equal(resolveSnapshotCloseIndex(closeSnapshot, "1", { now: 10_000, ttlMs: 1_000 }).reason, "stale_snapshot");
 
 const originalFetch = globalThis.fetch;
 const originalKey = process.env.LPAGENT_API_KEY;

@@ -450,6 +450,10 @@ let lastStats = null;
 let fullHistoryData = [];
 let historyPage = 0;
 const HISTORY_PER_PAGE = 10;
+const LOG_MAX_CHARS = 180000;
+const LOG_MAX_LINES = 2200;
+let logBuffer = '';
+let logRenderQueued = false;
 
 const CONFIG_GROUPS = {
   'Preset':     ['preset','strategy','minBinsBelow','maxBinsBelow','solMode','dryRun'],
@@ -830,6 +834,8 @@ function connectSSE(file) {
   if (currentSSE) { currentSSE.close(); currentSSE = null; }
   const out = document.getElementById('logOutput');
   const st = document.getElementById('sseStatus');
+  logBuffer = '';
+  logRenderQueued = false;
   out.innerHTML = '<span class="terminal-placeholder">Connecting to ' + file + '...</span>';
 
   const es = new EventSource('/api/logs/stream?file=' + encodeURIComponent(file));
@@ -837,22 +843,47 @@ function connectSSE(file) {
 
   es.addEventListener('full', e => {
     try {
-      const c = JSON.parse(e.data);
-      out.innerHTML = colorizeLog(c);
-      if (document.getElementById('autoScroll').checked) scrollLog();
+      setLogText(JSON.parse(e.data));
       st.className = 'sse-status connected';
     } catch {}
   });
   es.addEventListener('append', e => {
     try {
-      out.innerHTML += colorizeLog(JSON.parse(e.data));
-      if (document.getElementById('autoScroll').checked) scrollLog();
+      appendLogText(JSON.parse(e.data));
     } catch {}
   });
   es.addEventListener('error', () => {
     st.className = 'sse-status disconnected';
   });
   es.onopen = () => { st.className = 'sse-status connected'; };
+}
+
+function capLogText(text) {
+  let value = String(text || '');
+  if (value.length > LOG_MAX_CHARS) value = value.slice(value.length - LOG_MAX_CHARS);
+  const lines = value.split('\n');
+  if (lines.length > LOG_MAX_LINES) value = lines.slice(lines.length - LOG_MAX_LINES).join('\n');
+  return value;
+}
+
+function setLogText(text) {
+  logBuffer = capLogText(text);
+  scheduleLogRender();
+}
+
+function appendLogText(text) {
+  logBuffer = capLogText(logBuffer + String(text || ''));
+  scheduleLogRender();
+}
+
+function scheduleLogRender() {
+  if (logRenderQueued) return;
+  logRenderQueued = true;
+  requestAnimationFrame(() => {
+    logRenderQueued = false;
+    document.getElementById('logOutput').innerHTML = colorizeLog(logBuffer);
+    if (document.getElementById('autoScroll').checked) scrollLog();
+  });
 }
 
 function scrollLog() {

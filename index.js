@@ -41,7 +41,13 @@ import {
   validateMomentumCandles,
 } from "./tools/momentum.js";
 import { evaluateWhaleExit, selectAdaptivePnlPollIntervalMs } from "./tools/polling.js";
-import { parseFastCloseCommand, resolveCloseMatches } from "./tools/telegram-close.js";
+import {
+  createCloseSnapshot,
+  DEFAULT_CLOSE_SNAPSHOT_TTL_MS,
+  parseFastCloseCommand,
+  resolveCloseMatches,
+  resolveSnapshotCloseIndex,
+} from "./tools/telegram-close.js";
 import { getGmgnPoolFees } from "./tools/gmgn.js";
 import { fetchWithTimeout } from "./tools/http.js";
 import {
@@ -2094,6 +2100,18 @@ let busy = false;
 const _telegramQueue = []; // queued messages received while agent was busy
 const sessionHistory = []; // persists conversation across REPL turns
 const MAX_HISTORY = 20;    // keep last 20 messages (10 exchanges)
+let _telegramCloseSnapshot = null;
+
+function rememberTelegramCloseSnapshot(positions) {
+  _telegramCloseSnapshot = createCloseSnapshot(positions);
+}
+
+function closeSnapshotErrorMessage(reason) {
+  if (reason === "missing_snapshot" || reason === "stale_snapshot") {
+    return "Close number expired. Send /positions again, then retry /close <n>.";
+  }
+  return "Invalid number. Use /positions first.";
+}
 
 async function handleTelegramBlacklistCommand(text) {
   const blacklistCommand = parseBlacklistCommand(text);
@@ -2136,13 +2154,14 @@ async function handleTelegramCloseCommand(text) {
   const closeNumber = String(text || "").trim().match(/^\/close\s+(\d+)$/i);
   if (closeNumber) {
     try {
-      const idx = parseInt(closeNumber[1], 10) - 1;
-      const { positions = [] } = await getMyPositions({ force: true, urgent: true });
-      if (idx < 0 || idx >= positions.length) {
-        await sendMessage("Invalid number. Use /positions first.");
+      const resolved = resolveSnapshotCloseIndex(_telegramCloseSnapshot, closeNumber[1], {
+        ttlMs: DEFAULT_CLOSE_SNAPSHOT_TTL_MS,
+      });
+      if (!resolved.ok) {
+        await sendMessage(closeSnapshotErrorMessage(resolved.reason));
         return true;
       }
-      await executeTelegramClose(positions[idx], "telegram /close number");
+      await executeTelegramClose(resolved.position, "telegram /close number");
     } catch (e) {
       await sendMessage(`Close failed: ${e.message}`).catch(() => {});
     }
@@ -2164,6 +2183,7 @@ async function handleTelegramCloseCommand(text) {
       for (const position of positions.map((p, index) => ({ ...p, _closeIndex: index + 1 }))) {
         await executeTelegramClose(position, "telegram close all");
       }
+      rememberTelegramCloseSnapshot([]);
       await sendMessage("Close all command finished.");
       return true;
     }
@@ -2206,6 +2226,7 @@ async function sendTelegramPositionsSnapshot() {
     const oor = !p.in_range ? " OOR" : "";
     return `${i + 1}. ${p.pair} | ${cur}${formatDecimal(p.total_value_usd, pnlDecimals)} | PnL: ${pnl} | fees: ${cur}${formatDecimal(p.unclaimed_fees_usd, pnlDecimals)} | ${age}${oor}`;
   });
+  rememberTelegramCloseSnapshot(positions);
   await sendMessage(`Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /close all to close all`);
 }
 
@@ -2225,6 +2246,69 @@ function appendHistory(userMsg, assistantMsg) {
   // Trim to last MAX_HISTORY messages
   if (sessionHistory.length > MAX_HISTORY) {
     sessionHistory.splice(0, sessionHistory.length - MAX_HISTORY);
+  }
+}
+
+async function sendNonTtyMenu() {
+  await sendKeyboard("Meridian menu", [
+    [
+      { text: "Positions", callback_data: "nt:positions" },
+      { text: "Screen", callback_data: "nt:screen" },
+    ],
+    [
+      { text: "Config", callback_data: "nt:config" },
+      { text: "Learning", callback_data: "nt:learning" },
+    ],
+  ]);
+}
+
+async function handleNonTtyMenuCommand(text) {
+  if (!/^\/?menu$/i.test(String(text || "").trim())) return false;
+  await sendNonTtyMenu();
+  return true;
+}
+
+async function nonTtyTelegramCallbackHandler(query) {
+  const data = query.data || "";
+  const type = data.split(":")[1];
+  await answerCallback(query.id);
+
+  if (type === "positions") {
+    await sendTelegramPositionsSnapshot();
+    return;
+  }
+  if (type === "screen") {
+    await sendMessage("Starting screening cycle...");
+    await runScreeningCycle({ force: true }).catch((e) =>
+      sendMessage(`Screening failed: ${e.message}`).catch(() => {})
+    );
+    return;
+  }
+  if (type === "config") {
+    if (!fs.existsSync(USER_CONFIG_PATH)) {
+      await sendMessage("No user-config.json found - using defaults.");
+      return;
+    }
+    const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+    const keys = Object.keys(cfg).sort();
+    const body = keys.map((key) => `${key}: ${JSON.stringify(cfg[key])}`).join("\n").slice(0, 3500);
+    await sendMessage(`Config (${keys.length} keys):\n\n${body}`);
+    return;
+  }
+  if (type === "learning") {
+    const proposals = listLearningProposals({ status: "pending", limit: 5 });
+    if (proposals.length === 0) {
+      await sendMessage("No pending learning proposals.");
+      return;
+    }
+    const latest = proposals[proposals.length - 1];
+    await sendKeyboard(formatLearningProposal(latest), [
+      [
+        { text: "APPROVE", callback_data: `learn_approve:${latest.id}` },
+        { text: "REJECT", callback_data: `learn_reject:${latest.id}` },
+      ],
+    ]);
+    return;
   }
 }
 
@@ -2872,6 +2956,10 @@ if (isTTY) {
       return;
     }
 
+    if (await handleTelegramPositionsCommand(text)) {
+      return;
+    }
+
     const fastCheckTarget = parseFastCheckCommand(text);
     if (fastCheckTarget) {
       try {
@@ -3312,10 +3400,11 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   maybeRunMissedBriefing().catch(() => { });
   startPolling(async (text) => {
     log("telegram", `Incoming: ${text}`);
+    if (await handleNonTtyMenuCommand(text)) return;
     if (await handleTelegramPositionsCommand(text)) return;
     if (await handleTelegramCloseCommand(text)) return;
     if (await handleTelegramBlacklistCommand(text)) return;
-    await sendMessage("Fast mode: command tidak dikenali di non-TTY. Pakai /positions, /close <n>, close <symbol>, close all, blacklist/list blacklist/unblacklist.");
-  });
+    await sendMessage("Fast mode: command tidak dikenali di non-TTY. Pakai /menu, /positions, /close <n>, close <symbol>, close all, blacklist/list blacklist/unblacklist.");
+  }, nonTtyTelegramCallbackHandler);
   log("startup", "Non-TTY startup auto-deploy disabled; waiting for scheduled screening or explicit commands.");
 }
