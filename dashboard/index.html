@@ -803,6 +803,14 @@ async function refreshData() {
   }
 }
 
+async function refreshPositionsOnly() {
+  const pos = await getJSON('/api/positions');
+  if (pos == null) return;
+  renderPositions(pos);
+  const stats = computeStats(pos, fullHistoryData);
+  renderStats(stats);
+}
+
 // ─── logs ───
 async function refreshLogList() {
   const files = await getJSON('/api/logs');
@@ -905,13 +913,14 @@ refreshLogList();
 // SSE: instant position updates when agent's 30s poller writes cache
 function connectPositionsSSE() {
   const es = new EventSource('/api/positions/stream');
-  es.onmessage = () => refreshData();
+  es.onmessage = () => refreshPositionsOnly();
   es.onerror = () => {}; // auto-reconnect by EventSource
 }
 connectPositionsSSE();
 
 // Polling fallback (cache reads are local — near-zero cost)
-setInterval(refreshData, 5000);
+setInterval(refreshPositionsOnly, 5000);
+setInterval(refreshData, 60000);
 setInterval(fetchBalance, 30000);
 setInterval(refreshLogList, 30000);
 </script>
