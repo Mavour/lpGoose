@@ -336,12 +336,24 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   const { in_range, fee_per_tvl_24h } = positionData;
   const state = load();
   let pos = state.positions[position_address];
+  let changed = false;
   if (!pos) {
     state.positions[position_address] = {
       position: position_address,
       pool: positionData.pool || null,
       pool_name: positionData.pair || null,
-      deployed_at: null,
+      strategy: positionData.strategy || "unknown",
+      bin_range: positionData.lower_bin != null && positionData.upper_bin != null
+        ? { min: positionData.lower_bin, max: positionData.upper_bin }
+        : {},
+      amount_sol: Number.isFinite(Number(positionData.amount_sol))
+        ? Number(positionData.amount_sol)
+        : Number.isFinite(Number(positionData.total_value_usd))
+          ? Number(positionData.total_value_usd)
+          : null,
+      deployed_at: positionData.age_minutes != null
+        ? new Date(Date.now() - Number(positionData.age_minutes) * 60_000).toISOString()
+        : null,
       out_of_range_since: null,
       peak_pnl_pct: 0,
       min_pnl_pct: 0,
@@ -353,6 +365,26 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     log("state", `Auto-registered untracked position: ${position_address} (${positionData.pair || "?"})`);
   }
   if (pos.closed) return null;
+
+  if (!pos.strategy && positionData.strategy) {
+    pos.strategy = positionData.strategy;
+    changed = true;
+  }
+  if ((!pos.bin_range || pos.bin_range.min == null || pos.bin_range.max == null)
+    && positionData.lower_bin != null
+    && positionData.upper_bin != null) {
+    pos.bin_range = { min: positionData.lower_bin, max: positionData.upper_bin };
+    changed = true;
+  }
+  if ((pos.amount_sol == null || Number(pos.amount_sol) === 0)
+    && Number.isFinite(Number(positionData.amount_sol ?? positionData.total_value_usd))) {
+    pos.amount_sol = Number(positionData.amount_sol ?? positionData.total_value_usd);
+    changed = true;
+  }
+  if (!pos.deployed_at && positionData.age_minutes != null) {
+    pos.deployed_at = new Date(Date.now() - Number(positionData.age_minutes) * 60_000).toISOString();
+    changed = true;
+  }
 
   if ((positionData.pnl_trusted === false && positionData.pnl_exit_trusted !== true) || pos.deploying) {
     return null;
@@ -367,8 +399,6 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     && currentPnlPct <= -90
     && pos.amount_sol
     && (positionData.total_value_usd ?? 0) > 0.01;
-
-  let changed = false;
 
   if (positionData.pnl_integrity_reset && (pos.trailing_active || (pos.peak_pnl_pct ?? 0) > 0)) {
     log(
