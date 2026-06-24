@@ -10,11 +10,16 @@
 
 import fs from "fs";
 import { log } from "./logger.js";
+import { config } from "./config.js";
 
 const STATE_FILE = "./state.json";
 
 const MAX_RECENT_EVENTS = 20;
 const _poolTvl = new Map();
+
+function fallbackStrategy() {
+  return config.strategy?.strategy || "unknown";
+}
 
 function load() {
   if (!fs.existsSync(STATE_FILE)) {
@@ -342,7 +347,7 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
       position: position_address,
       pool: positionData.pool || null,
       pool_name: positionData.pair || null,
-      strategy: positionData.strategy || "unknown",
+      strategy: positionData.strategy || fallbackStrategy(),
       bin_range: positionData.lower_bin != null && positionData.upper_bin != null
         ? { min: positionData.lower_bin, max: positionData.upper_bin }
         : {},
@@ -367,7 +372,7 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   if (pos.closed) return null;
 
   if (!pos.strategy) {
-    pos.strategy = positionData.strategy || "unknown";
+    pos.strategy = positionData.strategy || fallbackStrategy();
     changed = true;
   }
   if ((!pos.bin_range || pos.bin_range.min == null || pos.bin_range.max == null)
