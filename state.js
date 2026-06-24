@@ -366,8 +366,8 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   }
   if (pos.closed) return null;
 
-  if (!pos.strategy && positionData.strategy) {
-    pos.strategy = positionData.strategy;
+  if (!pos.strategy) {
+    pos.strategy = positionData.strategy || "unknown";
     changed = true;
   }
   if ((!pos.bin_range || pos.bin_range.min == null || pos.bin_range.max == null)
