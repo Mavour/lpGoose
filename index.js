@@ -3997,7 +3997,46 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   log("startup", "Non-TTY mode — starting cron cycles immediately.");
   startCronJobs();
   maybeRunMissedBriefing().catch(() => { });
-  startPolling(async (text) => {
+
+  async function drainNonTtyTelegramQueue() {
+    while (_telegramQueue.length > 0 && !_managementBusy && !_screeningBusy && !busy) {
+      const queued = _telegramQueue.shift();
+      await nonTtyTelegramHandler(queued);
+    }
+  }
+
+  async function runNonTtyLlm(text) {
+    const explicitPrompt = parseExplicitTelegramLlmCommand(text);
+    const prompt = explicitPrompt || String(text || "").trim();
+    if (!prompt) return;
+
+    if (_managementBusy || _screeningBusy || busy) {
+      if (_telegramQueue.length < 5) {
+        _telegramQueue.push(explicitPrompt ? `/ask ${explicitPrompt}` : prompt);
+        await sendMessage(`Queued for LLM (${_telegramQueue.length}): "${prompt.slice(0, 60)}"`).catch(() => {});
+      } else {
+        await sendMessage("LLM queue is full (5 messages). Direct commands still work.").catch(() => {});
+      }
+      return;
+    }
+
+    busy = true;
+    try {
+      const hasCloseIntent = /\bclose\b|\bsell\b|\bexit\b|\bwithdraw\b/i.test(prompt);
+      const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b|\badd liquidity\b/i.test(prompt);
+      const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
+      const agentModel = agentRole === "SCREENER" ? config.llm.screeningModel : config.llm.generalModel;
+      const { content } = await agentLoop(prompt, config.llm.maxSteps, sessionHistory, agentRole, agentModel);
+      appendHistory(prompt, content);
+      await sendMessage(stripThink(content));
+    } catch (e) {
+      await sendMessage(`Error: ${e.message}`).catch(() => {});
+    } finally {
+      busy = false;
+      drainNonTtyTelegramQueue().catch(() => {});
+    }
+  }
+  async function nonTtyTelegramHandler(text) {
     log("telegram", `Incoming: ${text}`);
     if (await handleNonTtyMenuCommand(text)) return;
     if (/^\/?(?:screen|screen sekarang|scan|scan sekarang|cari kandidat|cek kandidat)$/i.test(String(text || "").trim())) {
@@ -4011,8 +4050,36 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
     if (await handleTelegramPositionsCommand(text)) return;
     if (await handleTelegramCloseCommand(text)) return;
     if (await handleTelegramBlacklistCommand(text)) return;
-    await sendMessage("Fast mode: command tidak dikenali di non-TTY. Pakai /menu, /screen, /positions, /close <n>, close <symbol>, close all, blacklist/list blacklist/unblacklist.");
-  }, nonTtyTelegramCallbackHandler);
+
+    const fastCheckTarget = parseFastCheckCommand(text);
+    if (fastCheckTarget) {
+      try {
+        await sendMessage(await executeFastCheck(fastCheckTarget));
+      } catch (e) {
+        await sendMessage(`Fast check failed: ${e.message}`).catch(() => {});
+      }
+      return;
+    }
+
+    const deployQuestionTarget = parseDeployQuestionTarget(text);
+    if (deployQuestionTarget) {
+      try {
+        await sendMessage(await explainWhyNoDeploy(deployQuestionTarget));
+      } catch (e) {
+        await sendMessage(`Deploy check failed: ${e.message}`).catch(() => {});
+      }
+      return;
+    }
+
+    if (isDeployQuestion(text)) {
+      await sendMessage(formatFastDeployStatus());
+      return;
+    }
+
+    await runNonTtyLlm(text);
+  }
+
+  startPolling(nonTtyTelegramHandler, nonTtyTelegramCallbackHandler);
   log("startup", "Non-TTY startup screening enabled; running one screening cycle now.");
   runScreeningCycle({ force: true }).catch((e) => log("cron_error", `Non-TTY startup screening failed: ${e.message}`));
 }
