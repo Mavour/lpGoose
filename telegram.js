@@ -21,6 +21,16 @@ let _lastPollError = "";
 let _webhookChecked = false;
 let _commandsRegistered = false;
 
+const EXTRA_TELEGRAM_COMMANDS = [
+  { command: "close", description: "Close position" },
+  { command: "ask", description: "Ask agent" },
+  { command: "blacklist", description: "Blacklist token" },
+  { command: "unblacklist", description: "Remove token blacklist" },
+  { command: "block_deployer", description: "Block deployer/dev wallet" },
+  { command: "unblock_deployer", description: "Unblock deployer/dev wallet" },
+  { command: "blocked_deployers", description: "List blocked deployers" },
+];
+
 const TELEGRAM_COMMANDS = [
   { command: "menu", description: "⚙️ Bot Configuration" },
   { command: "positions", description: "📍 Active Positions" },
@@ -86,7 +96,7 @@ async function registerTelegramCommands() {
       timeoutMs: SEND_TIMEOUT_MS,
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ commands: TELEGRAM_COMMANDS }),
+      body: JSON.stringify({ commands: [...EXTRA_TELEGRAM_COMMANDS, ...TELEGRAM_COMMANDS] }),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");

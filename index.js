@@ -57,6 +57,7 @@ import {
   removeFromBlacklist,
   resolveBlacklistMint,
 } from "./token-blacklist.js";
+import { blockDev, listBlockedDevs, unblockDev } from "./dev-blocklist.js";
 import { safeBuildEntrySnapshot } from "./journal.js";
 import { buildDangerDrawdownDecision } from "./danger-exit.js";
 
@@ -600,6 +601,12 @@ function isDirectTelegramCommand(text) {
 function parseExplicitTelegramLlmCommand(text) {
   const match = String(text || "").trim().match(/^\/?(?:ask|agent)\s+(.+)$/i);
   return match ? match[1].trim() : null;
+}
+
+async function handleTelegramAskUsageCommand(text) {
+  if (String(text || "").trim() !== "/ask") return false;
+  await sendMessage("Use /ask <question>.");
+  return true;
 }
 
 function isDeployQuestion(text) {
@@ -2114,6 +2121,11 @@ function closeSnapshotErrorMessage(reason) {
 }
 
 async function handleTelegramBlacklistCommand(text) {
+  if (String(text || "").trim() === "/blacklist") {
+    await sendMessage("Use /blacklist <symbol> <mint> <reason>, or /blacklist list.");
+    return true;
+  }
+
   const blacklistCommand = parseBlacklistCommand(text);
   if (!blacklistCommand) return false;
 
@@ -2150,7 +2162,61 @@ async function handleTelegramBlacklistCommand(text) {
   return true;
 }
 
+async function handleTelegramDeployerBlockCommand(text) {
+  const input = String(text || "").trim();
+
+  if (input === "/block_deployer") {
+    await sendMessage("Use /block_deployer <wallet> <reason>.");
+    return true;
+  }
+
+  if (input === "/unblock_deployer") {
+    await sendMessage("Use /unblock_deployer <wallet>.");
+    return true;
+  }
+
+  if (/^\/?(?:blocked_deployers|list_deployers|deployer_blacklist)$/i.test(input)) {
+    const result = listBlockedDevs();
+    const lines = result.blocked_devs.map((entry, index) =>
+      `${index + 1}. ${entry.label || "unknown"} ${entry.wallet}\n${entry.reason || "No reason"}`
+    );
+    await sendMessage(lines.length ? `Blocked deployers:\n\n${lines.join("\n\n")}` : "Deployer blocklist is empty.");
+    return true;
+  }
+
+  const unblock = input.match(/^\/?(?:unblock_deployer|unblock_dev)\s+(\S+)$/i);
+  if (unblock) {
+    const result = unblockDev({ wallet: unblock[1] });
+    await sendMessage(result.error ? result.error : `Unblocked deployer ${result.was?.label || result.wallet}`);
+    return true;
+  }
+
+  const block = input.match(/^\/?(?:block_deployer|block_dev)\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+(.+))?$/i);
+  if (block) {
+    const result = blockDev({
+      wallet: block[1],
+      label: block[1].slice(0, 8),
+      reason: block[2]?.trim() || "Manually blocked from Telegram",
+    });
+    await sendMessage(
+      result.error
+        ? result.error
+        : result.already_blocked
+          ? `Deployer already blocked: ${result.label || result.wallet}\nReason: ${result.reason || "No reason"}`
+          : `Blocked deployer ${result.label || result.wallet}\nReason: ${result.reason || "No reason"}`
+    );
+    return true;
+  }
+
+  return false;
+}
+
 async function handleTelegramCloseCommand(text) {
+  if (String(text || "").trim() === "/close") {
+    await sendMessage("Use /positions first, then /close <n>. Or use /close <symbol> / /close all.");
+    return true;
+  }
+
   const closeNumber = String(text || "").trim().match(/^\/close\s+(\d+)$/i);
   if (closeNumber) {
     try {
@@ -3517,6 +3583,10 @@ if (isTTY) {
   async function telegramHandler(text) {
     log("telegram", `Incoming: ${text}`);
 
+    if (await handleTelegramAskUsageCommand(text)) {
+      return;
+    }
+
     const explicitLlmPrompt = parseExplicitTelegramLlmCommand(text);
     if (explicitLlmPrompt) {
       if (_managementBusy || _screeningBusy || busy) {
@@ -3590,6 +3660,10 @@ if (isTTY) {
     }
 
     if (await handleTelegramBlacklistCommand(text)) {
+      return;
+    }
+
+    if (await handleTelegramDeployerBlockCommand(text)) {
       return;
     }
 
@@ -4038,6 +4112,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   }
   async function nonTtyTelegramHandler(text) {
     log("telegram", `Incoming: ${text}`);
+    if (await handleTelegramAskUsageCommand(text)) return;
     if (await handleNonTtyMenuCommand(text)) return;
     if (/^\/?(?:screen|screen sekarang|scan|scan sekarang|cari kandidat|cek kandidat)$/i.test(String(text || "").trim())) {
       await sendMessage("Starting screening cycle...");
@@ -4050,6 +4125,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
     if (await handleTelegramPositionsCommand(text)) return;
     if (await handleTelegramCloseCommand(text)) return;
     if (await handleTelegramBlacklistCommand(text)) return;
+    if (await handleTelegramDeployerBlockCommand(text)) return;
 
     const fastCheckTarget = parseFastCheckCommand(text);
     if (fastCheckTarget) {
