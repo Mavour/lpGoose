@@ -4000,10 +4000,19 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   startPolling(async (text) => {
     log("telegram", `Incoming: ${text}`);
     if (await handleNonTtyMenuCommand(text)) return;
+    if (/^\/?(?:screen|screen sekarang|scan|scan sekarang|cari kandidat|cek kandidat)$/i.test(String(text || "").trim())) {
+      await sendMessage("Starting screening cycle...");
+      runScreeningCycle({ force: true }).catch((e) => {
+        log("cron_error", `Non-TTY manual screening failed: ${e.message}`);
+        sendMessage(`Screening failed: ${e.message}`).catch(() => {});
+      });
+      return;
+    }
     if (await handleTelegramPositionsCommand(text)) return;
     if (await handleTelegramCloseCommand(text)) return;
     if (await handleTelegramBlacklistCommand(text)) return;
-    await sendMessage("Fast mode: command tidak dikenali di non-TTY. Pakai /menu, /positions, /close <n>, close <symbol>, close all, blacklist/list blacklist/unblacklist.");
+    await sendMessage("Fast mode: command tidak dikenali di non-TTY. Pakai /menu, /screen, /positions, /close <n>, close <symbol>, close all, blacklist/list blacklist/unblacklist.");
   }, nonTtyTelegramCallbackHandler);
-  log("startup", "Non-TTY startup auto-deploy disabled; waiting for scheduled screening or explicit commands.");
+  log("startup", "Non-TTY startup screening enabled; running one screening cycle now.");
+  runScreeningCycle({ force: true }).catch((e) => log("cron_error", `Non-TTY startup screening failed: ${e.message}`));
 }
