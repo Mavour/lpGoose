@@ -2249,67 +2249,661 @@ function appendHistory(userMsg, assistantMsg) {
   }
 }
 
-async function sendNonTtyMenu() {
-  await sendKeyboard("Meridian menu", [
+let nonTtyPendingMenuEdit = null;
+
+const CONFIDENCE_CONFIG_KEYS = {
+  "confidence.enabled": "confidenceEnabled",
+  "confidence.fullThreshold": "confidenceFullThreshold",
+  "confidence.skipThreshold": "confidenceSkipThreshold",
+  "confidence.halfMultiplier": "confidenceHalfMultiplier",
+  "confidence.smartWalletMaxAgeMinutes": "smartWalletMaxAgeMinutes",
+};
+
+const CONFIDENCE_LIVE_FIELDS = {
+  "confidence.enabled": "enabled",
+  "confidence.fullThreshold": "fullThreshold",
+  "confidence.skipThreshold": "skipThreshold",
+  "confidence.halfMultiplier": "halfMultiplier",
+  "confidence.smartWalletMaxAgeMinutes": "smartWalletMaxAgeMinutes",
+};
+
+const MOMENTUM_MENU_FIELDS = {
+  momentumStrongThreshold: "strongThreshold",
+  momentumStrongMinBins: "strongMinBins",
+  momentumStrongMaxBins: "strongMaxBins",
+  momentumWeakMinBins: "weakMinBins",
+  momentumWeakMaxBins: "weakMaxBins",
+  momentumAgeNewMaxHours: "ageNewMaxHours",
+  momentumAgeYoungMaxHours: "ageYoungMaxHours",
+  momentumAgeMatureMaxHours: "ageMatureMaxHours",
+  momentumNewMinBins: "newMinBins",
+  momentumNewMaxBins: "newMaxBins",
+  momentumYoungMinBins: "youngMinBins",
+  momentumYoungMaxBins: "youngMaxBins",
+  momentumMatureMinBins: "matureMinBins",
+  momentumMatureMaxBins: "matureMaxBins",
+  momentumOldMinBins: "oldMinBins",
+  momentumOldMaxBins: "oldMaxBins",
+  momentumMaxCandleAgeMinutes: "maxCandleAgeMinutes",
+  momentumMaxRetries: "maxRetries",
+  momentumRetryDelayMs: "retryDelayMs",
+};
+
+const MENU_SECTION_ROWS = [
+  ["quick", "sizing", "screen"],
+  ["launch", "safety", "strategy"],
+  ["momentum", "manage", "exits"],
+  ["confidence", "schedule", "indicators"],
+  ["bottomEntry", "bottomExit"],
+  ["llm", "learning"],
+];
+
+const MENU_SECTIONS = {
+  quick: [
+    ["dryRun", "Dry run"],
+    ["strategy", "Strategy"],
+    ["deployAmountSol", "Deploy SOL"],
+    ["maxPositions", "Max positions"],
+    ["takeProfitFeePct", "Take profit %"],
+    ["stopLossPct", "Stop loss %"],
+    ["minFeeActiveTvlRatio", "Min fee/TVL"],
+    ["minTokenFeesSol", "Min fee SOL"],
+    ["minBinsBelow", "Min bins"],
+    ["maxBinsBelow", "Max bins"],
+  ],
+  sizing: [
+    ["deployAmountSol", "Deploy SOL"],
+    ["minSolToOpen", "Min SOL open"],
+    ["maxDeployAmount", "Max deploy SOL"],
+    ["gasReserve", "Gas reserve"],
+    ["positionSizePct", "Position size %"],
+    ["maxPositions", "Max positions"],
+    ["solMode", "SOL mode"],
+  ],
+  screen: [
+    ["timeframe", "Timeframe"],
+    ["category", "Category"],
+    ["minTvl", "Min TVL"],
+    ["maxTvl", "Max TVL"],
+    ["minVolume", "Min volume"],
+    ["minVolumeToActiveTvlRatio", "Min vol/TVL"],
+    ["minFeeActiveTvlRatio", "Min fee/TVL"],
+    ["minTokenFeesSol", "Min fee SOL"],
+    ["minMomentumScore", "Min momentum"],
+    ["minOrganic", "Min organic"],
+    ["minHolders", "Min holders"],
+    ["minMcap", "Min mcap"],
+    ["maxMcap", "Max mcap"],
+    ["minBinStep", "Min bin step"],
+    ["maxBinStep", "Max bin step"],
+  ],
+  launch: [
+    ["blockedLaunchpads", "Blocked launchpads"],
+    ["allowedLaunchpads", "Allowed launchpads"],
+    ["minTokenAgeHours", "Min token age h"],
+    ["maxTokenAgeHours", "Max token age h"],
+    ["athFilterPct", "ATH filter %"],
+    ["avoidPvpSymbols", "PvP detect"],
+    ["blockPvpSymbols", "PvP block"],
+  ],
+  safety: [
+    ["maxBotHoldersPct", "Max bots %"],
+    ["maxTop10Pct", "Max top10 %"],
+    ["whaleGuardEnabled", "Whale guard"],
+    ["whaleGuardMinDropUsd", "Whale drop USD"],
+    ["whaleGuardMinDropPct", "Whale drop %"],
+    ["whaleGuardCooldownMin", "Whale cooldown min"],
+    ["tokenCloseCooldownMinutes", "Token close cooldown"],
+    ["dangerDrawdownPct", "Danger %"],
+    ["dangerHardClosePct", "Danger hard %"],
+    ["dangerGraceMinutes", "Danger grace min"],
+    ["dangerCloseMomentumBelow", "Danger momentum <"],
+    ["dangerClosePriceChange5mPct", "Danger 5m change %"],
+  ],
+  strategy: [
+    ["strategy", "Strategy"],
+    ["mixedRatio", "Mixed ratio"],
+    ["minBinsBelow", "Min bins"],
+    ["maxBinsBelow", "Max bins"],
+  ],
+  momentum: [
+    ["momentumStrongThreshold", "Strong threshold"],
+    ["momentumStrongMinBins", "Strong min bins"],
+    ["momentumStrongMaxBins", "Strong max bins"],
+    ["momentumWeakMinBins", "Weak min bins"],
+    ["momentumWeakMaxBins", "Weak max bins"],
+    ["momentumAgeNewMaxHours", "New max age h"],
+    ["momentumNewMinBins", "New min bins"],
+    ["momentumNewMaxBins", "New max bins"],
+    ["momentumAgeYoungMaxHours", "Young max age h"],
+    ["momentumYoungMinBins", "Young min bins"],
+    ["momentumYoungMaxBins", "Young max bins"],
+    ["momentumAgeMatureMaxHours", "Mature max age h"],
+    ["momentumMatureMinBins", "Mature min bins"],
+    ["momentumMatureMaxBins", "Mature max bins"],
+    ["momentumOldMinBins", "Old min bins"],
+    ["momentumOldMaxBins", "Old max bins"],
+    ["momentumMaxCandleAgeMinutes", "Max candle age min"],
+    ["momentumMaxRetries", "Max retries"],
+    ["momentumRetryDelayMs", "Retry delay ms"],
+  ],
+  manage: [
+    ["minClaimAmount", "Min claim $"],
+    ["autoSwapAfterClaim", "Auto swap"],
+    ["outOfRangeBinsToClose", "OOR bins close"],
+    ["outOfRangeWaitMinutes", "OOR wait min"],
+    ["downsideOutOfRangeWaitMinutes", "Downside OOR wait"],
+    ["downsideOutOfRangeLossPct", "Downside OOR loss %"],
+    ["minVolumeToRebalance", "Min vol rebalance"],
+    ["minFeePerTvl24h", "Min fee/TVL 24h"],
+    ["minAgeBeforeYieldCheck", "Min age yield min"],
+  ],
+  exits: [
+    ["takeProfitFeePct", "Take profit %"],
+    ["stopLossPct", "Stop loss %"],
+    ["trailingTakeProfit", "Trailing"],
+    ["trailingTriggerPct", "Trail trigger %"],
+    ["trailingDropPct", "Trail drop %"],
+    ["dangerDrawdownPct", "Danger %"],
+    ["dangerHardClosePct", "Danger hard %"],
+    ["dangerGraceMinutes", "Danger grace min"],
+  ],
+  confidence: [
+    ["confidence.enabled", "Confidence enabled"],
+    ["confidence.fullThreshold", "Full threshold"],
+    ["confidence.skipThreshold", "Skip threshold"],
+    ["confidence.halfMultiplier", "Half multiplier"],
+    ["confidence.smartWalletMaxAgeMinutes", "Smart wallet age"],
+  ],
+  schedule: [
+    ["managementIntervalMin", "Manage interval"],
+    ["screeningIntervalMin", "Screen interval"],
+    ["healthCheckIntervalMin", "Health interval"],
+    ["pnlPollIntervalMs", "PNL fast poll ms"],
+    ["pnlNormalPollIntervalMs", "PNL normal poll ms"],
+    ["pnlNoPositionPollIntervalMs", "PNL idle poll ms"],
+    ["pnlSlowCheckIntervalMs", "PNL slow check ms"],
+    ["pnlSignatureCheckIntervalMs", "PNL signature ms"],
+    ["pnlDiscoveryTtlMs", "PNL discovery TTL"],
+    ["lpAgentPnlNormalTtlMs", "LP PNL normal TTL"],
+    ["lpAgentPnlUrgentTtlMs", "LP PNL urgent TTL"],
+    ["lpAgentPnlRateLimitBackoffMs", "LP PNL backoff"],
+    ["emptyPositionsCacheTtlMs", "Empty pos cache TTL"],
+    ["screeningWatchdogMs", "Screen watchdog ms"],
+    ["urgentPositionsTimeoutMs", "Urgent pos timeout"],
+    ["shutdownTimeoutMs", "Shutdown timeout"],
+  ],
+  indicators: [
+    ["enabled", "Indicators enabled"],
+    ["entryPreset", "Entry preset"],
+    ["entryMinPriceChangePct", "Entry min change %"],
+    ["stPeriod", "ST period"],
+    ["stMultiplier", "ST multiplier"],
+    ["interval", "ST default interval"],
+    ["entryInterval", "Entry interval"],
+    ["exitInterval", "Exit interval"],
+    ["failOpen", "Fail open"],
+    ["exitOnBearishFlip", "Exit bearish flip"],
+  ],
+  bottomEntry: [
+    ["bottomSpotLP.enabled", "Enabled"],
+    ["bottomSpotLP.deployAmountSol", "Deploy SOL"],
+    ["bottomSpotLP.minBaseFee", "Min base fee"],
+    ["bottomSpotLP.minTvl", "Min TVL"],
+    ["bottomSpotLP.maxTvl", "Max TVL"],
+    ["bottomSpotLP.minVolume", "Min volume"],
+    ["bottomSpotLP.minFeeActiveTvlRatio", "Min fee/TVL"],
+    ["bottomSpotLP.minOrganic", "Min organic"],
+    ["bottomSpotLP.rangePct", "Range %"],
+    ["bottomSpotLP.minDumpPct", "Min dump %"],
+    ["bottomSpotLP.minRetracePct", "Min retrace %"],
+    ["bottomSpotLP.interval", "Interval"],
+    ["bottomSpotLP.athLookbackCandles", "Lookback candles"],
+    ["bottomSpotLP.maxBottomSpotPositions", "Max bottom pos"],
+    ["bottomSpotLP.logLevel", "Log level"],
+  ],
+  bottomExit: [
+    ["bottomSpotLP.rsiExitThreshold", "RSI exit"],
+    ["bottomSpotLP.takeProfitFeePct", "Fee target %"],
+    ["bottomSpotLP.maxILPct", "Max IL %"],
+    ["bottomSpotLP.minFeesToOverrideStopLoss", "Fees override SL"],
+    ["bottomSpotLP.outOfRangeWaitMinutes", "OOR wait min"],
+    ["bottomSpotLP.outOfRangeTolerance", "OOR tolerance"],
+    ["bottomSpotLP.feesForReposition", "Fees reposition %"],
+    ["bottomSpotLP.enableTAExit", "TA exit"],
+  ],
+  llm: [
+    ["managementModel", "Manage model"],
+    ["screeningModel", "Screen model"],
+    ["generalModel", "General model"],
+    ["temperature", "Temperature"],
+    ["maxTokens", "Max tokens"],
+    ["maxSteps", "Max steps"],
+  ],
+  learning: [
+    ["learning.enabled", "Learning enabled"],
+    ["learning.minClosedPositions", "Min closed pos"],
+    ["learning.proposalCooldownHours", "Proposal cooldown h"],
+    ["learning.maxChangesPerProposal", "Max changes/proposal"],
+  ],
+};
+
+MENU_SECTIONS.risk = MENU_SECTIONS.safety;
+MENU_SECTIONS.bottom = MENU_SECTIONS.bottomEntry;
+
+function parseTelegramConfigValue(rawValue, key = null) {
+  const raw = String(rawValue).trim();
+  if (raw === "null" || raw === "undefined") return null;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  if ((raw.startsWith("{") && raw.endsWith("}")) || (raw.startsWith("[") && raw.endsWith("]"))) {
+    try { return JSON.parse(raw); } catch { /* fall through */ }
+  }
+  const current = key ? menuSettingValue(key) : undefined;
+  if (Array.isArray(current) && raw.includes(",")) {
+    return raw.split(",").map((part) => part.trim()).filter(Boolean);
+  }
+  if (!Number.isNaN(Number(raw)) && raw.includes(".")) return parseFloat(raw);
+  if (!Number.isNaN(Number(raw))) return parseInt(raw, 10);
+  return raw;
+}
+
+function parseNonTtyConfigValue(rawValue, key = null) {
+  return parseTelegramConfigValue(rawValue, key);
+}
+
+function readUserConfigFile() {
+  if (!fs.existsSync(USER_CONFIG_PATH)) return {};
+  try { return JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8")); } catch { return {}; }
+}
+
+function writeUserConfigFile(cfg) {
+  fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+}
+
+function persistMenuConfigValue(cfg, key, value) {
+  if (key === "dryRun") {
+    cfg.dryRun = value;
+    return;
+  }
+  if (key.startsWith("bottomSpotLP.")) {
+    const field = key.split(".")[1];
+    cfg.bottomSpotLP = cfg.bottomSpotLP || {};
+    cfg.bottomSpotLP[field] = value;
+    delete cfg[key];
+    return;
+  }
+  if (key.startsWith("learning.")) {
+    const field = key.split(".")[1];
+    cfg.learning = cfg.learning || {};
+    cfg.learning[field] = value;
+    delete cfg[key];
+    return;
+  }
+  if (CONFIDENCE_CONFIG_KEYS[key]) {
+    cfg[CONFIDENCE_CONFIG_KEYS[key]] = value;
+    delete cfg[key];
+    return;
+  }
+  if (config.chartIndicators && key in config.chartIndicators) {
+    cfg.chartIndicators = cfg.chartIndicators || {};
+    cfg.chartIndicators[key] = value;
+    delete cfg[key];
+    return;
+  }
+  cfg[key] = value;
+  if (key === "deployAmountSol") {
+    cfg.minSolToOpen = value;
+    cfg.maxDeployAmount = value;
+  }
+}
+
+function applyLiveMenuConfigValue(key, value) {
+  if (key === "dryRun") {
+    process.env.DRY_RUN = String(value);
+    return;
+  }
+  if (key.startsWith("bottomSpotLP.")) {
+    const field = key.split(".")[1];
+    if (field && config.bottomSpotLP && field in config.bottomSpotLP) config.bottomSpotLP[field] = value;
+    return;
+  }
+  if (key.startsWith("learning.")) {
+    const field = key.split(".")[1];
+    if (field && config.learning && field in config.learning) config.learning[field] = value;
+    return;
+  }
+  if (CONFIDENCE_LIVE_FIELDS[key]) {
+    config.confidence[CONFIDENCE_LIVE_FIELDS[key]] = value;
+    return;
+  }
+  if (MOMENTUM_MENU_FIELDS[key]) {
+    config.momentum[MOMENTUM_MENU_FIELDS[key]] = value;
+    return;
+  }
+  if (config.risk && key in config.risk) config.risk[key] = value;
+  if (config.screening && key in config.screening) config.screening[key] = value;
+  if (config.management && key in config.management) config.management[key] = value;
+  if (config.schedule && key in config.schedule) config.schedule[key] = value;
+  if (config.llm && key in config.llm) config.llm[key] = value;
+  if (config.strategy && key in config.strategy) config.strategy[key] = value;
+  if (config.chartIndicators && key in config.chartIndicators) config.chartIndicators[key] = value;
+  if (key === "deployAmountSol") {
+    config.management.minSolToOpen = value;
+    config.risk.maxDeployAmount = value;
+  }
+}
+
+async function applyMenuConfig(key, value, { restartCron = true } = {}) {
+  const cfg = readUserConfigFile();
+  persistMenuConfigValue(cfg, key, value);
+  writeUserConfigFile(cfg);
+
+  if (key === "dryRun") process.env.DRY_RUN = String(value);
+  const runtimeReload = reloadRuntimeConfig();
+  if (runtimeReload.error) {
+    throw new Error(`Runtime config reload failed: ${runtimeReload.error}`);
+  }
+  applyLiveMenuConfigValue(key, value);
+
+  const scheduleChanged = config.schedule && key in config.schedule;
+  if (scheduleChanged && restartCron) {
+    stopCronJobs();
+    startCronJobs();
+  }
+  if (key === "strategy") {
+    if (value === "bid_ask") setActiveStrategy({ id: "single_sided_reseed" });
+    if (value === "spot") setActiveStrategy({ id: "custom_ratio_spot" });
+    if (value === "mixed") setActiveStrategy({ id: "multi_layer" });
+  }
+
+  log("config", `Effective entry config: ${formatRuntimeConfigSnapshot()}`);
+  log("config", `Telegram update: ${key} = ${JSON.stringify(value)}`);
+}
+
+function menuSettingValue(key) {
+  if (key === "dryRun") return process.env.DRY_RUN === "true" ? "on" : "off";
+  if (key.startsWith("bottomSpotLP.")) return config.bottomSpotLP?.[key.split(".")[1]] ?? "?";
+  if (key.startsWith("learning.")) return config.learning?.[key.split(".")[1]] ?? "?";
+  if (CONFIDENCE_LIVE_FIELDS[key]) return config.confidence?.[CONFIDENCE_LIVE_FIELDS[key]] ?? "?";
+  if (MOMENTUM_MENU_FIELDS[key]) return config.momentum?.[MOMENTUM_MENU_FIELDS[key]] ?? "?";
+  if (key in config.risk) return config.risk[key];
+  if (key in config.screening) return config.screening[key];
+  if (key in config.management) return config.management[key];
+  if (key in config.schedule) return config.schedule[key];
+  if (key in config.llm) return config.llm[key];
+  if (config.chartIndicators && key in config.chartIndicators) return config.chartIndicators[key];
+  if (key in config.strategy) {
+    const value = config.strategy[key];
+    return typeof value === "object" ? JSON.stringify(value) : value;
+  }
+  return "?";
+}
+
+function isToggleSetting(key) {
+  const value = menuSettingValue(key);
+  return typeof value === "boolean" || key === "dryRun";
+}
+
+function toggledSettingValue(key) {
+  if (key === "dryRun") return !(process.env.DRY_RUN === "true");
+  return !Boolean(menuSettingValue(key));
+}
+
+function sectionTitle(id) {
+  const special = {
+    llm: "LLM",
+    bottomEntry: "Bottom Entry",
+    bottomExit: "Bottom Exit",
+  };
+  if (special[id]) return special[id];
+  return id.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase());
+}
+
+function buildMenuSectionRows(section, preset) {
+  return MENU_SECTION_ROWS.map((row) => row.map((id) => ({
+    text: `${id === section ? "* " : ""}${sectionTitle(id)}`,
+    callback_data: `menu:${id}:${preset}`,
+  })));
+}
+
+async function applyNonTtyTelegramConfig(key, value) {
+  await applyMenuConfig(key, value);
+}
+
+function nonTtySettingValue(key) {
+  return menuSettingValue(key);
+}
+
+const nonTtyMenuSections = MENU_SECTIONS;
+
+function buildNonTtySettingsMenu(section = "quick", preset = "custom") {
+  const activeStrategy = getActiveStrategy();
+  const strategyName = activeStrategy?.lp_strategy || config.strategy.strategy;
+  const trailing = config.management.trailingTakeProfit ? "ON" : "OFF";
+  const solMode = config.management.solMode ? "SOL" : "USD";
+  const dryRun = process.env.DRY_RUN === "true" ? "on" : "off";
+  const st = config.chartIndicators;
+  const supState = st.enabled ? `${st.stPeriod}/${st.stMultiplier}, ${st.interval}` : "off";
+  const bottomState = config.bottomSpotLP?.enabled ? `ON (${config.bottomSpotLP.minDumpPct}% dump)` : "OFF";
+  const settings = nonTtyMenuSections[section] || nonTtyMenuSections.quick;
+  const text = [
+    `Settings: ${sectionTitle(section)}`,
+    "",
+    `Mode: ${solMode} | Source: meteora | Strat: ${strategyName}`,
+    `Deploy: ${config.management.deployAmountSol} SOL | MaxPos: ${config.risk.maxPositions} | Gas: ${config.management.gasReserve}`,
+    `TP/SL: ${config.management.takeProfitFeePct}% / ${config.management.stopLossPct}% | Trailing: ${trailing}`,
+    `Bins range: [${config.strategy.minBinsBelow}-${config.strategy.maxBinsBelow}] | Sup: ${supState} | Dry run: ${dryRun}`,
+    `Bottom Spot: ${bottomState}`,
+    `PvP: ${config.screening.avoidPvpSymbols ? "detect" : "off"} + ${config.screening.blockPvpSymbols ? "block" : "allow"}`,
+    "",
+    `${settings.length} editable settings. Tap a value to edit.`,
+  ].join("\n");
+  const oldSectionRows = [
     [
-      { text: "Positions", callback_data: "nt:positions" },
-      { text: "Screen", callback_data: "nt:screen" },
+      { text: `${section === "quick" ? "✓ " : ""}Quick`, callback_data: `menu:quick:${preset}` },
+      { text: `${section === "screen" ? "✓ " : ""}Screen`, callback_data: `menu:screen:${preset}` },
+      { text: `${section === "risk" ? "✓ " : ""}Risk`, callback_data: `menu:risk:${preset}` },
     ],
     [
-      { text: "Config", callback_data: "nt:config" },
-      { text: "Learning", callback_data: "nt:learning" },
+      { text: `${section === "strategy" ? "✓ " : ""}Strategy`, callback_data: `menu:strategy:${preset}` },
+      { text: `${section === "manage" ? "✓ " : ""}Manage`, callback_data: `menu:manage:${preset}` },
+      { text: `${section === "exits" ? "✓ " : ""}Exits`, callback_data: `menu:exits:${preset}` },
     ],
-  ]);
+    [
+      { text: `${section === "confidence" ? "✓ " : ""}Confidence`, callback_data: `menu:confidence:${preset}` },
+      { text: `${section === "schedule" ? "✓ " : ""}Schedule`, callback_data: `menu:schedule:${preset}` },
+      { text: `${section === "indicators" ? "✓ " : ""}Indicators`, callback_data: `menu:indicators:${preset}` },
+    ],
+    [{ text: `${section === "llm" ? "✓ " : ""}Llm`, callback_data: `menu:llm:${preset}` }],
+    [{ text: `${section === "bottom" ? "✓ " : ""}Bottom`, callback_data: `menu:bottom:${preset}` }],
+  ];
+  const sectionRows = buildMenuSectionRows(section, preset);
+  const oldPresetRow = [
+    { text: `${preset === "custom" ? "✓ " : ""}Custom`, callback_data: `preset:custom:${section}` },
+    { text: `${preset === "degen" ? "✓ " : ""}Degen`, callback_data: `preset:degen:${section}` },
+    { text: `${preset === "moderate" ? "✓ " : ""}Moderate`, callback_data: `preset:moderate:${section}` },
+    { text: `${preset === "safe" ? "✓ " : ""}Safe`, callback_data: `preset:safe:${section}` },
+  ];
+  const presetRow = ["custom", "degen", "moderate", "safe"].map((id) => ({
+    text: `${id === preset ? "* " : ""}${sectionTitle(id)}`,
+    callback_data: `preset:${id}:${section}`,
+  }));
+  const oldSettingRows = settings.map(([key, label]) => ([{
+    text: `${label}: ${nonTtySettingValue(key)} ✎`,
+    callback_data: `edit:${key}:${section}:${preset}`,
+  }]));
+  const settingRows = settings.map(([key, label]) => ([{
+    text: `${label}: ${nonTtySettingValue(key)} edit`,
+    callback_data: `edit:${key}:${section}:${preset}`,
+  }]));
+  return { text, keyboard: [...sectionRows, presetRow, ...settingRows] };
+}
+
+async function sendNonTtyMenu(section = "quick", preset = "custom") {
+  const menu = buildNonTtySettingsMenu(section, preset);
+  await sendKeyboard(menu.text, menu.keyboard);
+}
+
+async function applyNonTtyPreset(name) {
+  const presets = {
+    custom: {},
+    degen: {
+      maxPositions: 3,
+      deployAmountSol: 0.2,
+      gasReserve: 0.05,
+      stopLossPct: -60,
+      takeProfitFeePct: 20,
+      minTokenFeesSol: 20,
+      whaleGuardMinDropPct: 35,
+    },
+    moderate: {
+      maxPositions: 2,
+      deployAmountSol: 0.1,
+      gasReserve: 0.05,
+      stopLossPct: -30,
+      takeProfitFeePct: 15,
+      minTokenFeesSol: 30,
+      whaleGuardMinDropPct: 25,
+    },
+    safe: {
+      maxPositions: 1,
+      deployAmountSol: 0.1,
+      gasReserve: 0.08,
+      stopLossPct: -15,
+      takeProfitFeePct: 10,
+      minTokenFeesSol: 50,
+      whaleGuardMinDropPct: 15,
+    },
+  };
+  for (const [key, value] of Object.entries(presets[name] || {})) {
+    await applyNonTtyTelegramConfig(key, value);
+  }
 }
 
 async function handleNonTtyMenuCommand(text) {
-  if (!/^\/?menu$/i.test(String(text || "").trim())) return false;
-  await sendNonTtyMenu();
+  const trimmed = String(text || "").trim();
+  if (nonTtyPendingMenuEdit && !trimmed.startsWith("/")) {
+    const { key, section, preset } = nonTtyPendingMenuEdit;
+    nonTtyPendingMenuEdit = null;
+    const value = parseNonTtyConfigValue(trimmed, key);
+    try {
+      await applyNonTtyTelegramConfig(key, value);
+      await sendMessage(`Updated ${key} = ${JSON.stringify(value)}`);
+      await sendNonTtyMenu(section, preset);
+    } catch (e) {
+      await sendMessage(`Failed: ${e.message}`);
+    }
+    return true;
+  }
+  if (!/^\/?menu$/i.test(trimmed)) return false;
+  await sendNonTtyMenu("quick", "custom");
   return true;
 }
 
 async function nonTtyTelegramCallbackHandler(query) {
   const data = query.data || "";
-  const type = data.split(":")[1];
-  await answerCallback(query.id);
+  log("telegram", `Callback: ${data}`);
+  const [type, a, b, c, d] = data.split(":");
+  const chatId = query.message?.chat?.id;
+  const messageId = query.message?.message_id;
 
-  if (type === "positions") {
-    await sendTelegramPositionsSnapshot();
+  if (type === "menu") {
+    const section = a || "quick";
+    const preset = b || "custom";
+    const menu = buildNonTtySettingsMenu(section, preset);
+    await editKeyboard(chatId, messageId, menu.text, menu.keyboard);
+    await answerCallback(query.id);
     return;
   }
-  if (type === "screen") {
-    await sendMessage("Starting screening cycle...");
-    await runScreeningCycle({ force: true }).catch((e) =>
-      sendMessage(`Screening failed: ${e.message}`).catch(() => {})
-    );
+
+  if (type === "preset") {
+    const preset = a || "custom";
+    const section = b || "quick";
+    await applyNonTtyPreset(preset);
+    const menu = buildNonTtySettingsMenu(section, preset);
+    await editKeyboard(chatId, messageId, menu.text, menu.keyboard);
+    await answerCallback(query.id, preset === "custom" ? "Custom selected" : `${preset} preset applied`);
     return;
   }
-  if (type === "config") {
-    if (!fs.existsSync(USER_CONFIG_PATH)) {
-      await sendMessage("No user-config.json found - using defaults.");
+
+  if (type === "edit") {
+    const key = a;
+    const section = b || "quick";
+    const preset = c || "custom";
+
+    if (isToggleSetting(key)) {
+      const value = toggledSettingValue(key);
+      await applyNonTtyTelegramConfig(key, value);
+      const menu = buildNonTtySettingsMenu(section, preset);
+      await editKeyboard(chatId, messageId, menu.text, menu.keyboard);
+      await answerCallback(query.id, `${key} ${value ? "ON" : "OFF"}`);
       return;
     }
-    const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
-    const keys = Object.keys(cfg).sort();
-    const body = keys.map((key) => `${key}: ${JSON.stringify(cfg[key])}`).join("\n").slice(0, 3500);
-    await sendMessage(`Config (${keys.length} keys):\n\n${body}`);
-    return;
-  }
-  if (type === "learning") {
-    const proposals = listLearningProposals({ status: "pending", limit: 5 });
-    if (proposals.length === 0) {
-      await sendMessage("No pending learning proposals.");
+
+    if (key === "strategy") {
+      const keyboard = [
+        [{ text: `bid_ask${config.strategy.strategy === "bid_ask" ? " ✓" : ""}`, callback_data: `set_strategy:bid_ask:${section}:${preset}` }],
+        [{ text: `spot${config.strategy.strategy === "spot" ? " ✓" : ""}`, callback_data: `set_strategy:spot:${section}:${preset}` }],
+        [{ text: `mixed${config.strategy.strategy === "mixed" ? " ✓" : ""}`, callback_data: `set_strategy:mixed:${section}:${preset}` }],
+      ];
+      await editKeyboard(chatId, messageId, "Choose strategy:", keyboard);
+      await answerCallback(query.id);
       return;
     }
-    const latest = proposals[proposals.length - 1];
-    await sendKeyboard(formatLearningProposal(latest), [
-      [
-        { text: "APPROVE", callback_data: `learn_approve:${latest.id}` },
-        { text: "REJECT", callback_data: `learn_reject:${latest.id}` },
-      ],
-    ]);
+
+    if (key === "mixedRatio") {
+      const current = config.strategy.mixedRatio || { bidask: 70, spot: 30 };
+      const is = (bidask, spot) => current.bidask === bidask && current.spot === spot;
+      const keyboard = [
+        [
+          { text: `90/10${is(90,10) ? " ✓" : ""}`, callback_data: `set_mixed:90:10:${section}:${preset}` },
+          { text: `85/15${is(85,15) ? " ✓" : ""}`, callback_data: `set_mixed:85:15:${section}:${preset}` },
+        ],
+        [
+          { text: `70/30${is(70,30) ? " ✓" : ""}`, callback_data: `set_mixed:70:30:${section}:${preset}` },
+          { text: `60/40${is(60,40) ? " ✓" : ""}`, callback_data: `set_mixed:60:40:${section}:${preset}` },
+        ],
+        [
+          { text: `80/20${is(80,20) ? " ✓" : ""}`, callback_data: `set_mixed:80:20:${section}:${preset}` },
+          { text: `50/50${is(50,50) ? " ✓" : ""}`, callback_data: `set_mixed:50:50:${section}:${preset}` },
+        ],
+      ];
+      await editKeyboard(chatId, messageId, "Choose BidAsk/Spot split:", keyboard);
+      await answerCallback(query.id);
+      return;
+    }
+
+    nonTtyPendingMenuEdit = { key, section, preset };
+    await answerCallback(query.id, `Send new value for ${key}`);
+    await sendMessage(`Send new value for ${key}. Current: ${JSON.stringify(nonTtySettingValue(key))}`);
     return;
   }
+
+  if (type === "set_strategy") {
+    const value = a;
+    const section = b || "quick";
+    const preset = c || "custom";
+    await applyNonTtyTelegramConfig("strategy", value);
+    const menu = buildNonTtySettingsMenu(section, preset);
+    await editKeyboard(chatId, messageId, menu.text, menu.keyboard);
+    await answerCallback(query.id, `Strategy → ${value}`);
+    return;
+  }
+
+  if (type === "set_mixed") {
+    const bidask = parseInt(a);
+    const spot = parseInt(b);
+    const section = c || "quick";
+    const preset = d || "custom";
+    await applyNonTtyTelegramConfig("mixedRatio", { bidask, spot });
+    const menu = buildNonTtySettingsMenu(section, preset);
+    await editKeyboard(chatId, messageId, menu.text, menu.keyboard);
+    await answerCallback(query.id, `Mixed ratio → ${bidask}/${spot}`);
+    return;
+  }
+
+  await answerCallback(query.id);
 }
 
 // Register restarter — when update_config changes intervals, running cron jobs get replaced
@@ -2411,20 +3005,12 @@ if (isTTY) {
 
   let pendingMenuEdit = null;
 
-  function parseConfigValue(rawValue) {
-    const raw = String(rawValue).trim();
-    if (raw === "null" || raw === "undefined") return null;
-    if (raw === "true") return true;
-    if (raw === "false") return false;
-    if (!Number.isNaN(Number(raw)) && raw.includes(".")) return parseFloat(raw);
-    if (!Number.isNaN(Number(raw))) return parseInt(raw, 10);
-    if ((raw.startsWith("{") && raw.endsWith("}")) || (raw.startsWith("[") && raw.endsWith("]"))) {
-      try { return JSON.parse(raw); } catch { /* fall through */ }
-    }
-    return raw;
+  function parseConfigValue(rawValue, key = null) {
+    return parseTelegramConfigValue(rawValue, key);
   }
 
   async function applyTelegramConfig(key, value) {
+    return applyMenuConfig(key, value);
     const cfg = fs.existsSync(USER_CONFIG_PATH)
       ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
       : {};
@@ -2533,6 +3119,7 @@ if (isTTY) {
   }
 
   function settingValue(key) {
+    return menuSettingValue(key);
     if (key === "dryRun") return process.env.DRY_RUN === "true" ? "on" : "off";
     if (key.startsWith("bottomSpotLP.")) {
       const field = key.split(".")[1];
@@ -2715,10 +3302,10 @@ if (isTTY) {
     const bottomState = config.bottomSpotLP?.enabled
       ? `ON (${config.bottomSpotLP.minDumpPct}% dump)`
       : "OFF";
-    const settings = menuSections[section] || menuSections.quick;
+    const settings = MENU_SECTIONS[section] || MENU_SECTIONS.quick;
 
     const text = [
-      `Settings: ${section[0].toUpperCase()}${section.slice(1)}`,
+      `Settings: ${sectionTitle(section)}`,
       "",
       `Mode: ${solMode} | Source: meteora | Strat: ${strategyName}`,
       `Deploy: ${config.management.deployAmountSol} SOL | MaxPos: ${config.risk.maxPositions} | Gas: ${config.management.gasReserve}`,
@@ -2730,7 +3317,7 @@ if (isTTY) {
       `${settings.length} editable settings. Tap a value to edit.`,
     ].join("\n");
 
-    const sectionRows = [
+    const oldSectionRows = [
       ["quick", "screen", "risk"],
       ["strategy", "manage", "exits"],
       ["confidence", "schedule", "indicators"],
@@ -2741,13 +3328,25 @@ if (isTTY) {
       callback_data: `menu:${id}:${preset}`,
     })));
 
-    const presetRow = ["custom", "degen", "moderate", "safe"].map((id) => ({
+    const sectionRows = buildMenuSectionRows(section, preset);
+
+    const oldPresetRow = ["custom", "degen", "moderate", "safe"].map((id) => ({
       text: `${id === preset ? "✓ " : ""}${id[0].toUpperCase()}${id.slice(1)}`,
       callback_data: `preset:${id}:${section}`,
     }));
 
-    const settingRows = settings.map(([key, label]) => ([{
+    const presetRow = ["custom", "degen", "moderate", "safe"].map((id) => ({
+      text: `${id === preset ? "* " : ""}${sectionTitle(id)}`,
+      callback_data: `preset:${id}:${section}`,
+    }));
+
+    const oldSettingRows = settings.map(([key, label]) => ([{
       text: `${label}: ${settingValue(key)} ✎`,
+      callback_data: `edit:${key}:${section}:${preset}`,
+    }]));
+
+    const settingRows = settings.map(([key, label]) => ([{
+      text: `${label}: ${settingValue(key)} edit`,
       callback_data: `edit:${key}:${section}:${preset}`,
     }]));
 
@@ -2790,12 +3389,12 @@ if (isTTY) {
       const section = b || "quick";
       const preset = c || "custom";
 
-      if (key === "confidence.enabled") {
-        const value = !config.confidence.enabled;
+      if (isToggleSetting(key)) {
+        const value = toggledSettingValue(key);
         await applyTelegramConfig(key, value);
         const menu = buildSettingsMenu(section, preset);
         await editKeyboard(chatId, messageId, menu.text, menu.keyboard);
-        await answerCallback(query.id, `Confidence score ${value ? "ON" : "OFF"}`);
+        await answerCallback(query.id, `${key} ${value ? "ON" : "OFF"}`);
         return;
       }
 
@@ -2974,7 +3573,7 @@ if (isTTY) {
     if (pendingMenuEdit && !text.startsWith("/")) {
       const { key, section, preset } = pendingMenuEdit;
       pendingMenuEdit = null;
-      const value = parseConfigValue(text);
+      const value = parseConfigValue(text, key);
       try {
         await applyTelegramConfig(key, value);
         await sendMessage(`Updated ${key} = ${JSON.stringify(value)}`);
