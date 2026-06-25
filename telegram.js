@@ -19,6 +19,17 @@ let _offset  = 0;
 let _polling = false;
 let _lastPollError = "";
 let _webhookChecked = false;
+let _commandsRegistered = false;
+
+const TELEGRAM_COMMANDS = [
+  { command: "menu", description: "⚙️ Bot Configuration" },
+  { command: "positions", description: "📍 Active Positions" },
+  { command: "status", description: "📊 Bot Status" },
+  { command: "screen", description: "🔎 Run Screening" },
+  { command: "briefing", description: "🧾 24h Briefing" },
+  { command: "config", description: "🛠️ Current Config" },
+  { command: "learning", description: "🧠 Learning Proposals" },
+];
 
 // ─── chatId persistence ──────────────────────────────────────────
 function loadChatId() {
@@ -64,6 +75,36 @@ async function ensureLongPollingMode() {
     log("telegram", "Long polling mode confirmed");
   } catch (e) {
     log("telegram_warn", `deleteWebhook check failed: ${telegramErrorMessage(e)}`);
+  }
+}
+
+async function registerTelegramCommands() {
+  if (!BASE || _commandsRegistered) return;
+
+  try {
+    const res = await fetchWithTimeout(`${BASE}/setMyCommands`, {
+      timeoutMs: SEND_TIMEOUT_MS,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ commands: TELEGRAM_COMMANDS }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      log("telegram_warn", `setMyCommands failed: HTTP ${res.status}: ${body.slice(0, 160) || res.statusText}`);
+      return;
+    }
+
+    await fetchWithTimeout(`${BASE}/setChatMenuButton`, {
+      timeoutMs: SEND_TIMEOUT_MS,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ menu_button: { type: "commands" } }),
+    });
+
+    _commandsRegistered = true;
+    log("telegram", "Command menu registered");
+  } catch (e) {
+    log("telegram_warn", `Command menu registration failed: ${telegramErrorMessage(e)}`);
   }
 }
 
@@ -284,6 +325,7 @@ export function startPolling(onMessage, onCallback = null) {
     return true;
   }
   _polling = true;
+  registerTelegramCommands().catch(() => {});
   poll(onMessage, onCallback).catch((e) => {
     _lastPollError = telegramErrorMessage(e);
     log("telegram_error", `Polling stopped unexpectedly: ${_lastPollError}`);
