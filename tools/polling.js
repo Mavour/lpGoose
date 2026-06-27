@@ -49,17 +49,3 @@ export function selectAdaptivePnlPollIntervalMs({
 
   return normalMs;
 }
-
-export function evaluateWhaleExit({ previous, currentTvl, position, management = {} } = {}) {
-  if (!previous || !Number.isFinite(Number(previous.tvl)) || !Number.isFinite(Number(currentTvl))) return null;
-  const dropUsd = Number(previous.tvl) - Number(currentTvl);
-  const dropPct = Number(previous.tvl) > 0 ? (dropUsd / Number(previous.tvl)) * 100 : 0;
-  if (dropUsd >= management.whaleGuardMinDropUsd || dropPct >= management.whaleGuardMinDropPct) {
-    return {
-      action: "WHALE_EXIT",
-      reason: `Whale exit: TVL dropped $${dropUsd.toFixed(0)} (${dropPct.toFixed(1)}%)`,
-      position: position?.position,
-    };
-  }
-  return null;
-}

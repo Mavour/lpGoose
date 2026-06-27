@@ -19,7 +19,7 @@ import { evolveThresholds, formatLearningProposal, getLearningProposal, getPerfo
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, sendKeyboard, editKeyboard, answerCallback, notifyClose, notifyOutOfRange, notifySupertrendWarning, isEnabled as telegramEnabled } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, updatePoolTvl, getPoolTvl } from "./state.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits } from "./state.js";
 import { getActiveStrategy, setActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
@@ -40,7 +40,7 @@ import {
   formatMomentumLog,
   validateMomentumCandles,
 } from "./tools/momentum.js";
-import { evaluateWhaleExit, selectAdaptivePnlPollIntervalMs } from "./tools/polling.js";
+import { selectAdaptivePnlPollIntervalMs } from "./tools/polling.js";
 import {
   createCloseSnapshot,
   DEFAULT_CLOSE_SNAPSHOT_TTL_MS,
@@ -49,7 +49,6 @@ import {
   resolveSnapshotCloseIndex,
 } from "./tools/telegram-close.js";
 import { getGmgnPoolFees } from "./tools/gmgn.js";
-import { fetchWithTimeout } from "./tools/http.js";
 import {
   addToBlacklist,
   listBlacklist,
@@ -128,7 +127,6 @@ let _screeningRunId = 0;
 let _shuttingDown = false;
 const _autoCloseCoordinator = new PositionCloseCoordinator();
 const _supertrendWarningCandles = new Map();
-const _whaleGuardCheckedAt = new Map();
 const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 /** Strip <think>...</think> reasoning blocks that some models leak into output */
@@ -197,6 +195,9 @@ function dangerElapsedMinutes(positionAddress) {
 function evaluateFastDangerHardExit(position) {
   const currentPnlPct = Number(position.pnl_pct);
   const tracked = getTrackedPosition(position.position);
+  if (position.pnl_trusted === false && (position.pnl_exit_trusted !== true || currentPnlPct < 0)) {
+    return null;
+  }
   if (
     currentPnlPct <= -90 &&
     tracked?.amount_sol &&
@@ -221,6 +222,10 @@ async function evaluateDangerDrawdownExit(position) {
     return null;
   }
   const tracked = getTrackedPosition(position.position);
+  if (position.pnl_trusted === false && (position.pnl_exit_trusted !== true || currentPnlPct < 0)) {
+    log("cron_warn", `Danger check skipped for ${position.pair}: untrusted fallback PnL ${currentPnlPct.toFixed(2)}%`);
+    return null;
+  }
   if (
     currentPnlPct <= -90 &&
     tracked?.amount_sol &&
@@ -413,31 +418,6 @@ async function evaluateDangerDrawdownExit(position) {
 }
 
 async function evaluateAutoExit(position) {
-  if (config.management.whaleGuardEnabled) {
-    try {
-      const cooldownMs = Math.max(0, Number(config.management.whaleGuardCooldownMin ?? 30)) * 60_000;
-      const lastCheckedAt = _whaleGuardCheckedAt.get(position.pool) || 0;
-      if (Date.now() - lastCheckedAt >= cooldownMs) {
-        _whaleGuardCheckedAt.set(position.pool, Date.now());
-        const poolUrl = `https://pool-discovery-api.datapi.meteora.ag/pools?page_size=1&filter_by=${encodeURIComponent(`pool_address=${position.pool}`)}&timeframe=5m`;
-        const poolRes = await fetchWithTimeout(poolUrl);
-        if (poolRes.ok) {
-          const poolData = await poolRes.json();
-          const poolDetail = (poolData.data || [])[0];
-          if (poolDetail) {
-            const currentTvl = poolDetail.active_tvl ?? poolDetail.tvl ?? 0;
-            const previous = getPoolTvl(position.pool);
-            updatePoolTvl(position.pool, currentTvl);
-            const whaleExit = evaluateWhaleExit({ previous, currentTvl, position, management: config.management });
-            if (whaleExit) return whaleExit;
-          }
-        }
-      }
-    } catch (error) {
-      log("cron_warn", `Whale check failed for ${position.pool.slice(0, 8)}: ${error.message}`);
-    }
-  }
-
   const coreExit = updatePnlAndCheckExits(position.position, position, config.management);
   if (coreExit) return coreExit;
 
@@ -519,6 +499,10 @@ async function evaluateAutoExit(position) {
 async function executeAutoClose(position, exit, source) {
   const locked = await _autoCloseCoordinator.run(position.position, async () => {
     try {
+      if (getTrackedPosition(position.position)?.closed) {
+        log("close", `Stale ${source} close ignored for ${position.pair}: already marked closed`);
+        return { skipped: true, reason: "position already marked closed" };
+      }
       log("close", `Immediate auto-close [${source}]: ${position.pair} - ${exit.reason}`);
       const result = await closePosition({
         position_address: position.position,
@@ -2415,10 +2399,6 @@ const MENU_SECTIONS = {
   safety: [
     ["maxBotHoldersPct", "Max bots %"],
     ["maxTop10Pct", "Max top10 %"],
-    ["whaleGuardEnabled", "Whale guard"],
-    ["whaleGuardMinDropUsd", "Whale drop USD"],
-    ["whaleGuardMinDropPct", "Whale drop %"],
-    ["whaleGuardCooldownMin", "Whale cooldown min"],
     ["tokenCloseCooldownMinutes", "Token close cooldown"],
     ["dangerDrawdownPct", "Danger %"],
     ["dangerHardClosePct", "Danger hard %"],
@@ -2821,7 +2801,6 @@ async function applyNonTtyPreset(name) {
       stopLossPct: -60,
       takeProfitFeePct: 20,
       minTokenFeesSol: 20,
-      whaleGuardMinDropPct: 35,
     },
     moderate: {
       maxPositions: 2,
@@ -2830,7 +2809,6 @@ async function applyNonTtyPreset(name) {
       stopLossPct: -30,
       takeProfitFeePct: 15,
       minTokenFeesSol: 30,
-      whaleGuardMinDropPct: 25,
     },
     safe: {
       maxPositions: 1,
@@ -2839,7 +2817,6 @@ async function applyNonTtyPreset(name) {
       stopLossPct: -15,
       takeProfitFeePct: 10,
       minTokenFeesSol: 50,
-      whaleGuardMinDropPct: 15,
     },
   };
   for (const [key, value] of Object.entries(presets[name] || {})) {
@@ -3157,7 +3134,6 @@ if (isTTY) {
         stopLossPct: -60,
         takeProfitFeePct: 20,
         minTokenFeesSol: 20,
-        whaleGuardMinDropPct: 35,
       },
       moderate: {
         maxPositions: 2,
@@ -3166,7 +3142,6 @@ if (isTTY) {
         stopLossPct: -30,
         takeProfitFeePct: 15,
         minTokenFeesSol: 30,
-        whaleGuardMinDropPct: 25,
       },
       safe: {
         maxPositions: 1,
@@ -3175,7 +3150,6 @@ if (isTTY) {
         stopLossPct: -15,
         takeProfitFeePct: 10,
         minTokenFeesSol: 50,
-        whaleGuardMinDropPct: 15,
       },
     };
     const changes = presets[name] || {};
@@ -3261,9 +3235,6 @@ if (isTTY) {
       ["blockPvpSymbols", "PvP block"],
     ],
     risk: [
-      ["whaleGuardEnabled", "Whale guard"],
-      ["whaleGuardMinDropUsd", "Whale drop USD"],
-      ["whaleGuardMinDropPct", "Whale drop %"],
       ["stopLossPct", "Stop loss %"],
       ["dangerDrawdownPct", "Danger %"],
       ["dangerHardClosePct", "Danger hard %"],

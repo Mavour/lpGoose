@@ -98,14 +98,6 @@ export function recordPoolDeploy(poolAddress, deployData) {
     entry.base_mint = deployData.base_mint;
   }
 
-  // Set cooldown for whale exit — pool experienced sudden TVL drop
-  if (/whale exit/i.test(deploy.close_reason || "")) {
-    const cooldownMin = config.management.whaleGuardCooldownMin ?? 60;
-    entry.cooldown_until = new Date(Date.now() + cooldownMin * 60 * 1000).toISOString();
-    entry._pendingReset = true;
-    log("pool-memory", `Cooldown set for ${entry.name} until ${entry.cooldown_until} (whale exit)`);
-  }
-
   save(db);
   log("pool-memory", `Recorded deploy for ${entry.name} (${poolAddress.slice(0, 8)}): PnL ${deploy.pnl_pct}%`);
 }
@@ -139,9 +131,9 @@ export function setTokenCloseCooldown({
 
   const requestedDuration = duration_minutes == null ? NaN : Number(duration_minutes);
   const normalizedReason = String(reason || "").toLowerCase();
-  const riskClose = /stop loss|danger|whale|rug|pnl -|loss/.test(normalizedReason);
+  const riskClose = /stop loss|danger|rug|pnl -|loss/.test(normalizedReason);
   const defaultDuration = riskClose
-    ? (Number(config.management.whaleGuardCooldownMin) || 30)
+    ? (Number(config.management.tokenCloseCooldownMinutes) || 30)
     : (Number(config.management.tokenCloseCooldownMinutes) || Number(config.schedule.managementIntervalMin) || 1);
   const duration = Number.isFinite(requestedDuration) && requestedDuration > 0
     ? requestedDuration
@@ -202,7 +194,7 @@ function cleanExpiredCooldowns() {
       entry.snapshots = [];
       delete entry.cooldown_until;
       delete entry._pendingReset;
-      log("pool-memory", `Cleared history for ${entry.name} (${addr.slice(0, 8)}) after whale exit cooldown`);
+      log("pool-memory", `Cleared history for ${entry.name} (${addr.slice(0, 8)}) after cooldown`);
       changed = true;
     }
   }

@@ -214,6 +214,42 @@ try {
   assert.equal(guardedState.peak_pnl_pct, 3.2);
   assert.equal(guardedState.trailing_active, true);
 
+  fs.writeFileSync(statePath, JSON.stringify({
+    positions: {
+      negative_fallback: {
+        position: "negative_fallback",
+        peak_pnl_pct: 0,
+        trailing_active: false,
+        closed: false,
+        amount_sol: 0.2,
+      },
+    },
+    recentEvents: [],
+  }));
+  const negativeFallbackExit = updatePnlAndCheckExits(
+    "negative_fallback",
+    {
+      pnl_pct: -13.36,
+      pnl_trusted: false,
+      pnl_exit_trusted: true,
+      pnl_pending_reason: "indexed deposit ? SOL below expected 0.2 SOL",
+      in_range: true,
+      fee_per_tvl_24h: 0,
+    },
+    {
+      trailingTakeProfit: true,
+      trailingTriggerPct: 2,
+      trailingDropPct: 0.15,
+      stopLossPct: -5,
+      dangerDrawdownPct: -5,
+      takeProfitFeePct: null,
+    }
+  );
+  assert.equal(negativeFallbackExit, null);
+  const negativeFallbackState = JSON.parse(fs.readFileSync(statePath, "utf8")).positions.negative_fallback;
+  assert.equal(negativeFallbackState.danger_drawdown_since ?? null, null);
+  assert.equal(negativeFallbackState.min_pnl_pct ?? 0, 0);
+
   console.log("PnL integrity tests passed");
 } finally {
   if (originalState == null) {

@@ -78,10 +78,6 @@ export const config = {
     trailingTakeProfit:    u.trailingTakeProfit    ?? true,
     trailingTriggerPct:    u.trailingTriggerPct    ?? 3,    // activate trailing at X% PnL
     trailingDropPct:       u.trailingDropPct       ?? 1.5,  // close when drops X% from peak
-    whaleGuardEnabled:     u.whaleGuardEnabled     ?? true,
-    whaleGuardMinDropUsd:  u.whaleGuardMinDropUsd  ?? 25_000,
-    whaleGuardMinDropPct:  u.whaleGuardMinDropPct  ?? 25,
-    whaleGuardCooldownMin: u.whaleGuardCooldownMin ?? 30,
     tokenCloseCooldownMinutes: u.tokenCloseCooldownMinutes ?? null,
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD
     solMode:               u.solMode               ?? false,

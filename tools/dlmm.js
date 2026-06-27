@@ -583,6 +583,10 @@ let _positionsCache = null;
 let _positionsCacheAt = 0;
 let _positionsInflight = null;
 
+function isTrackedClosed(positionAddress) {
+  return getTrackedPosition(positionAddress)?.closed === true;
+}
+
 function trackedPositionsFallback(walletAddress, reason = "live position fetch unavailable") {
   const positions = getTrackedPositions(true).map((tracked) => {
     const snapshot = tracked.last_snapshot || {};
@@ -870,6 +874,8 @@ export async function recoverClosedPosition({
 
   const performance = buildManualClosePerformance(tracked, closedPnl);
   recordClose(position_address, reason);
+  _positionsCache = null;
+  _positionsCacheAt = 0;
 
   let performanceResult = null;
   if (performance) {
@@ -1510,7 +1516,7 @@ export async function getMyPositions({ force = false, silent = false, liveOnly =
         }
       }));
 
-      const positions = poolSnapshots.flat();
+      const positions = poolSnapshots.flat().filter((position) => !isTrackedClosed(position.position));
       for (const position of positions) {
         if (position.in_range) markInRange(position.position);
         else markOutOfRange(position.position);
@@ -1904,6 +1910,16 @@ export async function closePosition({ position_address, reason }) {
   }
 
   const tracked = getTrackedPosition(position_address);
+  if (tracked?.closed) {
+    return {
+      skipped: true,
+      already_closed: true,
+      position: position_address,
+      pool: tracked.pool,
+      pool_name: tracked.pool_name || null,
+      close_reason: tracked.close_reason || reason || "position already marked closed",
+    };
+  }
   _closingPositions.add(position_address);
 
   try {
@@ -2051,6 +2067,8 @@ export async function closePosition({ position_address, reason }) {
     }
 
     recordClose(position_address, reason || "agent decision");
+    _positionsCache = null;
+    _positionsCacheAt = 0;
 
     // Record performance for learning
     if (tracked) {

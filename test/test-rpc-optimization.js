@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import {
-  evaluateWhaleExit,
-  selectAdaptivePnlPollIntervalMs,
-} from "../tools/polling.js";
+import { selectAdaptivePnlPollIntervalMs } from "../tools/polling.js";
 import {
   instrumentConnection,
   snapshotRpcTelemetry,
@@ -20,8 +17,6 @@ const management = {
   trailingDropPct: 0.15,
   stopLossPct: -10,
   dangerDrawdownPct: -5,
-  whaleGuardMinDropUsd: 25_000,
-  whaleGuardMinDropPct: 25,
 };
 
 assert.equal(selectAdaptivePnlPollIntervalMs({
@@ -72,20 +67,6 @@ assert.equal(selectAdaptivePnlPollIntervalMs({
   schedule,
   management,
 }), 3_000);
-
-assert.equal(evaluateWhaleExit({
-  previous: { tvl: 100_000 },
-  currentTvl: 70_000,
-  position: { position: "p1" },
-  management,
-})?.action, "WHALE_EXIT");
-
-assert.equal(evaluateWhaleExit({
-  previous: { tvl: 100_000 },
-  currentTvl: 95_000,
-  position: { position: "p1" },
-  management,
-}), null);
 
 const dashboardSource = fs.readFileSync("./dashboard/server.js", "utf8");
 assert.match(dashboardSource, /BALANCE_CACHE_TTL_MS/);

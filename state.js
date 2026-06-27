@@ -15,7 +15,6 @@ import { config } from "./config.js";
 const STATE_FILE = "./state.json";
 
 const MAX_RECENT_EVENTS = 20;
-const _poolTvl = new Map();
 
 function fallbackStrategy() {
   return config.strategy?.strategy || "unknown";
@@ -40,17 +39,6 @@ function save(state) {
   } catch (err) {
     log("state_error", `Failed to write state.json: ${err.message}`);
   }
-}
-
-/**
- * Track pool TVL for whale exit detection.
- */
-export function updatePoolTvl(poolAddress, tvl) {
-  _poolTvl.set(poolAddress, { tvl, checked_at: Date.now() });
-}
-
-export function getPoolTvl(poolAddress) {
-  return _poolTvl.get(poolAddress) || null;
 }
 
 // ─── Position Registry ─────────────────────────────────────────
@@ -202,7 +190,11 @@ function pushEvent(state, event) {
 export function recordClose(position_address, reason) {
   const state = load();
   const pos = state.positions[position_address];
-  if (!pos) return;
+  if (!pos) return false;
+  if (pos.closed) {
+    log("state", `Position ${position_address} already marked closed; ignoring duplicate close: ${reason}`);
+    return false;
+  }
   pos.notes ||= [];
   pos.closed = true;
   pos.closed_at = new Date().toISOString();
@@ -210,6 +202,7 @@ export function recordClose(position_address, reason) {
   pushEvent(state, { action: "close", position: position_address, pool_name: pos.pool_name || pos.pool, reason });
   save(state);
   log("state", `Position ${position_address} marked closed: ${reason}`);
+  return true;
 }
 
 /**
@@ -408,6 +401,10 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     && currentPnlPct <= -90
     && pos.amount_sol
     && (positionData.total_value_usd ?? 0) > 0.01;
+  const negativeFallbackPnl = positionData.pnl_trusted === false
+    && positionData.pnl_exit_trusted === true
+    && currentPnlPct != null
+    && currentPnlPct < 0;
 
   if (positionData.pnl_integrity_reset && (pos.trailing_active || (pos.peak_pnl_pct ?? 0) > 0)) {
     log(
@@ -425,13 +422,13 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     changed = true;
   }
 
-  if (!pnlSuspect && currentPnlPct != null && currentPnlPct < (pos.min_pnl_pct ?? 0)) {
+  if (!pnlSuspect && !negativeFallbackPnl && currentPnlPct != null && currentPnlPct < (pos.min_pnl_pct ?? 0)) {
     pos.min_pnl_pct = currentPnlPct;
     changed = true;
   }
 
   const dangerDrawdownPct = Number(mgmtConfig.dangerDrawdownPct);
-  if (!pnlSuspect && Number.isFinite(dangerDrawdownPct) && currentPnlPct != null) {
+  if (!pnlSuspect && !negativeFallbackPnl && Number.isFinite(dangerDrawdownPct) && currentPnlPct != null) {
     if (currentPnlPct <= dangerDrawdownPct && !pos.danger_drawdown_since) {
       pos.danger_drawdown_since = new Date().toISOString();
       changed = true;
@@ -464,7 +461,7 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   if (changed) save(state);
 
   // ── Stop loss ──────────────────────────────────────────────────
-  if (!pnlSuspect && currentPnlPct != null && mgmtConfig.stopLossPct != null && currentPnlPct <= mgmtConfig.stopLossPct) {
+  if (!pnlSuspect && !negativeFallbackPnl && currentPnlPct != null && mgmtConfig.stopLossPct != null && currentPnlPct <= mgmtConfig.stopLossPct) {
     return {
       action: "STOP_LOSS",
       reason: `Stop loss: PnL ${currentPnlPct.toFixed(2)}% <= ${mgmtConfig.stopLossPct}%`,

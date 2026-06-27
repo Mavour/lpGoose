@@ -1023,7 +1023,7 @@ export function evaluateScreeningGate(pool, { tokenInfo = null } = {}) {
 
 function getMemoryRisk(poolAddress) {
   if (!poolAddress) return null;
-  if (isPoolOnCooldown(poolAddress)) return { reject: true, reason: "pool on cooldown (whale exit)" };
+  if (isPoolOnCooldown(poolAddress)) return { reject: true, reason: "pool on cooldown" };
   return null;
 }
 

@@ -5,7 +5,6 @@
   "llmApiKey": "",
   "llmModel": "minimax/minimax-m2.7",
   "dryRun": true,
-
   "deployAmountSol": 0.5,
   "maxPositions": 3,
   "minSolToOpen": 0.55,
@@ -25,15 +24,13 @@
   "momentumMaxCandleAgeMinutes": 10,
   "momentumMaxRetries": 2,
   "momentumRetryDelayMs": 500,
-
   "strategy": "bid_ask",
   "minBinsBelow": 30,
   "maxBinsBelow": 55,
-
   "bottomSpotLP": {
     "enabled": false,
     "deployAmountSol": 0.3,
-    "minBaseFee": 2.0,
+    "minBaseFee": 2,
     "minTvl": 10000,
     "maxTvl": 150000,
     "minVolume": 10000,
@@ -55,7 +52,6 @@
     "maxBottomSpotPositions": 1,
     "logLevel": "verbose"
   },
-
   "timeframe": "5m",
   "category": "trending",
   "minTvl": 10000,
@@ -78,7 +74,6 @@
   "athFilterPct": null,
   "avoidPvpSymbols": true,
   "blockPvpSymbols": false,
-
   "minClaimAmount": 5,
   "autoSwapAfterClaim": false,
   "outOfRangeBinsToClose": 10,
@@ -97,26 +92,21 @@
   "trailingTriggerPct": 3,
   "trailingDropPct": 1.5,
   "solMode": false,
-  "whaleGuardCooldownMin": 30,
-
   "managementIntervalMin": 10,
   "screeningIntervalMin": 30,
   "healthCheckIntervalMin": 60,
   "pnlPollIntervalMs": 3000,
   "pnlSlowCheckIntervalMs": 30000,
   "pnlSignatureCheckIntervalMs": 60000,
-
   "temperature": 0.373,
   "maxTokens": 4096,
   "maxSteps": 20,
   "managementModel": "minimax/minimax-m2.5",
   "screeningModel": "minimax/minimax-m2.5",
   "generalModel": "minimax/minimax-m2.7",
-
   "telegramChatId": "",
   "hiveMindUrl": "",
   "hiveMindApiKey": "",
-
   "chartIndicators": {
     "enabled": true,
     "entryPreset": "supertrend_trend",
