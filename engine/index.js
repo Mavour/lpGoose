@@ -5,3 +5,4 @@ export * from "./decide.js";
 export * from "./lifecycleState.js";
 export * from "./executors.js";
 export * from "./tick.js";
+export * as dlmmOps from "./dlmmOps.js";

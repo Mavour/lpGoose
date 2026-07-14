@@ -169,12 +169,15 @@ export const config = {
     capital: {
       perPositionSol: u.lifecycle?.capital?.perPositionSol ?? u.deployAmountSol ?? 0.2,
       minSolReserve: u.lifecycle?.capital?.minSolReserve ?? u.gasReserve ?? 0.05,
+      txFeeBufferSol: u.lifecycle?.capital?.txFeeBufferSol ?? 0.005,
+      newPositionOverheadSol: u.lifecycle?.capital?.newPositionOverheadSol ?? 0.012,
     },
     entry: {
       bidAskRangeBins: u.lifecycle?.entry?.bidAskRangeBins ?? 20,
       curveBinsMin: u.lifecycle?.entry?.curveBinsMin ?? 35,
       curveBinsMax: u.lifecycle?.entry?.curveBinsMax ?? 60,
       volatilityFullRangePct: u.lifecycle?.entry?.volatilityFullRangePct ?? 8,
+      lpSlippagePct: u.lifecycle?.entry?.lpSlippagePct ?? 1,
       lookbackCandles: u.lifecycle?.entry?.lookbackCandles ?? 48,
       pumpPctThreshold: u.lifecycle?.entry?.pumpPctThreshold ?? 50,
       downtrendPctThreshold: u.lifecycle?.entry?.downtrendPctThreshold ?? -25,
@@ -191,6 +194,7 @@ export const config = {
       claimEach: u.lifecycle?.reshape?.claimEach ?? true,
       minReshapeIntervalMs: u.lifecycle?.reshape?.minReshapeIntervalMs ?? 10_000,
       walletSettleMs: u.lifecycle?.reshape?.walletSettleMs ?? 800,
+      depositSafetyBps: u.lifecycle?.reshape?.depositSafetyBps ?? 9950,
     },
     rebalance: {
       oorBufferBins: u.lifecycle?.rebalance?.oorBufferBins ?? 0,

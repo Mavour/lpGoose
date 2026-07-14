@@ -1,0 +1,167 @@
+{
+  "_comment": "Copy-paste ready for VPS. Tuned from 807 closed trades: avoid fee_tvl>1, bins 40-60, min age 24h, single position lifecycle FSM. Secrets stay in .env only.",
+  "preset": "custom",
+  "dryRun": false,
+  "solMode": true,
+
+  "deployAmountSol": 0.2,
+  "maxPositions": 1,
+  "minSolToOpen": 0.25,
+  "maxDeployAmount": 0.2,
+  "gasReserve": 0.05,
+  "positionSizePct": 0.25,
+
+  "lifecycle": {
+    "enabled": true,
+    "pollIntervalMs": 5000,
+    "maxFeeActiveTvlRatio": 1.0,
+    "capital": {
+      "perPositionSol": 0.2,
+      "minSolReserve": 0.05
+    },
+    "entry": {
+      "bidAskRangeBins": 25,
+      "curveBinsMin": 40,
+      "curveBinsMax": 60,
+      "volatilityFullRangePct": 8,
+      "lookbackCandles": 48,
+      "pumpPctThreshold": 45,
+      "downtrendPctThreshold": -20,
+      "bottomDrawdownPct": -35,
+      "bottomFlatSlopePct": 2.5,
+      "bottomSlopeCandles": 6
+    },
+    "flip": {
+      "ratioLow": 0.4,
+      "ratioHigh": 0.6
+    },
+    "reshape": {
+      "binTrigger": 3,
+      "claimEach": true,
+      "minReshapeIntervalMs": 15000,
+      "walletSettleMs": 1000,
+      "depositSafetyBps": 9950
+    },
+    "rebalance": {
+      "oorBufferBins": 0,
+      "cooldownMs": 20000,
+      "trigger": "both"
+    },
+    "risk": {
+      "takeProfitPct": 25,
+      "stopLossPct": -12,
+      "maxLossPct": -18,
+      "confirmMs": 3000,
+      "suppressMsAfterEntry": 15000,
+      "suppressMsAfterLiquidityOp": 15000
+    }
+  },
+
+  "confidenceEnabled": true,
+  "confidenceFullThreshold": 70,
+  "confidenceSkipThreshold": 45,
+  "confidenceHalfMultiplier": 0.5,
+  "smartWalletMaxAgeMinutes": 60,
+
+  "strategy": "bid_ask",
+  "minBinsBelow": 40,
+  "maxBinsBelow": 60,
+
+  "bottomSpotLP": {
+    "enabled": false
+  },
+
+  "timeframe": "30m",
+  "category": "trending",
+  "minTvl": 8000,
+  "maxTvl": 120000,
+  "minVolume": 8000,
+  "minVolumeToActiveTvlRatio": 8,
+  "minMomentumScore": 45,
+  "minOrganic": 72,
+  "minHolders": 1200,
+  "minMcap": 350000,
+  "maxMcap": 8000000,
+  "minBinStep": 80,
+  "maxBinStep": 125,
+  "minFeeActiveTvlRatio": 0.2,
+  "maxFeeActiveTvlRatio": 1.0,
+  "minTokenFeesSol": 40,
+  "maxBundlePct": 40,
+  "maxBotHoldersPct": 35,
+  "maxTop10Pct": 28,
+  "blockedLaunchpads": [
+    "letsbonk.fun",
+    "bags.fm"
+  ],
+  "allowedLaunchpads": [],
+  "minTokenAgeHours": 24,
+  "maxTokenAgeHours": 480,
+  "athFilterPct": -10,
+  "avoidPvpSymbols": true,
+  "blockPvpSymbols": true,
+
+  "minClaimAmount": 3,
+  "autoSwapAfterClaim": true,
+  "tokenCloseCooldownMinutes": 90,
+
+  "outOfRangeBinsToClose": 10,
+  "outOfRangeWaitMinutes": 15,
+  "downsideOutOfRangeWaitMinutes": 8,
+  "downsideOutOfRangeLossPct": -8,
+  "minVolumeToRebalance": 1000,
+  "stopLossPct": -12,
+  "dangerDrawdownPct": -8,
+  "dangerHardClosePct": -12,
+  "dangerGraceMinutes": 3,
+  "dangerCloseMomentumBelow": 35,
+  "dangerClosePriceChange5mPct": -2,
+  "emergencyPriceDropPct": -8,
+  "takeProfitFeePct": 8,
+  "minFeePerTvl24h": 2,
+  "minAgeBeforeYieldCheck": 45,
+  "trailingTakeProfit": false,
+  "trailingTriggerPct": 3,
+  "trailingDropPct": 1.5,
+
+  "managementIntervalMin": 5,
+  "screeningIntervalMin": 25,
+  "healthCheckIntervalMin": 60,
+  "pnlPollIntervalMs": 5000,
+  "pnlSlowCheckIntervalMs": 30000,
+  "pnlNoPositionPollIntervalMs": 45000,
+
+  "chartIndicators": {
+    "enabled": true,
+    "entryPreset": "supertrend_trend",
+    "entryMinPriceChangePct": -0.5,
+    "stPeriod": 10,
+    "stMultiplier": 3,
+    "interval": "5m",
+    "entryInterval": "5m",
+    "exitInterval": "15m",
+    "failOpen": false,
+    "exitOnBearishFlip": false
+  },
+
+  "learning": {
+    "enabled": true,
+    "minClosedPositions": 5,
+    "proposalCooldownHours": 24,
+    "maxChangesPerProposal": 3
+  },
+
+  "temperature": 0.1,
+  "maxTokens": 4096,
+  "maxSteps": 16,
+  "managementModel": "deepseek-v3.1",
+  "screeningModel": "deepseek-v3.1",
+  "generalModel": "deepseek-v3.1",
+
+  "rpcUrl": "https://pump.helius-rpc.com",
+  "llmModel": "deepseek-v3.1",
+  "llmBaseUrl": "https://api.generalcompute.com/v1",
+  "telegramChatId": "924349486",
+  "hiveMindUrl": "",
+  "hiveMindApiKey": ""
+}

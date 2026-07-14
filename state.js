@@ -72,6 +72,7 @@ export function trackPosition({
   deploying = false,
   signal_snapshot = null,
   momentum = null,
+  position_secret = null,
 }) {
   const state = load();
   state.positions[position] = {
@@ -101,6 +102,8 @@ export function trackPosition({
     deploying,
     signal_snapshot: signal_snapshot || null,
     momentum: momentum || null,
+    // fee-maxi style: secret for same-position reshape (base58 keypair)
+    position_secret: position_secret || null,
     deployed_at: new Date().toISOString(),
     out_of_range_since: null,
     last_claim_at: null,

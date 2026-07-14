@@ -501,6 +501,8 @@ export async function deployPosition({
       deploying: false,
       signal_snapshot,
       momentum,
+      // Persist position keypair secret for fee-maxi reshape (same-position re-add)
+      position_secret: bs58.encode(newPosition.secretKey),
     });
     const tracked = getTrackedPosition(positionAddress);
     safeRecordJournalEntry({
