@@ -303,7 +303,8 @@ function apiHistory(req, res) {
 // ─── API: config ──────────────────────────────────────────
 // Only expose keys that matter for the active engine (lifecycle FSM by default).
 const DASHBOARD_CONFIG_ALLOW = new Set([
-  'preset', 'dryRun', 'solMode', 'strategy',
+  // active product surface only (lifecycle / fee-maxi style)
+  'preset', 'dryRun', 'solMode',
   'deployAmountSol', 'minSolToOpen', 'maxDeployAmount', 'gasReserve', 'positionSizePct', 'maxPositions',
   'timeframe', 'category', 'minTvl', 'maxTvl', 'minVolume', 'minVolumeToActiveTvlRatio',
   'minOrganic', 'minHolders', 'minMcap', 'maxMcap', 'minBinStep', 'maxBinStep',
@@ -312,7 +313,7 @@ const DASHBOARD_CONFIG_ALLOW = new Set([
   'minTokenAgeHours', 'maxTokenAgeHours', 'athFilterPct', 'avoidPvpSymbols', 'blockPvpSymbols',
   'minClaimAmount', 'autoSwapAfterClaim', 'tokenCloseCooldownMinutes',
   'managementIntervalMin', 'screeningIntervalMin', 'healthCheckIntervalMin',
-  // confidence* intentionally omitted — lifecycle uses fixed size (fee-maxi style)
+  'pnlNoPositionPollIntervalMs',
   'lifecycle',
 ]);
 

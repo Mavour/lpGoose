@@ -2568,7 +2568,7 @@ const LEGACY_MENU_SECTIONS = {
     ["trailingTriggerPct", "Trail trigger %"],
     ["trailingDropPct", "Trail drop %"],
   ],
-  confidence: LIFECYCLE_MENU_SECTIONS.confidence,
+  confidence: [],
   schedule: LIFECYCLE_MENU_SECTIONS.schedule,
 };
 

@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy-paste ready for VPS. Tuned from 807 closed trades: avoid fee_tvl>1, bins 40-60, min age 24h, single position lifecycle FSM. Secrets stay in .env only.",
+  "_comment": "Clean lifecycle-only config (fee-maxi style). Copy to user-config.json on VPS. Secrets stay in .env.",
   "preset": "custom",
   "dryRun": false,
   "solMode": true,
@@ -60,28 +60,12 @@
     }
   },
 
-  "confidenceEnabled": false,
-  "confidenceFullThreshold": 70,
-  "confidenceSkipThreshold": 40,
-  "confidenceHalfMultiplier": 0.5,
-  "smartWalletMaxAgeMinutes": 60,
-
-  "strategy": "bid_ask",
-  "minBinsBelow": 40,
-  "maxBinsBelow": 60,
-
-  "bottomSpotLP": {
-    "enabled": false,
-    "_retired": "Bottom Spot LP removed — use lifecycle only"
-  },
-
   "timeframe": "30m",
   "category": "trending",
   "minTvl": 8000,
   "maxTvl": 120000,
   "minVolume": 8000,
   "minVolumeToActiveTvlRatio": 8,
-  "minMomentumScore": 45,
   "minOrganic": 72,
   "minHolders": 1200,
   "minMcap": 350000,
@@ -91,13 +75,9 @@
   "minFeeActiveTvlRatio": 0.2,
   "maxFeeActiveTvlRatio": 1.0,
   "minTokenFeesSol": 40,
-  "maxBundlePct": 40,
   "maxBotHoldersPct": 35,
   "maxTop10Pct": 28,
-  "blockedLaunchpads": [
-    "letsbonk.fun",
-    "bags.fm"
-  ],
+  "blockedLaunchpads": ["letsbonk.fun", "bags.fm"],
   "allowedLaunchpads": [],
   "minTokenAgeHours": 24,
   "maxTokenAgeHours": 480,
@@ -109,63 +89,16 @@
   "autoSwapAfterClaim": true,
   "tokenCloseCooldownMinutes": 90,
 
-  "outOfRangeBinsToClose": 10,
-  "outOfRangeWaitMinutes": 15,
-  "downsideOutOfRangeWaitMinutes": 8,
-  "downsideOutOfRangeLossPct": -8,
-  "minVolumeToRebalance": 1000,
-  "stopLossPct": -12,
-  "dangerDrawdownPct": -8,
-  "dangerHardClosePct": -12,
-  "dangerGraceMinutes": 3,
-  "dangerCloseMomentumBelow": 35,
-  "dangerClosePriceChange5mPct": -2,
-  "emergencyPriceDropPct": -8,
-  "takeProfitFeePct": 8,
-  "minFeePerTvl24h": 2,
-  "minAgeBeforeYieldCheck": 45,
-  "trailingTakeProfit": false,
-  "trailingTriggerPct": 3,
-  "trailingDropPct": 1.5,
-
   "managementIntervalMin": 5,
   "screeningIntervalMin": 25,
   "healthCheckIntervalMin": 60,
-  "pnlPollIntervalMs": 5000,
-  "pnlSlowCheckIntervalMs": 30000,
   "pnlNoPositionPollIntervalMs": 45000,
 
-  "chartIndicators": {
-    "enabled": false,
-    "entryPreset": "supertrend_trend",
-    "entryMinPriceChangePct": -0.5,
-    "stPeriod": 10,
-    "stMultiplier": 3,
-    "interval": "5m",
-    "entryInterval": "5m",
-    "exitInterval": "15m",
-    "failOpen": false,
-    "exitOnBearishFlip": false
-  },
-
-  "learning": {
-    "enabled": true,
-    "minClosedPositions": 5,
-    "proposalCooldownHours": 24,
-    "maxChangesPerProposal": 3
-  },
-
-  "temperature": 0.1,
-  "maxTokens": 4096,
-  "maxSteps": 16,
-  "managementModel": "deepseek-v3.1",
-  "screeningModel": "deepseek-v3.1",
-  "generalModel": "deepseek-v3.1",
-
+  "telegramChatId": "924349486",
   "rpcUrl": "https://pump.helius-rpc.com",
   "llmModel": "deepseek-v3.1",
   "llmBaseUrl": "https://api.generalcompute.com/v1",
-  "telegramChatId": "924349486",
-  "hiveMindUrl": "",
-  "hiveMindApiKey": ""
+  "managementModel": "deepseek-v3.1",
+  "screeningModel": "deepseek-v3.1",
+  "generalModel": "deepseek-v3.1"
 }
