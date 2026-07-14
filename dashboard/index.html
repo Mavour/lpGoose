@@ -761,14 +761,22 @@ function renderConfig(data) {
   const lc = data.lifecycle;
   if (lc && typeof lc === 'object') {
     const risk = lc.risk || {};
-    html += `<div class="config-section" style="grid-column:1/-1"><div class="config-section-header"><span class="icon">♻</span>Lifecycle Engine ${lc.enabled ? 'ON' : 'OFF'}</div><div class="config-section-body">
+    const entry = lc.entry || {};
+    const reshape = lc.reshape || {};
+    const rebal = lc.rebalance || {};
+    const cap = lc.capital || {};
+    html += `<div class="config-section" style="grid-column:1/-1"><div class="config-section-header"><span class="icon">♻</span>Lifecycle Engine ${lc.enabled ? 'ON' : 'OFF'} · fee-maxi reshape</div><div class="config-section-body">
       <div class="config-row"><span class="config-key">tick</span><span class="config-val">${lc.pollIntervalMs ?? 5000} ms</span></div>
       <div class="config-row"><span class="config-key">TP / SL / MaxLoss</span><span class="config-val">${risk.takeProfitPct ?? '?'}% / ${risk.stopLossPct ?? '?'}% / ${risk.maxLossPct ?? '?'}%</span></div>
-      <div class="config-row"><span class="config-key">curve bins</span><span class="config-val">${lc.entry?.curveBinsMin ?? '?'}–${lc.entry?.curveBinsMax ?? '?'}</span></div>
-      <div class="config-row"><span class="config-key">bid-ask bins</span><span class="config-val">${lc.entry?.bidAskRangeBins ?? '?'}</span></div>
+      <div class="config-row"><span class="config-key">risk confirm</span><span class="config-val">${risk.confirmMs ?? '?'} ms</span></div>
+      <div class="config-row"><span class="config-key">curve bins</span><span class="config-val">${entry.curveBinsMin ?? '?'}–${entry.curveBinsMax ?? '?'}</span></div>
+      <div class="config-row"><span class="config-key">bid-ask bins</span><span class="config-val">${entry.bidAskRangeBins ?? '?'}</span></div>
+      <div class="config-row"><span class="config-key">LP slippage</span><span class="config-val">${entry.lpSlippagePct ?? 1}%</span></div>
       <div class="config-row"><span class="config-key">max fee/TVL entry</span><span class="config-val">${lc.maxFeeActiveTvlRatio ?? 'off'}</span></div>
+      <div class="config-row"><span class="config-key">capital</span><span class="config-val">${cap.perPositionSol ?? '?'} SOL · reserve ${cap.minSolReserve ?? '?'}</span></div>
       <div class="config-row"><span class="config-key">flip ratio</span><span class="config-val">${lc.flip?.ratioLow ?? '?'}–${lc.flip?.ratioHigh ?? '?'}</span></div>
-      <div class="config-row"><span class="config-key">reshape drift</span><span class="config-val">${lc.reshape?.binTrigger ?? '?'} bins</span></div>
+      <div class="config-row"><span class="config-key">reshape</span><span class="config-val">drift ${reshape.binTrigger ?? '?'} · safety ${reshape.depositSafetyBps ?? 9950} bps · settle ${reshape.walletSettleMs ?? '?'}ms · same-position</span></div>
+      <div class="config-row"><span class="config-key">rebalance</span><span class="config-val">cd ${rebal.cooldownMs ?? '?'}ms · trigger ${rebal.trigger ?? 'both'}</span></div>
     </div></div>`;
   }
   for (const [group, keys] of Object.entries(CONFIG_GROUPS)) {

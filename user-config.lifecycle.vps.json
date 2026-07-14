@@ -17,13 +17,16 @@
     "maxFeeActiveTvlRatio": 1.0,
     "capital": {
       "perPositionSol": 0.2,
-      "minSolReserve": 0.05
+      "minSolReserve": 0.05,
+      "txFeeBufferSol": 0.005,
+      "newPositionOverheadSol": 0.012
     },
     "entry": {
       "bidAskRangeBins": 25,
       "curveBinsMin": 40,
       "curveBinsMax": 60,
       "volatilityFullRangePct": 8,
+      "lpSlippagePct": 1,
       "lookbackCandles": 48,
       "pumpPctThreshold": 45,
       "downtrendPctThreshold": -20,
