@@ -114,9 +114,10 @@ export const config = {
     retryDelayMs: u.momentumRetryDelayMs ?? u.momentum?.retryDelayMs ?? 500,
   },
 
-  // ─── Chart Indicators (Supertrend Entry Gate) ───
+  // ─── Chart Indicators (Supertrend) ───
+  // Off by default with lifecycle: fee-maxi uses candle regime only, not Supertrend.
   chartIndicators: {
-    enabled:       u.chartIndicators?.enabled       ?? true,
+    enabled:       u.chartIndicators?.enabled       ?? !(u.lifecycle?.enabled ?? true),
     entryPreset:   u.chartIndicators?.entryPreset   ?? "supertrend_trend",
     entryMinPriceChangePct: u.chartIndicators?.entryMinPriceChangePct ?? -1,
     stPeriod:      u.chartIndicators?.stPeriod      ?? 10,

@@ -733,8 +733,35 @@ export async function getTopCandidates({
     gated.push(pool);
   }
 
-  // ─── Supertrend entry gate (hard filter) ───
-  if (signalGate && gated.length > 0) {
+  // ─── Entry signal gate ───
+  // Lifecycle (fee-maxi style): NO Supertrend — only optional candles for regime later.
+  // Legacy: Supertrend + momentum hard filter.
+  if (signalGate && gated.length > 0 && config.lifecycle?.enabled) {
+    log("screening", "Lifecycle mode: skipping Supertrend/momentum hard gate (fee-maxi regime only)");
+    // Attach candles when cheap so lifecycle deploy can classify regime without re-fetch
+    const momentumConfig = config.momentum;
+    await Promise.all(
+      gated.map(async (pool) => {
+        const mint = pool.base?.mint;
+        if (!mint) return;
+        try {
+          const fetched = await fetchMomentumCandles({
+            mint,
+            maxRetries: momentumConfig.maxRetries,
+            retryDelayMs: momentumConfig.retryDelayMs,
+          });
+          if (!fetched.success || !fetched.candles?.length) return;
+          Object.defineProperty(pool, "momentum_candles", {
+            value: fetched.candles,
+            enumerable: false,
+          });
+          pool.momentum_gmgn_attempt = fetched.attempt;
+        } catch {
+          /* non-fatal — lifecycle deploy will fetch candles itself */
+        }
+      }),
+    );
+  } else if (signalGate && gated.length > 0) {
     const cc = config.chartIndicators;
     const momentumConfig = config.momentum;
     const {

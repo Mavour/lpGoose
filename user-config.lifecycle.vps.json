@@ -135,7 +135,7 @@
   "pnlNoPositionPollIntervalMs": 45000,
 
   "chartIndicators": {
-    "enabled": true,
+    "enabled": false,
     "entryPreset": "supertrend_trend",
     "entryMinPriceChangePct": -0.5,
     "stPeriod": 10,
