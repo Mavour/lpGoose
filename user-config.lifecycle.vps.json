@@ -60,9 +60,9 @@
     }
   },
 
-  "confidenceEnabled": true,
+  "confidenceEnabled": false,
   "confidenceFullThreshold": 70,
-  "confidenceSkipThreshold": 45,
+  "confidenceSkipThreshold": 40,
   "confidenceHalfMultiplier": 0.5,
   "smartWalletMaxAgeMinutes": 60,
 

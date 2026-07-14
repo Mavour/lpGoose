@@ -312,8 +312,7 @@ const DASHBOARD_CONFIG_ALLOW = new Set([
   'minTokenAgeHours', 'maxTokenAgeHours', 'athFilterPct', 'avoidPvpSymbols', 'blockPvpSymbols',
   'minClaimAmount', 'autoSwapAfterClaim', 'tokenCloseCooldownMinutes',
   'managementIntervalMin', 'screeningIntervalMin', 'healthCheckIntervalMin',
-  'confidenceEnabled', 'confidenceFullThreshold', 'confidenceSkipThreshold',
-  'confidenceHalfMultiplier', 'smartWalletMaxAgeMinutes',
+  // confidence* intentionally omitted — lifecycle uses fixed size (fee-maxi style)
   'lifecycle',
 ]);
 

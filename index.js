@@ -1644,22 +1644,21 @@ async function attemptStandardDeploy(candidate, deployAmount) {
 }
 
 /**
- * Lifecycle auto-deploy: same screening gates + chart regime → bid_ask or curve.
+ * Lifecycle auto-deploy (fee-maxi style): fixed size, no confidence half/skip.
+ * Hard gates + chart regime → bid_ask or curve → full deploy amount.
  */
 async function attemptLifecycleDeploy(candidate, deployAmount) {
-  const { pool, sw, ti, activeBin, confidence } = candidate;
-  const sizing = getConfidenceSizing(confidence.total, deployAmount, config.confidence);
+  const { pool, sw, ti, activeBin } = candidate;
+  // Fixed size like fee-maxi perPositionSol — no half confidence
+  const amountSol =
+    Number(config.lifecycle?.capital?.perPositionSol) > 0
+      ? Number(config.lifecycle.capital.perPositionSol)
+      : deployAmount;
+  const sizing = { action: "full", amount: amountSol };
   log(
     "lifecycle",
-    `Entry candidate ${pool.name}: conf=${confidence.total}% action=${sizing.action} amount=${sizing.amount}`,
+    `Entry candidate ${pool.name}: fixed size ${amountSol} SOL (no confidence sizing)`,
   );
-
-  if (sizing.action === "skip") {
-    return {
-      status: "failed",
-      report: `SKIPPED: ${pool.name} confidence ${confidence.total}% < ${config.confidence.skipThreshold}%`,
-    };
-  }
 
   const maxFeeTvl =
     config.lifecycle?.maxFeeActiveTvlRatio ??
@@ -1735,12 +1734,11 @@ async function attemptLifecycleDeploy(candidate, deployAmount) {
     decision: {
       strategy,
       strategy_label: "lifecycle",
-      amount_sol: sizing.amount,
-      sizing_action: sizing.action,
+      amount_sol: amountSol,
+      sizing_action: "fixed",
       regime,
       active_bin: activeBin,
-      reason: `lifecycle auto-deploy regime=${regime}`,
-      confidence,
+      reason: `lifecycle auto-deploy regime=${regime} fixed_size`,
     },
   });
 
@@ -1749,12 +1747,12 @@ async function attemptLifecycleDeploy(candidate, deployAmount) {
     pool,
     regime,
     strategy,
-    amountSol: sizing.amount,
+    amountSol,
     signal_snapshot,
   });
   logAction({
     tool: "lifecycle_deploy",
-    args: { pool: pool.pool, strategy, regime, amount: sizing.amount },
+    args: { pool: pool.pool, strategy, regime, amount: amountSol },
     result: deployResult,
     duration_ms: Date.now() - deployStartedAt,
     success: deployResult?.success === true || deployResult?.dry_run === true,
@@ -1772,7 +1770,7 @@ async function attemptLifecycleDeploy(candidate, deployAmount) {
 
   // Fake momentum object for screening report compatibility
   const momentum = {
-    score: confidence.total,
+    score: null,
     classification: regime,
     binsBelow: deployResult?.bin_range
       ? Math.abs((deployResult.bin_range.active ?? 0) - (deployResult.bin_range.min ?? 0))
@@ -1785,7 +1783,7 @@ async function attemptLifecycleDeploy(candidate, deployAmount) {
 
   return {
     status: "success",
-    candidate,
+    candidate: { ...candidate, confidence: null },
     sizing,
     momentum,
     deployResult,
@@ -1843,10 +1841,13 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
       }
       return null;
     }
-    const minimumMultiplier = config.confidence.enabled
-      ? config.confidence.halfMultiplier
-      : 1;
-    const minRequired = (config.management.deployAmountSol * minimumMultiplier) + config.management.gasReserve;
+    // Lifecycle = fixed full size (fee-maxi style); legacy may use half confidence
+    const sizeFloor = config.lifecycle?.enabled
+      ? (Number(config.lifecycle?.capital?.perPositionSol) || config.management.deployAmountSol)
+      : (config.confidence.enabled
+        ? config.management.deployAmountSol * (config.confidence.halfMultiplier || 0.5)
+        : config.management.deployAmountSol);
+    const minRequired = sizeFloor + config.management.gasReserve;
     if (preBalance.sol < minRequired) {
       log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
       if (_screeningRunId === screeningRunId) {
@@ -1869,8 +1870,10 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
   try {
     // Reuse pre-fetched balance — no extra RPC call needed
     const currentBalance = preBalance;
-    const deployAmount = computeDeployAmount(currentBalance.sol);
-    log("cron", `Computed deploy amount: ${deployAmount} SOL (wallet: ${currentBalance.sol} SOL)`);
+    const deployAmount = config.lifecycle?.enabled
+      ? (Number(config.lifecycle?.capital?.perPositionSol) || config.management.deployAmountSol)
+      : computeDeployAmount(currentBalance.sol);
+    log("cron", `Computed deploy amount: ${deployAmount} SOL (wallet: ${currentBalance.sol} SOL${config.lifecycle?.enabled ? ", fixed lifecycle" : ""})`);
 
     // Check at most five Meteora-ranked pools sequentially and stop on the
     // first candidate that passes the expensive GMGN-backed gates.
@@ -1960,7 +1963,11 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
       screenReport = `No candidates after lifecycle fee_tvl cap (max ${maxFeeTvl}%).`;
       return screenReport;
     }
-    const ranked = rankConfidenceCandidates(filtered, config.confidence);
+    // Lifecycle: no confidence ranking/sizing — keep Meteora rank order (first hard-gated candidate)
+    // Legacy: rank by confidence score then half/full/skip
+    const ranked = config.lifecycle?.enabled
+      ? filtered.map((c, i) => ({ ...c, confidence: c.confidence || { total: 0 } }))
+      : rankConfidenceCandidates(filtered, config.confidence);
     const deployFn = config.lifecycle?.enabled
       ? (candidate) => attemptLifecycleDeploy(candidate, deployAmount)
       : (candidate) => attemptStandardDeploy(candidate, deployAmount);
@@ -1994,6 +2001,7 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
 
     const { candidate: best, sizing, momentum, deployResult } = selectedAttempt;
     const { pool, sw, n, ti, activeBin, idx: bestIdx, confidence } = best;
+    const lcMode = !!config.lifecycle?.enabled;
 
     if (deployResult.success || deployResult.dry_run) {
       const minPrice = deployResult.price_range?.min ?? "?";
@@ -2019,17 +2027,14 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
         `${pool.pool}`,
         ``,
         `Allocation`,
-        `Amount: ${sizing.amount} SOL (${sizing.action === "full" ? "full" : "half"} size)`,
-        `Confidence: ${confidence.total}%`,
-        `Volatility score: ${confidence.volatility_score}/40`,
-        `Fee/Active TVL score: ${confidence.fee_active_tvl_score}/40`,
-        `Smart wallet score: ${confidence.smart_wallet_score}/20 (${confidence.recent_smart_wallets.length} within ${config.confidence.smartWalletMaxAgeMinutes}m)`,
+        `Amount: ${sizing.amount} SOL (${lcMode ? "fixed size" : `${sizing.action} size`})`,
+        lcMode ? null : `Confidence: ${confidence?.total ?? "?"}%`,
+        lcMode ? null : `Volatility score: ${confidence?.volatility_score ?? "?"}/40`,
+        lcMode ? null : `Fee/Active TVL score: ${confidence?.fee_active_tvl_score ?? "?"}/40`,
+        lcMode ? null : `Smart wallet score: ${confidence?.smart_wallet_score ?? "?"}/20`,
         `Strategy: ${selectedAttempt.strategy || config.strategy.strategy}${selectedAttempt.regime ? ` (regime: ${selectedAttempt.regime})` : ""}`,
-        `Mode: ${config.lifecycle?.enabled ? "lifecycle FSM" : "legacy"}`,
-        `Momentum: ${momentum.score ?? "N/A"} (${momentum.classification})`,
-        `Momentum bins: ${Array.isArray(momentum.selectedBand) ? momentum.selectedBand.join("-") : "?"} -> ${momentum.binsBelow}`,
-        `Price 5m: ${Number(momentum.priceChange5m || 0).toFixed(2)}%`,
-        `Volume ratio: ${Number(momentum.volumeRatio || 0).toFixed(2)}x`,
+        `Mode: ${lcMode ? "lifecycle FSM (no confidence)" : "legacy"}`,
+        `Regime/bins: ${momentum.classification} → ${momentum.binsBelow}`,
         `Active bin: ${activeBin ?? "?"}`,
         `Range: ${minPrice} → ${maxPrice} SOL`,
         `Downside cover: ${downsidePct}%`,
@@ -2057,9 +2062,11 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
         thesis,
         ``,
         `Why Deployed`,
-        infrastructureSkips.length > 0
-          ? `Highest-ranked zero-cost candidate. ${infrastructureSkips.length} higher-ranked candidate(s) skipped for non-refundable bin cost.`
-          : `Best candidate by confidence score. All configured hard gates passed.`,
+        lcMode
+          ? `Lifecycle fixed-size deploy. Hard gates + regime only (no confidence half/skip).`
+          : (infrastructureSkips.length > 0
+            ? `Highest-ranked zero-cost candidate. ${infrastructureSkips.length} higher-ranked candidate(s) skipped for non-refundable bin cost.`
+            : `Best candidate by confidence score. All configured hard gates passed.`),
         ``,
         `Rejected: ${rejectedStr}`,
       ].filter(Boolean).join("\n");
@@ -2591,8 +2598,8 @@ const MOMENTUM_MENU_FIELDS = {
 const LIFECYCLE_MENU_SECTION_ROWS = [
   ["quick", "sizing", "screen"],
   ["lifecycle", "entry", "risk"],
-  ["ops", "confidence", "schedule"],
-  ["launch", "safety"],
+  ["ops", "schedule", "launch"],
+  ["safety"],
 ];
 
 const LIFECYCLE_MENU_SECTIONS = {
@@ -2694,13 +2701,7 @@ const LIFECYCLE_MENU_SECTIONS = {
     ["maxBotHoldersPct", "Max bots %"],
     ["maxTop10Pct", "Max top10 %"],
   ],
-  confidence: [
-    ["confidence.enabled", "Confidence enabled"],
-    ["confidence.fullThreshold", "Full threshold"],
-    ["confidence.skipThreshold", "Skip threshold"],
-    ["confidence.halfMultiplier", "Half multiplier"],
-    ["confidence.smartWalletMaxAgeMinutes", "Smart wallet age"],
-  ],
+  // confidence section intentionally omitted in lifecycle mode (fee-maxi fixed size)
   schedule: [
     ["screeningIntervalMin", "Screen interval min"],
     ["managementIntervalMin", "Manage interval min"],

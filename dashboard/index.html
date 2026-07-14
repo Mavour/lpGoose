@@ -460,7 +460,6 @@ const CONFIG_GROUPS = {
   'Engine':     ['preset','dryRun','solMode','lifecycle'],
   'Deploy':     ['deployAmountSol','minSolToOpen','maxDeployAmount','gasReserve','positionSizePct','maxPositions'],
   'Screening':  ['timeframe','category','minTvl','maxTvl','minVolume','minVolumeToActiveTvlRatio','minOrganic','minHolders','minMcap','maxMcap','minBinStep','maxBinStep','minFeeActiveTvlRatio','maxFeeActiveTvlRatio','minTokenFeesSol','maxBotHoldersPct','maxTop10Pct','blockedLaunchpads','allowedLaunchpads','minTokenAgeHours','maxTokenAgeHours','athFilterPct','avoidPvpSymbols','blockPvpSymbols'],
-  'Confidence': ['confidenceEnabled','confidenceFullThreshold','confidenceSkipThreshold','confidenceHalfMultiplier','smartWalletMaxAgeMinutes'],
   'Ops':        ['minClaimAmount','autoSwapAfterClaim','tokenCloseCooldownMinutes'],
   'Schedule':   ['managementIntervalMin','screeningIntervalMin','healthCheckIntervalMin'],
 };
@@ -791,7 +790,7 @@ function renderConfig(data) {
   document.getElementById('configContent').innerHTML = html || '<div style="grid-column:1/-1;text-align:center;padding:50px;color:var(--text3)">No active config keys</div>';
 }
 function groupIcon(g) {
-  const icons = {Engine:'♻',Deploy:'🚀',Screening:'🔍',Confidence:'◆',Ops:'⚙',Schedule:'⏱'};
+  const icons = {Engine:'♻',Deploy:'🚀',Screening:'🔍',Ops:'⚙',Schedule:'⏱'};
   return icons[g]||'📋';
 }
 function escapeHtml(value) {

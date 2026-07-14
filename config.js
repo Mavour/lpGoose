@@ -83,8 +83,9 @@ export const config = {
     solMode:               u.solMode               ?? false,
   },
 
+  // Disabled by default when lifecycle FSM is on (fee-maxi uses fixed perPositionSol).
   confidence: {
-    enabled: u.confidenceEnabled ?? true,
+    enabled: u.confidenceEnabled ?? !(u.lifecycle?.enabled ?? true),
     fullThreshold: u.confidenceFullThreshold ?? 70,
     skipThreshold: u.confidenceSkipThreshold ?? 40,
     halfMultiplier: u.confidenceHalfMultiplier ?? 0.5,
