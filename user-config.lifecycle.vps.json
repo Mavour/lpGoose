@@ -71,7 +71,8 @@
   "maxBinsBelow": 60,
 
   "bottomSpotLP": {
-    "enabled": false
+    "enabled": false,
+    "_retired": "Bottom Spot LP removed — use lifecycle only"
   },
 
   "timeframe": "30m",

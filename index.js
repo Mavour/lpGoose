@@ -24,7 +24,6 @@ import { getActiveStrategy, setActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
-import { BottomSpotLPStrategy } from "./strategies/index.js";
 import { closedCandlesOnly, confirmSupertrendFromCandles, fetchKlineGMGN } from "./tools/chart-indicators.js";
 import {
   calculateConfidence,
@@ -473,32 +472,7 @@ async function evaluateAutoExit(position) {
     }
   }
 
-  if (config.bottomSpotLP?.enabled && position.strategy === "bottom_spot_lp" && position.base_mint) {
-    try {
-      const candles = await fetchKlineGMGN(
-        position.base_mint,
-        config.bottomSpotLP.interval || config.chartIndicators.interval || "1m",
-        80,
-      );
-      const tracked = getTrackedPosition(position.position);
-      const amountSol = tracked?.amount_sol || position.total_value_usd || 0;
-      const feesPct = amountSol > 0 ? ((position.unclaimed_fees_usd || 0) / amountSol) * 100 : 0;
-      const strategy = new BottomSpotLPStrategy(config.bottomSpotLP);
-      const decision = await strategy.evaluatePosition({
-        ...position,
-        upperPrice: tracked?.signal_snapshot?.decision?.signal?.upper_price
-          ?? tracked?.signal_snapshot?.upperPrice,
-        lowerPrice: tracked?.signal_snapshot?.decision?.signal?.lower_price
-          ?? tracked?.signal_snapshot?.lowerPrice,
-        ilPct: position.pnl_pct != null && position.pnl_pct < 0 ? Math.abs(position.pnl_pct) : 0,
-      }, candles, { pct: feesPct });
-      if (decision.action === "close") {
-        return { action: "BOTTOM_SPOT_EXIT", reason: `Bottom Spot: ${decision.reason}` };
-      }
-    } catch (error) {
-      log("bottom_spot_warn", `Exit check skipped for ${position.pair}: ${error.message}`);
-    }
-  }
+  // bottom_spot exit retired
 
   return null;
 }
@@ -1291,164 +1265,9 @@ After executing, write a brief one-line result per position.
   return mgmtReport;
 }
 
-async function tryBottomSpotDeploy(passing, prePositions, preBalance) {
-  const cfg = config.bottomSpotLP;
-  if (!cfg?.enabled) return null;
-
-  const bottomOpen = (prePositions?.positions || [])
-    .filter((p) => p.strategy === "bottom_spot_lp").length;
-  if (bottomOpen >= cfg.maxBottomSpotPositions) {
-    log("bottom_spot", `Skipped - max Bottom Spot positions reached (${bottomOpen})`);
-    return null;
-  }
-
-  const amountSol = cfg.deployAmountSol;
-  const minRequired = amountSol + config.management.gasReserve;
-  if (preBalance.sol < minRequired) {
-    log("bottom_spot", `Skipped - insufficient SOL (${preBalance.sol} < ${minRequired})`);
-    return null;
-  }
-
-  const strategy = new BottomSpotLPStrategy(cfg);
-  const triggered = [];
-  for (const candidate of passing) {
-    const pool = candidate.pool;
-    const mint = pool.base?.mint;
-    if (!mint) continue;
-
-    try {
-      const candles = await fetchKlineGMGN(
-        mint,
-        cfg.interval || config.chartIndicators.interval || "1m",
-        Math.max(60, cfg.athLookbackCandles + 10),
-      );
-      const evaluation = await strategy.shouldDeploy(candles, [pool]);
-      if (evaluation.deploy) {
-        triggered.push({ ...evaluation, candidate, candles });
-        const dump = evaluation.signal.dumpPct.toFixed(2);
-        const retrace = evaluation.signal.retracePct.toFixed(2);
-        log("bottom_spot", `${pool.name} triggered: dump=${dump}%, retrace=${retrace}%`);
-      }
-    } catch (e) {
-      log("bottom_spot_warn", `Candle check skipped for ${pool.name}: ${e.message}`);
-    }
-
-    await new Promise((r) => setTimeout(r, 150));
-  }
-
-  if (triggered.length === 0) return null;
-
-  const selectedPool = triggered
-    .sort((a, b) =>
-      (b.pool.active_tvl ?? b.pool.tvl ?? 0) - (a.pool.active_tvl ?? a.pool.tvl ?? 0)
-    )[0];
-  const deployParams = strategy.buildDeployParams(
-    selectedPool.pool,
-    selectedPool.binRange,
-    amountSol,
-  );
-  if (!deployParams.valid) {
-    return {
-      report: `Bottom Spot signal found, but deploy params invalid: ${deployParams.reason}`,
-    };
-  }
-  if (_autoCloseCoordinator.size > 0) {
-    log("bottom_spot", `Deploy skipped - ${_autoCloseCoordinator.size} priority close(s) in progress`);
-    return { deployed: false, report: "Bottom Spot deploy skipped while priority close is in progress." };
-  }
-
-  const liveEntry = await verifyLiveEntryGuards({
-    poolAddress: selectedPool.pool.pool,
-    mint: selectedPool.pool.base?.mint,
-  }, {
-    feesSnapshot: {
-      pool_fees_sol: selectedPool.pool.pool_fees_sol,
-      source: selectedPool.pool.pool_fees_source,
-      timeframe: selectedPool.pool.pool_fees_timeframe,
-      price: selectedPool.pool.gmgn_price,
-      ath: selectedPool.pool.ath,
-      price_vs_ath_pct: selectedPool.pool.price_vs_ath_pct,
-    },
-  });
-  if (!liveEntry.pass) {
-    log("bottom_spot", `Final live entry guard: dropped ${selectedPool.pool.name} - ${liveEntry.reason}`);
-    return {
-      deployed: false,
-      report: `Bottom Spot deploy skipped: ${liveEntry.reason}`,
-    };
-  }
-  deployParams.signal_snapshot = safeBuildEntrySnapshot({
-    pool: {
-      ...selectedPool.pool,
-      pool_fees_sol: liveEntry.fees.pool_fees_sol,
-      pool_fees_source: liveEntry.fees.source,
-      pool_fees_timeframe: liveEntry.fees.timeframe || null,
-      price_vs_ath_pct: liveEntry.price?.price_vs_ath_pct
-        ?? selectedPool.pool.price_vs_ath_pct,
-      ath: liveEntry.price?.ath ?? selectedPool.pool.ath,
-    },
-    tokenInfo: selectedPool.candidate?.ti,
-    smartWallets: selectedPool.candidate?.sw,
-    activeConfig: config,
-    decision: {
-      strategy: deployParams.strategy,
-      strategy_label: deployParams.strategy_label,
-      amount_sol: amountSol,
-      sizing_action: "bottom_spot_fixed",
-      bins_below: deployParams.bins_below,
-      bins_above: deployParams.bins_above,
-      reason: selectedPool.reason,
-      signal: {
-        dump_pct: selectedPool.signal.dumpPct,
-        retrace_pct: selectedPool.signal.retracePct,
-        ath_price: selectedPool.signal.athPrice,
-        dump_low: selectedPool.signal.dumpLow,
-        current_price: selectedPool.signal.currentPrice,
-        lower_price: selectedPool.binRange.lowerPrice,
-        upper_price: selectedPool.binRange.upperPrice,
-      },
-    },
-  });
-
-  const deployResult = await deployPosition(deployParams);
-  const pool = selectedPool.pool;
-  if (deployResult.success || deployResult.dry_run) {
-    const status = deployResult.dry_run ? "DRY RUN" : "DEPLOYED";
-    return {
-      deployed: true,
-      report: [
-        `BOTTOM SPOT ${status}: ${pool.name}`,
-        `${pool.pool}`,
-        ``,
-        `Trigger`,
-        `Dump from ATH: ${selectedPool.signal.dumpPct.toFixed(2)}%`,
-        `Retrace from low: ${selectedPool.signal.retracePct.toFixed(2)}%`,
-        `ATH: ${selectedPool.signal.athPrice}`,
-        `Dump low: ${selectedPool.signal.dumpLow}`,
-        `Current: ${selectedPool.signal.currentPrice}`,
-        ``,
-        `Allocation`,
-        `Amount: ${amountSol} SOL`,
-        `Strategy: bottom_spot_lp (on-chain Spot)`,
-        `Range: ${selectedPool.binRange.lowerPrice} -> ${selectedPool.binRange.upperPrice}`,
-        `Bins below: ${selectedPool.binRange.totalBins}`,
-        ``,
-        `Pool Quality`,
-        `Fee tier: ${pool.fee_pct}%`,
-        `Fee/TVL: ${pool.fee_active_tvl_ratio ?? "?"}%`,
-        `TVL: $${pool.active_tvl ?? pool.tvl ?? "?"}`,
-        `Organic: ${pool.organic_score ?? pool.base?.organic ?? "?"}`,
-        `Bin step: ${pool.bin_step}`,
-      ].join("\n"),
-    };
-  }
-
-  return {
-    deployed: false,
-    report: `Bottom Spot deploy failed for ${pool.name}: ${
-      deployResult.error || "unknown error"
-    }`,
-  };
+async function tryBottomSpotDeploy() {
+  // Bottom Spot LP retired — not used in fee-maxi / lifecycle product.
+  return null;
 }
 
 async function attemptStandardDeploy(candidate, deployAmount) {
@@ -1927,16 +1746,7 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
       return screenReport;
     }
 
-    if (!config.lifecycle?.enabled) {
-      const bottomSpotResult = await tryBottomSpotDeploy(passing, prePositions, currentBalance);
-      if (bottomSpotResult?.deployed) {
-        screenReport = bottomSpotResult.report;
-        return screenReport;
-      }
-      if (bottomSpotResult?.report) {
-        log("bottom_spot_warn", bottomSpotResult.report);
-      }
-    }
+    // Bottom Spot LP removed (not in fee-maxi)
 
     // Pre-fetch active_bin for all passing candidates in parallel
     const activeBinResults = await Promise.allSettled(
