@@ -20,6 +20,7 @@
     "test:pnl": "node test/test-pnl-integrity.js",
     "test:journal": "node test/test-journal.js",
     "test:agent": "DRY_RUN=true node test/test-agent.js",
+    "test:lifecycle": "node test/test-lifecycle.js",
     "postinstall": "node scripts/patch-anchor.js"
   },
   "dependencies": {

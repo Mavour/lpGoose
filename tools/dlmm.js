@@ -155,11 +155,18 @@ export async function deployPosition({
   momentum,
 }, { manualRange = false, dependencies = {} } = {}) {
   pool_address = normalizeMint(pool_address);
-  const usesExplicitRange = strategy_label === "bottom_spot_lp" || manualRange;
+  const usesExplicitRange =
+    strategy_label === "bottom_spot_lp" ||
+    strategy_label === "lifecycle" ||
+    manualRange;
   const activeStrategy = usesExplicitRange
     ? (strategy || config.strategy.strategy)
     : config.strategy.strategy;
-  const trackedStrategy = strategy_label || activeStrategy;
+  // Prefer on-chain shape for tracking when lifecycle label is used
+  const trackedStrategy =
+    strategy_label === "lifecycle"
+      ? activeStrategy
+      : (strategy_label || activeStrategy);
 
   if (!usesExplicitRange) {
     if (!momentum?.valid || !Number.isFinite(Number(momentum.binsBelow))) {

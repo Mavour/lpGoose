@@ -119,6 +119,15 @@ function apiPositions(req, res) {
         total_fees_claimed_usd: p.total_fees_claimed_usd,
         rebalance_count: p.rebalance_count,
         notes:         p.notes,
+        // lifecycle FSM fields
+        fsm_status:            p.fsm_status || null,
+        entry_regime:          p.entry_regime || null,
+        last_lifecycle_action: p.last_lifecycle_action || null,
+        last_lifecycle_reason: p.last_lifecycle_reason || null,
+        last_token_share:      p.last_token_share ?? null,
+        last_snapshot_pnl_pct: p.last_snapshot_pnl_pct ?? null,
+        cumulative_entry_sol:  p.cumulative_entry_sol ?? p.entry_value_sol ?? p.amount_sol,
+        lifecycle_enabled:     !!p.lifecycle_enabled,
       }));
 
       // Try shared live cache first (LPAgent-enriched, written by agent's 30s poller)
@@ -130,11 +139,17 @@ function apiPositions(req, res) {
           const list = baseList.map(p => {
             const v = cacheMap.get(p.position);
             return Object.assign({}, p, {
-              pnl_sol:            v?.pnl_usd != null ? +v.pnl_usd : null,
+              pnl_sol:            v?.pnl_sol != null ? +v.pnl_sol : (v?.pnl_usd != null ? +v.pnl_usd : null),
               pnl_pct:            v?.pnl_pct != null ? +v.pnl_pct : null,
-              unclaimed_fees_sol: v?.unclaimed_fees_usd != null ? +v.unclaimed_fees_usd : null,
+              unclaimed_fees_sol: v?.unclaimed_fees_sol != null ? +v.unclaimed_fees_sol : (v?.unclaimed_fees_usd != null ? +v.unclaimed_fees_usd : null),
               all_time_fees_sol:  v?.collected_fees_usd != null ? +v.collected_fees_usd : null,
               in_range:           v?.in_range ?? true,
+              fsm_status:            v?.fsm_status ?? p.fsm_status,
+              entry_regime:          v?.entry_regime ?? p.entry_regime,
+              last_lifecycle_action: v?.last_lifecycle_action ?? p.last_lifecycle_action,
+              last_lifecycle_reason: v?.last_lifecycle_reason ?? p.last_lifecycle_reason,
+              last_token_share:      v?.last_token_share ?? p.last_token_share,
+              last_snapshot_pnl_pct: v?.last_snapshot_pnl_pct ?? p.last_snapshot_pnl_pct,
             });
           });
           return json(res, list);
@@ -286,12 +301,40 @@ function apiHistory(req, res) {
 }
 
 // ─── API: config ──────────────────────────────────────────
+// Only expose keys that matter for the active engine (lifecycle FSM by default).
+const DASHBOARD_CONFIG_ALLOW = new Set([
+  'preset', 'dryRun', 'solMode', 'strategy',
+  'deployAmountSol', 'minSolToOpen', 'maxDeployAmount', 'gasReserve', 'positionSizePct', 'maxPositions',
+  'timeframe', 'category', 'minTvl', 'maxTvl', 'minVolume', 'minVolumeToActiveTvlRatio',
+  'minOrganic', 'minHolders', 'minMcap', 'maxMcap', 'minBinStep', 'maxBinStep',
+  'minFeeActiveTvlRatio', 'maxFeeActiveTvlRatio', 'minTokenFeesSol',
+  'maxBotHoldersPct', 'maxTop10Pct', 'blockedLaunchpads', 'allowedLaunchpads',
+  'minTokenAgeHours', 'maxTokenAgeHours', 'athFilterPct', 'avoidPvpSymbols', 'blockPvpSymbols',
+  'minClaimAmount', 'autoSwapAfterClaim', 'tokenCloseCooldownMinutes',
+  'managementIntervalMin', 'screeningIntervalMin', 'healthCheckIntervalMin',
+  'confidenceEnabled', 'confidenceFullThreshold', 'confidenceSkipThreshold',
+  'confidenceHalfMultiplier', 'smartWalletMaxAgeMinutes',
+  'lifecycle',
+]);
+
+function pickDashboardConfig(raw) {
+  const out = {};
+  for (const k of DASHBOARD_CONFIG_ALLOW) {
+    if (k in raw) out[k] = raw[k];
+  }
+  // Force display of effective max positions when lifecycle is on
+  if (raw.lifecycle?.enabled) out.maxPositions = 1;
+  return out;
+}
+
 function apiConfig(req, res) {
   const cp = path.join(ROOT, 'user-config.json');
   fs.readFile(cp, 'utf-8', (e, d) => {
     if (e) return json(res, {});
-    try { json(res, filterSensitive(JSON.parse(d))); }
-    catch { json(res, {}); }
+    try {
+      const full = filterSensitive(JSON.parse(d));
+      json(res, pickDashboardConfig(full));
+    } catch { json(res, {}); }
   });
 }
 

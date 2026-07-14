@@ -59,6 +59,13 @@ import {
 import { blockDev, listBlockedDevs, unblockDev } from "./dev-blocklist.js";
 import { safeBuildEntrySnapshot } from "./journal.js";
 import { buildDangerDrawdownDecision } from "./danger-exit.js";
+import {
+  classify as classifyRegime,
+  strategyForRegime,
+  executeLifecycleDeploy,
+  runLifecycleTick,
+  getLifecycleTickStatus,
+} from "./engine/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -1064,6 +1071,25 @@ function stopCronJobs() {
 
 export async function runManagementCycle({ silent = false } = {}) {
   if (_managementBusy) return null;
+  // Lifecycle FSM owns exits/rebalance — no LLM management double-work
+  if (config.lifecycle?.enabled) {
+    _managementBusy = true;
+    timers.managementLastRun = Date.now();
+    try {
+      log("cron", "Management cycle: lifecycle FSM tick (LLM skipped)");
+      const tickResult = await runLifecycleTick();
+      const open = getTrackedPositions(true);
+      if (!open.length) {
+        runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
+      }
+      return tickResult;
+    } catch (e) {
+      log("cron_error", `Lifecycle management failed: ${e.message}`);
+      return null;
+    } finally {
+      _managementBusy = false;
+    }
+  }
   _managementBusy = true;
   timers.managementLastRun = Date.now();
   log("cron", "Starting management cycle");
@@ -1617,6 +1643,157 @@ async function attemptStandardDeploy(candidate, deployAmount) {
   };
 }
 
+/**
+ * Lifecycle auto-deploy: same screening gates + chart regime → bid_ask or curve.
+ */
+async function attemptLifecycleDeploy(candidate, deployAmount) {
+  const { pool, sw, ti, activeBin, confidence } = candidate;
+  const sizing = getConfidenceSizing(confidence.total, deployAmount, config.confidence);
+  log(
+    "lifecycle",
+    `Entry candidate ${pool.name}: conf=${confidence.total}% action=${sizing.action} amount=${sizing.amount}`,
+  );
+
+  if (sizing.action === "skip") {
+    return {
+      status: "failed",
+      report: `SKIPPED: ${pool.name} confidence ${confidence.total}% < ${config.confidence.skipThreshold}%`,
+    };
+  }
+
+  const maxFeeTvl =
+    config.lifecycle?.maxFeeActiveTvlRatio ??
+    config.screening?.maxFeeActiveTvlRatio;
+  if (
+    maxFeeTvl != null &&
+    pool.fee_active_tvl_ratio != null &&
+    Number(pool.fee_active_tvl_ratio) > Number(maxFeeTvl)
+  ) {
+    return {
+      status: "failed",
+      report: `SKIPPED: ${pool.name} fee_tvl ${pool.fee_active_tvl_ratio}% > max ${maxFeeTvl}% (fat-tail guard)`,
+    };
+  }
+
+  // Regime from GMGN/momentum candles or dedicated kline
+  let candles = pool.momentum_candles || [];
+  if (!candles.length && pool.base?.mint) {
+    try {
+      candles = await fetchKlineGMGN(
+        pool.base.mint,
+        config.chartIndicators?.interval || "5m",
+        config.lifecycle?.entry?.lookbackCandles ?? 48,
+      );
+    } catch (e) {
+      log("lifecycle_warn", `candles for regime: ${e.message}`);
+    }
+  }
+  // Normalize candle shape {c,h,l,o}
+  const normalized = (candles || []).map((c) => ({
+    t: c.t ?? c.time ?? c.open_time,
+    o: Number(c.o ?? c.open),
+    h: Number(c.h ?? c.high),
+    l: Number(c.l ?? c.low),
+    c: Number(c.c ?? c.close),
+    v: Number(c.v ?? c.volume ?? 0),
+  })).filter((c) => Number.isFinite(c.c));
+
+  const regime = classifyRegime(normalized, config.lifecycle?.entry || {});
+  const strategy = strategyForRegime(regime);
+  log("lifecycle", `Regime ${pool.name}: ${regime} → ${strategy}`);
+
+  if (_autoCloseCoordinator.size > 0) {
+    return { status: "failed", report: "Deploy skipped while priority close is in progress." };
+  }
+
+  const liveEntry = await verifyLiveEntryGuards({
+    poolAddress: pool.pool,
+    mint: pool.base?.mint,
+  }, {
+    feesSnapshot: {
+      pool_fees_sol: pool.pool_fees_sol,
+      source: pool.pool_fees_source,
+      timeframe: pool.pool_fees_timeframe,
+      price: pool.gmgn_price,
+      ath: pool.ath,
+      price_vs_ath_pct: pool.price_vs_ath_pct,
+    },
+  });
+  if (!liveEntry.pass) {
+    return { status: "failed", report: `Deploy skipped: ${liveEntry.reason}` };
+  }
+
+  pool.pool_fees_sol = liveEntry.fees.pool_fees_sol;
+  pool.pool_fees_source = liveEntry.fees.source;
+  pool.pool_fees_timeframe = liveEntry.fees.timeframe || null;
+
+  const signal_snapshot = safeBuildEntrySnapshot({
+    pool,
+    tokenInfo: ti,
+    smartWallets: sw,
+    activeConfig: config,
+    decision: {
+      strategy,
+      strategy_label: "lifecycle",
+      amount_sol: sizing.amount,
+      sizing_action: sizing.action,
+      regime,
+      active_bin: activeBin,
+      reason: `lifecycle auto-deploy regime=${regime}`,
+      confidence,
+    },
+  });
+
+  const deployStartedAt = Date.now();
+  const deployResult = await executeLifecycleDeploy({
+    pool,
+    regime,
+    strategy,
+    amountSol: sizing.amount,
+    signal_snapshot,
+  });
+  logAction({
+    tool: "lifecycle_deploy",
+    args: { pool: pool.pool, strategy, regime, amount: sizing.amount },
+    result: deployResult,
+    duration_ms: Date.now() - deployStartedAt,
+    success: deployResult?.success === true || deployResult?.dry_run === true,
+  });
+
+  if (deployResult?.code === "non_refundable_bin_cost") {
+    return { status: "non_refundable_bin_cost", deployResult };
+  }
+  if (!deployResult?.success && !deployResult?.dry_run) {
+    return {
+      status: "failed",
+      report: `Decision: DEPLOY FAILED\npool: ${pool.name}\nerror: ${deployResult?.error || "Unknown"}`,
+    };
+  }
+
+  // Fake momentum object for screening report compatibility
+  const momentum = {
+    score: confidence.total,
+    classification: regime,
+    binsBelow: deployResult?.bin_range
+      ? Math.abs((deployResult.bin_range.active ?? 0) - (deployResult.bin_range.min ?? 0))
+      : "?",
+    selectedBand: [35, 60],
+    priceChange5m: 0,
+    volumeRatio: 1,
+    valid: true,
+  };
+
+  return {
+    status: "success",
+    candidate,
+    sizing,
+    momentum,
+    deployResult,
+    regime,
+    strategy,
+  };
+}
+
 export async function runScreeningCycle({ silent = false, force = false } = {}) {
   if (_shuttingDown) {
     log("cron", "Screening skipped - shutdown in progress");
@@ -1657,8 +1834,9 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
   let prePositions, preBalance;
   try {
     [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), getWalletBalances()]);
-    if (prePositions.total_positions >= config.risk.maxPositions) {
-      log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
+    const maxPos = config.lifecycle?.enabled ? 1 : config.risk.maxPositions;
+    if (prePositions.total_positions >= maxPos) {
+      log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${maxPos}${config.lifecycle?.enabled ? " lifecycle" : ""})`);
       if (_screeningRunId === screeningRunId) {
         _screeningBusy = false;
         _screeningBusySince = 0;
@@ -1746,13 +1924,15 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
       return screenReport;
     }
 
-    const bottomSpotResult = await tryBottomSpotDeploy(passing, prePositions, currentBalance);
-    if (bottomSpotResult?.deployed) {
-      screenReport = bottomSpotResult.report;
-      return screenReport;
-    }
-    if (bottomSpotResult?.report) {
-      log("bottom_spot_warn", bottomSpotResult.report);
+    if (!config.lifecycle?.enabled) {
+      const bottomSpotResult = await tryBottomSpotDeploy(passing, prePositions, currentBalance);
+      if (bottomSpotResult?.deployed) {
+        screenReport = bottomSpotResult.report;
+        return screenReport;
+      }
+      if (bottomSpotResult?.report) {
+        log("bottom_spot_warn", bottomSpotResult.report);
+      }
     }
 
     // Pre-fetch active_bin for all passing candidates in parallel
@@ -1766,14 +1946,31 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
       idx: i,
       activeBin: activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value?.binId : null,
     }));
-    const ranked = rankConfidenceCandidates(indexed, config.confidence);
+    // Drop fat-tail fee_tvl when lifecycle guard is set
+    const maxFeeTvl = config.lifecycle?.maxFeeActiveTvlRatio;
+    const filtered = maxFeeTvl != null
+      ? indexed.filter(({ pool }) => {
+          if (pool.fee_active_tvl_ratio == null) return true;
+          if (Number(pool.fee_active_tvl_ratio) <= Number(maxFeeTvl)) return true;
+          log("lifecycle", `Dropped ${pool.name}: fee_tvl ${pool.fee_active_tvl_ratio}% > ${maxFeeTvl}%`);
+          return false;
+        })
+      : indexed;
+    if (filtered.length === 0) {
+      screenReport = `No candidates after lifecycle fee_tvl cap (max ${maxFeeTvl}%).`;
+      return screenReport;
+    }
+    const ranked = rankConfidenceCandidates(filtered, config.confidence);
+    const deployFn = config.lifecycle?.enabled
+      ? (candidate) => attemptLifecycleDeploy(candidate, deployAmount)
+      : (candidate) => attemptStandardDeploy(candidate, deployAmount);
     const {
       selectedAttempt,
       failedAttempt,
       infrastructureSkips,
     } = await runRankedCandidateAttempts(
       ranked,
-      (candidate) => attemptStandardDeploy(candidate, deployAmount),
+      deployFn,
     );
     if (failedAttempt) screenReport = failedAttempt.report;
 
@@ -1827,11 +2024,12 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
         `Volatility score: ${confidence.volatility_score}/40`,
         `Fee/Active TVL score: ${confidence.fee_active_tvl_score}/40`,
         `Smart wallet score: ${confidence.smart_wallet_score}/20 (${confidence.recent_smart_wallets.length} within ${config.confidence.smartWalletMaxAgeMinutes}m)`,
-        `Strategy: ${config.strategy.strategy}`,
+        `Strategy: ${selectedAttempt.strategy || config.strategy.strategy}${selectedAttempt.regime ? ` (regime: ${selectedAttempt.regime})` : ""}`,
+        `Mode: ${config.lifecycle?.enabled ? "lifecycle FSM" : "legacy"}`,
         `Momentum: ${momentum.score ?? "N/A"} (${momentum.classification})`,
-        `Momentum bins: ${momentum.selectedBand.join("-")} -> ${momentum.binsBelow}`,
-        `Price 5m: ${momentum.priceChange5m.toFixed(2)}%`,
-        `Volume ratio: ${momentum.volumeRatio.toFixed(2)}x`,
+        `Momentum bins: ${Array.isArray(momentum.selectedBand) ? momentum.selectedBand.join("-") : "?"} -> ${momentum.binsBelow}`,
+        `Price 5m: ${Number(momentum.priceChange5m || 0).toFixed(2)}%`,
+        `Volume ratio: ${Number(momentum.volumeRatio || 0).toFixed(2)}x`,
         `Active bin: ${activeBin ?? "?"}`,
         `Range: ${minPrice} → ${maxPrice} SOL`,
         `Downside cover: ${downsidePct}%`,
@@ -1940,6 +2138,55 @@ Summarize the current portfolio health, total fees earned, and performance of al
     let nextDelayMs = config.schedule.pnlNoPositionPollIntervalMs;
     try {
       const trackedPositions = getTrackedPositions(true);
+
+      // ── Lifecycle FSM mode: manage flip/reshape/rebalance/risk ──
+      if (config.lifecycle?.enabled) {
+        nextDelayMs = config.lifecycle.pollIntervalMs ?? 5000;
+        if (trackedPositions.length === 0) {
+          nextDelayMs = config.schedule.pnlNoPositionPollIntervalMs ?? 30_000;
+          return;
+        }
+        const result = await getMyPositions({
+          force: true,
+          silent: true,
+          liveOnly: true,
+          urgent: true,
+        }).catch(() => null);
+        try {
+          if (result && !result.stale) {
+            const cachePath = path.join(__dirname, "live-positions-cache.json");
+            // Enrich with lifecycle fields for dashboard
+            const enriched = (result.positions || []).map((p) => {
+              const tp = getTrackedPosition(p.position);
+              return {
+                ...p,
+                fsm_status: tp?.fsm_status || null,
+                entry_regime: tp?.entry_regime || null,
+                last_lifecycle_action: tp?.last_lifecycle_action || null,
+                last_lifecycle_reason: tp?.last_lifecycle_reason || null,
+                last_token_share: tp?.last_token_share ?? null,
+                cumulative_entry_sol: tp?.cumulative_entry_sol ?? tp?.entry_value_sol ?? tp?.amount_sol,
+                last_snapshot_pnl_pct: tp?.last_snapshot_pnl_pct ?? p.pnl_pct,
+              };
+            });
+            fs.writeFileSync(
+              cachePath,
+              JSON.stringify({
+                updatedAt: Date.now(),
+                lifecycle: true,
+                tick: getLifecycleTickStatus(),
+                positions: enriched,
+              }),
+            );
+          }
+        } catch {}
+        const tickResult = await runLifecycleTick();
+        if (tickResult && tickResult.action !== "none") {
+          log("lifecycle", `Tick executed: ${tickResult.action} (${tickResult.reason})`);
+        }
+        return;
+      }
+
       if (trackedPositions.length === 0) {
         nextDelayMs = selectAdaptivePnlPollIntervalMs({
           trackedPositions,
@@ -2001,6 +2248,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
 
   let _pnlSlowCheckBusy = false;
   const pnlSlowCheckInterval = setInterval(async () => {
+    if (config.lifecycle?.enabled) return; // lifecycle tick owns exits
     if (_pnlSlowCheckBusy) return;
     _pnlSlowCheckBusy = true;
     try {
@@ -2339,30 +2587,31 @@ const MOMENTUM_MENU_FIELDS = {
   momentumRetryDelayMs: "retryDelayMs",
 };
 
-const MENU_SECTION_ROWS = [
+// ── Lifecycle-first Telegram menu (legacy clutter removed) ──
+const LIFECYCLE_MENU_SECTION_ROWS = [
   ["quick", "sizing", "screen"],
-  ["launch", "safety", "strategy"],
-  ["momentum", "manage", "exits"],
-  ["confidence", "schedule", "indicators"],
-  ["bottomEntry", "bottomExit"],
-  ["llm", "learning"],
+  ["lifecycle", "entry", "risk"],
+  ["ops", "confidence", "schedule"],
+  ["launch", "safety"],
 ];
 
-const MENU_SECTIONS = {
+const LIFECYCLE_MENU_SECTIONS = {
   quick: [
     ["dryRun", "Dry run"],
-    ["strategy", "Strategy"],
+    ["lifecycle.enabled", "Lifecycle FSM"],
     ["deployAmountSol", "Deploy SOL"],
     ["maxPositions", "Max positions"],
-    ["takeProfitFeePct", "Take profit %"],
-    ["stopLossPct", "Stop loss %"],
+    ["lifecycle.risk.takeProfitPct", "TP % (cumul)"],
+    ["lifecycle.risk.stopLossPct", "SL %"],
+    ["lifecycle.risk.maxLossPct", "Max loss %"],
     ["minFeeActiveTvlRatio", "Min fee/TVL"],
+    ["lifecycle.maxFeeActiveTvlRatio", "Max fee/TVL"],
     ["minTokenFeesSol", "Min fee SOL"],
-    ["minBinsBelow", "Min bins"],
-    ["maxBinsBelow", "Max bins"],
   ],
   sizing: [
     ["deployAmountSol", "Deploy SOL"],
+    ["lifecycle.capital.perPositionSol", "Per-position SOL"],
+    ["lifecycle.capital.minSolReserve", "Min SOL reserve"],
     ["minSolToOpen", "Min SOL open"],
     ["maxDeployAmount", "Max deploy SOL"],
     ["gasReserve", "Gas reserve"],
@@ -2378,14 +2627,54 @@ const MENU_SECTIONS = {
     ["minVolume", "Min volume"],
     ["minVolumeToActiveTvlRatio", "Min vol/TVL"],
     ["minFeeActiveTvlRatio", "Min fee/TVL"],
+    ["lifecycle.maxFeeActiveTvlRatio", "Max fee/TVL"],
     ["minTokenFeesSol", "Min fee SOL"],
-    ["minMomentumScore", "Min momentum"],
     ["minOrganic", "Min organic"],
     ["minHolders", "Min holders"],
     ["minMcap", "Min mcap"],
     ["maxMcap", "Max mcap"],
     ["minBinStep", "Min bin step"],
     ["maxBinStep", "Max bin step"],
+  ],
+  lifecycle: [
+    ["lifecycle.enabled", "Enabled"],
+    ["lifecycle.pollIntervalMs", "Tick poll ms"],
+    ["lifecycle.maxFeeActiveTvlRatio", "Max fee/TVL entry"],
+    ["lifecycle.capital.perPositionSol", "Per-position SOL"],
+    ["lifecycle.capital.minSolReserve", "Min SOL reserve"],
+    ["lifecycle.flip.ratioLow", "Flip ratio low"],
+    ["lifecycle.flip.ratioHigh", "Flip ratio high"],
+    ["lifecycle.reshape.binTrigger", "Reshape bin drift"],
+    ["lifecycle.reshape.claimEach", "Claim on reshape"],
+    ["lifecycle.reshape.minReshapeIntervalMs", "Reshape min ms"],
+    ["lifecycle.rebalance.cooldownMs", "Rebalance cooldown"],
+    ["lifecycle.rebalance.oorBufferBins", "OOR buffer bins"],
+    ["lifecycle.rebalance.trigger", "Rebalance trigger"],
+  ],
+  entry: [
+    ["lifecycle.entry.bidAskRangeBins", "Bid-ask bins"],
+    ["lifecycle.entry.curveBinsMin", "Curve bins min"],
+    ["lifecycle.entry.curveBinsMax", "Curve bins max"],
+    ["lifecycle.entry.volatilityFullRangePct", "Vol full-range %"],
+    ["lifecycle.entry.lookbackCandles", "Regime lookback"],
+    ["lifecycle.entry.pumpPctThreshold", "Pump threshold %"],
+    ["lifecycle.entry.downtrendPctThreshold", "Downtrend thr %"],
+    ["lifecycle.entry.bottomDrawdownPct", "Bottom drawdown %"],
+    ["lifecycle.entry.bottomFlatSlopePct", "Bottom flat slope"],
+    ["lifecycle.entry.bottomSlopeCandles", "Bottom slope candles"],
+  ],
+  risk: [
+    ["lifecycle.risk.takeProfitPct", "Take profit %"],
+    ["lifecycle.risk.stopLossPct", "Stop loss %"],
+    ["lifecycle.risk.maxLossPct", "Max loss %"],
+    ["lifecycle.risk.confirmMs", "Risk confirm ms"],
+    ["lifecycle.risk.suppressMsAfterEntry", "Suppress after entry"],
+    ["lifecycle.risk.suppressMsAfterLiquidityOp", "Suppress after liq op"],
+  ],
+  ops: [
+    ["autoSwapAfterClaim", "Auto swap after claim"],
+    ["minClaimAmount", "Min claim $"],
+    ["tokenCloseCooldownMinutes", "Token close cooldown"],
   ],
   launch: [
     ["blockedLaunchpads", "Blocked launchpads"],
@@ -2399,60 +2688,6 @@ const MENU_SECTIONS = {
   safety: [
     ["maxBotHoldersPct", "Max bots %"],
     ["maxTop10Pct", "Max top10 %"],
-    ["tokenCloseCooldownMinutes", "Token close cooldown"],
-    ["dangerDrawdownPct", "Danger %"],
-    ["dangerHardClosePct", "Danger hard %"],
-    ["dangerGraceMinutes", "Danger grace min"],
-    ["dangerCloseMomentumBelow", "Danger momentum <"],
-    ["dangerClosePriceChange5mPct", "Danger 5m change %"],
-  ],
-  strategy: [
-    ["strategy", "Strategy"],
-    ["mixedRatio", "Mixed ratio"],
-    ["minBinsBelow", "Min bins"],
-    ["maxBinsBelow", "Max bins"],
-  ],
-  momentum: [
-    ["momentumStrongThreshold", "Strong threshold"],
-    ["momentumStrongMinBins", "Strong min bins"],
-    ["momentumStrongMaxBins", "Strong max bins"],
-    ["momentumWeakMinBins", "Weak min bins"],
-    ["momentumWeakMaxBins", "Weak max bins"],
-    ["momentumAgeNewMaxHours", "New max age h"],
-    ["momentumNewMinBins", "New min bins"],
-    ["momentumNewMaxBins", "New max bins"],
-    ["momentumAgeYoungMaxHours", "Young max age h"],
-    ["momentumYoungMinBins", "Young min bins"],
-    ["momentumYoungMaxBins", "Young max bins"],
-    ["momentumAgeMatureMaxHours", "Mature max age h"],
-    ["momentumMatureMinBins", "Mature min bins"],
-    ["momentumMatureMaxBins", "Mature max bins"],
-    ["momentumOldMinBins", "Old min bins"],
-    ["momentumOldMaxBins", "Old max bins"],
-    ["momentumMaxCandleAgeMinutes", "Max candle age min"],
-    ["momentumMaxRetries", "Max retries"],
-    ["momentumRetryDelayMs", "Retry delay ms"],
-  ],
-  manage: [
-    ["minClaimAmount", "Min claim $"],
-    ["autoSwapAfterClaim", "Auto swap"],
-    ["outOfRangeBinsToClose", "OOR bins close"],
-    ["outOfRangeWaitMinutes", "OOR wait min"],
-    ["downsideOutOfRangeWaitMinutes", "Downside OOR wait"],
-    ["downsideOutOfRangeLossPct", "Downside OOR loss %"],
-    ["minVolumeToRebalance", "Min vol rebalance"],
-    ["minFeePerTvl24h", "Min fee/TVL 24h"],
-    ["minAgeBeforeYieldCheck", "Min age yield min"],
-  ],
-  exits: [
-    ["takeProfitFeePct", "Take profit %"],
-    ["stopLossPct", "Stop loss %"],
-    ["trailingTakeProfit", "Trailing"],
-    ["trailingTriggerPct", "Trail trigger %"],
-    ["trailingDropPct", "Trail drop %"],
-    ["dangerDrawdownPct", "Danger %"],
-    ["dangerHardClosePct", "Danger hard %"],
-    ["dangerGraceMinutes", "Danger grace min"],
   ],
   confidence: [
     ["confidence.enabled", "Confidence enabled"],
@@ -2462,80 +2697,92 @@ const MENU_SECTIONS = {
     ["confidence.smartWalletMaxAgeMinutes", "Smart wallet age"],
   ],
   schedule: [
-    ["managementIntervalMin", "Manage interval"],
-    ["screeningIntervalMin", "Screen interval"],
+    ["screeningIntervalMin", "Screen interval min"],
+    ["managementIntervalMin", "Manage interval min"],
+    ["lifecycle.pollIntervalMs", "Lifecycle tick ms"],
     ["healthCheckIntervalMin", "Health interval"],
-    ["pnlPollIntervalMs", "PNL fast poll ms"],
-    ["pnlNormalPollIntervalMs", "PNL normal poll ms"],
-    ["pnlNoPositionPollIntervalMs", "PNL idle poll ms"],
-    ["pnlSlowCheckIntervalMs", "PNL slow check ms"],
-    ["pnlSignatureCheckIntervalMs", "PNL signature ms"],
-    ["pnlDiscoveryTtlMs", "PNL discovery TTL"],
-    ["lpAgentPnlNormalTtlMs", "LP PNL normal TTL"],
-    ["lpAgentPnlUrgentTtlMs", "LP PNL urgent TTL"],
-    ["lpAgentPnlRateLimitBackoffMs", "LP PNL backoff"],
-    ["emptyPositionsCacheTtlMs", "Empty pos cache TTL"],
-    ["screeningWatchdogMs", "Screen watchdog ms"],
-    ["urgentPositionsTimeoutMs", "Urgent pos timeout"],
-    ["shutdownTimeoutMs", "Shutdown timeout"],
-  ],
-  indicators: [
-    ["enabled", "Indicators enabled"],
-    ["entryPreset", "Entry preset"],
-    ["entryMinPriceChangePct", "Entry min change %"],
-    ["stPeriod", "ST period"],
-    ["stMultiplier", "ST multiplier"],
-    ["interval", "ST default interval"],
-    ["entryInterval", "Entry interval"],
-    ["exitInterval", "Exit interval"],
-    ["failOpen", "Fail open"],
-    ["exitOnBearishFlip", "Exit bearish flip"],
-  ],
-  bottomEntry: [
-    ["bottomSpotLP.enabled", "Enabled"],
-    ["bottomSpotLP.deployAmountSol", "Deploy SOL"],
-    ["bottomSpotLP.minBaseFee", "Min base fee"],
-    ["bottomSpotLP.minTvl", "Min TVL"],
-    ["bottomSpotLP.maxTvl", "Max TVL"],
-    ["bottomSpotLP.minVolume", "Min volume"],
-    ["bottomSpotLP.minFeeActiveTvlRatio", "Min fee/TVL"],
-    ["bottomSpotLP.minOrganic", "Min organic"],
-    ["bottomSpotLP.rangePct", "Range %"],
-    ["bottomSpotLP.minDumpPct", "Min dump %"],
-    ["bottomSpotLP.minRetracePct", "Min retrace %"],
-    ["bottomSpotLP.interval", "Interval"],
-    ["bottomSpotLP.athLookbackCandles", "Lookback candles"],
-    ["bottomSpotLP.maxBottomSpotPositions", "Max bottom pos"],
-    ["bottomSpotLP.logLevel", "Log level"],
-  ],
-  bottomExit: [
-    ["bottomSpotLP.rsiExitThreshold", "RSI exit"],
-    ["bottomSpotLP.takeProfitFeePct", "Fee target %"],
-    ["bottomSpotLP.maxILPct", "Max IL %"],
-    ["bottomSpotLP.minFeesToOverrideStopLoss", "Fees override SL"],
-    ["bottomSpotLP.outOfRangeWaitMinutes", "OOR wait min"],
-    ["bottomSpotLP.outOfRangeTolerance", "OOR tolerance"],
-    ["bottomSpotLP.feesForReposition", "Fees reposition %"],
-    ["bottomSpotLP.enableTAExit", "TA exit"],
-  ],
-  llm: [
-    ["managementModel", "Manage model"],
-    ["screeningModel", "Screen model"],
-    ["generalModel", "General model"],
-    ["temperature", "Temperature"],
-    ["maxTokens", "Max tokens"],
-    ["maxSteps", "Max steps"],
-  ],
-  learning: [
-    ["learning.enabled", "Learning enabled"],
-    ["learning.minClosedPositions", "Min closed pos"],
-    ["learning.proposalCooldownHours", "Proposal cooldown h"],
-    ["learning.maxChangesPerProposal", "Max changes/proposal"],
+    ["pnlNoPositionPollIntervalMs", "Idle poll ms"],
   ],
 };
 
-MENU_SECTIONS.risk = MENU_SECTIONS.safety;
-MENU_SECTIONS.bottom = MENU_SECTIONS.bottomEntry;
+// Legacy menu (only if lifecycle.enabled = false)
+const LEGACY_MENU_SECTION_ROWS = [
+  ["quick", "sizing", "screen"],
+  ["launch", "safety", "strategy"],
+  ["manage", "exits", "confidence"],
+  ["schedule"],
+];
+
+const LEGACY_MENU_SECTIONS = {
+  quick: [
+    ["dryRun", "Dry run"],
+    ["lifecycle.enabled", "Lifecycle FSM"],
+    ["deployAmountSol", "Deploy SOL"],
+    ["maxPositions", "Max positions"],
+    ["takeProfitFeePct", "Take profit %"],
+    ["stopLossPct", "Stop loss %"],
+    ["minFeeActiveTvlRatio", "Min fee/TVL"],
+    ["minTokenFeesSol", "Min fee SOL"],
+  ],
+  sizing: LIFECYCLE_MENU_SECTIONS.sizing,
+  screen: LIFECYCLE_MENU_SECTIONS.screen,
+  launch: LIFECYCLE_MENU_SECTIONS.launch,
+  safety: [
+    ["maxBotHoldersPct", "Max bots %"],
+    ["maxTop10Pct", "Max top10 %"],
+    ["tokenCloseCooldownMinutes", "Token close cooldown"],
+    ["dangerDrawdownPct", "Danger %"],
+    ["dangerHardClosePct", "Danger hard %"],
+    ["dangerGraceMinutes", "Danger grace min"],
+  ],
+  strategy: [
+    ["strategy", "Strategy"],
+    ["minBinsBelow", "Min bins"],
+    ["maxBinsBelow", "Max bins"],
+  ],
+  manage: [
+    ["minClaimAmount", "Min claim $"],
+    ["autoSwapAfterClaim", "Auto swap"],
+    ["outOfRangeWaitMinutes", "OOR wait min"],
+  ],
+  exits: [
+    ["takeProfitFeePct", "Take profit %"],
+    ["stopLossPct", "Stop loss %"],
+    ["trailingTakeProfit", "Trailing"],
+    ["trailingTriggerPct", "Trail trigger %"],
+    ["trailingDropPct", "Trail drop %"],
+  ],
+  confidence: LIFECYCLE_MENU_SECTIONS.confidence,
+  schedule: LIFECYCLE_MENU_SECTIONS.schedule,
+};
+
+function getMenuSectionRows() {
+  return config.lifecycle?.enabled ? LIFECYCLE_MENU_SECTION_ROWS : LEGACY_MENU_SECTION_ROWS;
+}
+
+function getMenuSections() {
+  return config.lifecycle?.enabled ? LIFECYCLE_MENU_SECTIONS : LEGACY_MENU_SECTIONS;
+}
+
+// Back-compat aliases used elsewhere
+const MENU_SECTION_ROWS = LIFECYCLE_MENU_SECTION_ROWS;
+const MENU_SECTIONS = LIFECYCLE_MENU_SECTIONS;
+
+function getByPath(obj, pathStr) {
+  if (!obj || !pathStr) return undefined;
+  return pathStr.split(".").reduce((cur, key) => (cur == null ? undefined : cur[key]), obj);
+}
+
+function setByPath(obj, pathStr, value) {
+  const parts = pathStr.split(".");
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const p = parts[i];
+    if (cur[p] == null || typeof cur[p] !== "object") cur[p] = {};
+    cur = cur[p];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
 
 function parseTelegramConfigValue(rawValue, key = null) {
   const raw = String(rawValue).trim();
@@ -2572,6 +2819,13 @@ function persistMenuConfigValue(cfg, key, value) {
     cfg.dryRun = value;
     return;
   }
+  if (key.startsWith("lifecycle.")) {
+    // store under nested lifecycle object in user-config.json
+    const sub = key.slice("lifecycle.".length); // e.g. risk.stopLossPct | enabled
+    setByPath(cfg, `lifecycle.${sub}`, value);
+    delete cfg[key];
+    return;
+  }
   if (key.startsWith("bottomSpotLP.")) {
     const field = key.split(".")[1];
     cfg.bottomSpotLP = cfg.bottomSpotLP || {};
@@ -2601,12 +2855,20 @@ function persistMenuConfigValue(cfg, key, value) {
   if (key === "deployAmountSol") {
     cfg.minSolToOpen = value;
     cfg.maxDeployAmount = value;
+    // keep lifecycle capital in sync when present
+    if (cfg.lifecycle?.capital) cfg.lifecycle.capital.perPositionSol = value;
   }
 }
 
 function applyLiveMenuConfigValue(key, value) {
   if (key === "dryRun") {
     process.env.DRY_RUN = String(value);
+    return;
+  }
+  if (key.startsWith("lifecycle.")) {
+    const sub = key.slice("lifecycle.".length);
+    if (!config.lifecycle) config.lifecycle = {};
+    setByPath(config.lifecycle, sub, value);
     return;
   }
   if (key.startsWith("bottomSpotLP.")) {
@@ -2637,6 +2899,7 @@ function applyLiveMenuConfigValue(key, value) {
   if (key === "deployAmountSol") {
     config.management.minSolToOpen = value;
     config.risk.maxDeployAmount = value;
+    if (config.lifecycle?.capital) config.lifecycle.capital.perPositionSol = value;
   }
 }
 
@@ -2652,7 +2915,12 @@ async function applyMenuConfig(key, value, { restartCron = true } = {}) {
   }
   applyLiveMenuConfigValue(key, value);
 
-  const scheduleChanged = config.schedule && key in config.schedule;
+  const scheduleChanged =
+    (config.schedule && key in config.schedule) ||
+    key === "lifecycle.pollIntervalMs" ||
+    key === "lifecycle.enabled" ||
+    key === "screeningIntervalMin" ||
+    key === "managementIntervalMin";
   if (scheduleChanged && restartCron) {
     stopCronJobs();
     startCronJobs();
@@ -2669,10 +2937,17 @@ async function applyMenuConfig(key, value, { restartCron = true } = {}) {
 
 function menuSettingValue(key) {
   if (key === "dryRun") return process.env.DRY_RUN === "true" ? "on" : "off";
+  if (key.startsWith("lifecycle.")) {
+    const sub = key.slice("lifecycle.".length);
+    const value = getByPath(config.lifecycle, sub);
+    if (value === undefined) return "?";
+    return typeof value === "boolean" ? value : value;
+  }
   if (key.startsWith("bottomSpotLP.")) return config.bottomSpotLP?.[key.split(".")[1]] ?? "?";
   if (key.startsWith("learning.")) return config.learning?.[key.split(".")[1]] ?? "?";
   if (CONFIDENCE_LIVE_FIELDS[key]) return config.confidence?.[CONFIDENCE_LIVE_FIELDS[key]] ?? "?";
   if (MOMENTUM_MENU_FIELDS[key]) return config.momentum?.[MOMENTUM_MENU_FIELDS[key]] ?? "?";
+  if (key === "maxPositions" && config.lifecycle?.enabled) return 1;
   if (key in config.risk) return config.risk[key];
   if (key in config.screening) return config.screening[key];
   if (key in config.management) return config.management[key];
@@ -2688,7 +2963,7 @@ function menuSettingValue(key) {
 
 function isToggleSetting(key) {
   const value = menuSettingValue(key);
-  return typeof value === "boolean" || key === "dryRun";
+  return typeof value === "boolean" || key === "dryRun" || /enabled|claimEach|autoSwap|solMode|avoidPvp|blockPvp/i.test(key);
 }
 
 function toggledSettingValue(key) {
@@ -2699,6 +2974,10 @@ function toggledSettingValue(key) {
 function sectionTitle(id) {
   const special = {
     llm: "LLM",
+    lifecycle: "Lifecycle",
+    entry: "Entry",
+    ops: "Ops",
+    risk: "Risk",
     bottomEntry: "Bottom Entry",
     bottomExit: "Bottom Exit",
   };
@@ -2707,7 +2986,7 @@ function sectionTitle(id) {
 }
 
 function buildMenuSectionRows(section, preset) {
-  return MENU_SECTION_ROWS.map((row) => row.map((id) => ({
+  return getMenuSectionRows().map((row) => row.map((id) => ({
     text: `${id === section ? "* " : ""}${sectionTitle(id)}`,
     callback_data: `menu:${id}:${preset}`,
   })));
@@ -2721,49 +3000,36 @@ function nonTtySettingValue(key) {
   return menuSettingValue(key);
 }
 
-const nonTtyMenuSections = MENU_SECTIONS;
-
 function buildNonTtySettingsMenu(section = "quick", preset = "custom") {
-  const activeStrategy = getActiveStrategy();
-  const strategyName = activeStrategy?.lp_strategy || config.strategy.strategy;
-  const trailing = config.management.trailingTakeProfit ? "ON" : "OFF";
+  const sections = getMenuSections();
+  // Fall back to quick if section removed in lifecycle menu
+  if (!sections[section]) section = "quick";
+  const lc = config.lifecycle || {};
+  const lcOn = !!lc.enabled;
   const solMode = config.management.solMode ? "SOL" : "USD";
   const dryRun = process.env.DRY_RUN === "true" ? "on" : "off";
-  const st = config.chartIndicators;
-  const supState = st.enabled ? `${st.stPeriod}/${st.stMultiplier}, ${st.interval}` : "off";
-  const bottomState = config.bottomSpotLP?.enabled ? `ON (${config.bottomSpotLP.minDumpPct}% dump)` : "OFF";
-  const settings = nonTtyMenuSections[section] || nonTtyMenuSections.quick;
+  const maxPos = lcOn ? 1 : config.risk.maxPositions;
+  const tp = lcOn ? (lc.risk?.takeProfitPct ?? 30) : config.management.takeProfitFeePct;
+  const sl = lcOn ? (lc.risk?.stopLossPct ?? -15) : config.management.stopLossPct;
+  const maxLoss = lc.risk?.maxLossPct ?? -25;
+  const bins = lcOn
+    ? `${lc.entry?.curveBinsMin ?? 35}-${lc.entry?.curveBinsMax ?? 60} curve / ${lc.entry?.bidAskRangeBins ?? 20} bidask`
+    : `${config.strategy.minBinsBelow}-${config.strategy.maxBinsBelow}`;
+  const settings = sections[section] || sections.quick;
   const text = [
     `Settings: ${sectionTitle(section)}`,
     "",
-    `Mode: ${solMode} | Source: meteora | Strat: ${strategyName}`,
-    `Deploy: ${config.management.deployAmountSol} SOL | MaxPos: ${config.risk.maxPositions} | Gas: ${config.management.gasReserve}`,
-    `TP/SL: ${config.management.takeProfitFeePct}% / ${config.management.stopLossPct}% | Trailing: ${trailing}`,
-    `Bins range: [${config.strategy.minBinsBelow}-${config.strategy.maxBinsBelow}] | Sup: ${supState} | Dry run: ${dryRun}`,
-    `Bottom Spot: ${bottomState}`,
+    `Engine: ${lcOn ? "LIFECYCLE FSM" : "LEGACY"} | ${solMode} | Dry: ${dryRun}`,
+    `Deploy: ${config.management.deployAmountSol} SOL | MaxPos: ${maxPos} | Gas: ${config.management.gasReserve}`,
+    lcOn
+      ? `Risk: TP ${tp}% / SL ${sl}% / MaxLoss ${maxLoss}% | Tick: ${lc.pollIntervalMs ?? 5000}ms`
+      : `TP/SL: ${tp}% / ${sl}% | Trailing: ${config.management.trailingTakeProfit ? "ON" : "OFF"}`,
+    `Bins: ${bins}`,
+    `Fee/TVL: min ${config.screening.minFeeActiveTvlRatio}% max ${lc.maxFeeActiveTvlRatio ?? "off"}%`,
     `PvP: ${config.screening.avoidPvpSymbols ? "detect" : "off"} + ${config.screening.blockPvpSymbols ? "block" : "allow"}`,
     "",
     `${settings.length} editable settings. Tap a value to edit.`,
   ].join("\n");
-  const oldSectionRows = [
-    [
-      { text: `${section === "quick" ? "✓ " : ""}Quick`, callback_data: `menu:quick:${preset}` },
-      { text: `${section === "screen" ? "✓ " : ""}Screen`, callback_data: `menu:screen:${preset}` },
-      { text: `${section === "risk" ? "✓ " : ""}Risk`, callback_data: `menu:risk:${preset}` },
-    ],
-    [
-      { text: `${section === "strategy" ? "✓ " : ""}Strategy`, callback_data: `menu:strategy:${preset}` },
-      { text: `${section === "manage" ? "✓ " : ""}Manage`, callback_data: `menu:manage:${preset}` },
-      { text: `${section === "exits" ? "✓ " : ""}Exits`, callback_data: `menu:exits:${preset}` },
-    ],
-    [
-      { text: `${section === "confidence" ? "✓ " : ""}Confidence`, callback_data: `menu:confidence:${preset}` },
-      { text: `${section === "schedule" ? "✓ " : ""}Schedule`, callback_data: `menu:schedule:${preset}` },
-      { text: `${section === "indicators" ? "✓ " : ""}Indicators`, callback_data: `menu:indicators:${preset}` },
-    ],
-    [{ text: `${section === "llm" ? "✓ " : ""}Llm`, callback_data: `menu:llm:${preset}` }],
-    [{ text: `${section === "bottom" ? "✓ " : ""}Bottom`, callback_data: `menu:bottom:${preset}` }],
-  ];
   const sectionRows = buildMenuSectionRows(section, preset);
   const oldPresetRow = [
     { text: `${preset === "custom" ? "✓ " : ""}Custom`, callback_data: `preset:custom:${section}` },
@@ -3329,41 +3595,38 @@ if (isTTY) {
   };
 
   function buildSettingsMenu(section = "quick", preset = "custom") {
-    const activeStrategy = getActiveStrategy();
-    const strategyName = activeStrategy?.lp_strategy || config.strategy.strategy;
-    const trailing = config.management.trailingTakeProfit ? "ON" : "OFF";
+    // Reuse shared lifecycle-aware menu (no duplicate legacy sections)
+    return buildNonTtySettingsMenu(section, preset);
+
+    const sections = getMenuSections();
+    if (!sections[section]) section = "quick";
+    const lc = config.lifecycle || {};
+    const lcOn = !!lc.enabled;
     const solMode = config.management.solMode ? "SOL" : "USD";
     const dryRun = process.env.DRY_RUN === "true" ? "on" : "off";
-    const st = config.chartIndicators;
-    const supState = st.enabled ? `ON (${st.stPeriod}/${st.stMultiplier}, ${st.interval})` : "OFF";
-    const bottomState = config.bottomSpotLP?.enabled
-      ? `ON (${config.bottomSpotLP.minDumpPct}% dump)`
-      : "OFF";
-    const settings = MENU_SECTIONS[section] || MENU_SECTIONS.quick;
+    const maxPos = lcOn ? 1 : config.risk.maxPositions;
+    const tp = lcOn ? (lc.risk?.takeProfitPct ?? 30) : config.management.takeProfitFeePct;
+    const sl = lcOn ? (lc.risk?.stopLossPct ?? -15) : config.management.stopLossPct;
+    const maxLoss = lc.risk?.maxLossPct ?? -25;
+    const bins = lcOn
+      ? `${lc.entry?.curveBinsMin ?? 35}-${lc.entry?.curveBinsMax ?? 60} curve / ${lc.entry?.bidAskRangeBins ?? 20} bidask`
+      : `${config.strategy.minBinsBelow}-${config.strategy.maxBinsBelow}`;
+    const settings = sections[section] || sections.quick;
 
     const text = [
       `Settings: ${sectionTitle(section)}`,
       "",
-      `Mode: ${solMode} | Source: meteora | Strat: ${strategyName}`,
-      `Deploy: ${config.management.deployAmountSol} SOL | MaxPos: ${config.risk.maxPositions} | Gas: ${config.management.gasReserve}`,
-      `TP/SL: ${config.management.takeProfitFeePct}% / ${config.management.stopLossPct}% | Trailing: ${trailing}`,
-      `Bins range: [${config.strategy.minBinsBelow}–${config.strategy.maxBinsBelow}] | Sup: ${supState} | Dry run: ${dryRun}`,
-      `Bottom Spot: ${bottomState}`,
+      `Engine: ${lcOn ? "LIFECYCLE FSM" : "LEGACY"} | ${solMode} | Dry: ${dryRun}`,
+      `Deploy: ${config.management.deployAmountSol} SOL | MaxPos: ${maxPos} | Gas: ${config.management.gasReserve}`,
+      lcOn
+        ? `Risk: TP ${tp}% / SL ${sl}% / MaxLoss ${maxLoss}% | Tick: ${lc.pollIntervalMs ?? 5000}ms`
+        : `TP/SL: ${tp}% / ${sl}%`,
+      `Bins: ${bins}`,
+      `Fee/TVL: min ${config.screening.minFeeActiveTvlRatio}% max ${lc.maxFeeActiveTvlRatio ?? "off"}%`,
       `PvP: ${config.screening.avoidPvpSymbols ? "detect" : "OFF"}${config.screening.blockPvpSymbols ? " + block" : ""}`,
       "",
       `${settings.length} editable settings. Tap a value to edit.`,
     ].join("\n");
-
-    const oldSectionRows = [
-      ["quick", "screen", "risk"],
-      ["strategy", "manage", "exits"],
-      ["confidence", "schedule", "indicators"],
-      ["llm"],
-      ["bottom"],
-    ].map((row) => row.map((id) => ({
-      text: `${id === section ? "✓ " : ""}${id[0].toUpperCase()}${id.slice(1)}`,
-      callback_data: `menu:${id}:${preset}`,
-    })));
 
     const sectionRows = buildMenuSectionRows(section, preset);
 

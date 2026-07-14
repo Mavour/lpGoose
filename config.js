@@ -161,6 +161,55 @@ export const config = {
     logLevel: u.bottomSpotLP?.logLevel ?? "verbose",
   },
 
+  // ─── Lifecycle FSM (fee-maxi style) ─────
+  // When enabled: single-position flip/reshape/rebalance + risk exit;
+  // auto screening still deploys; legacy multi-exit poller is bypassed.
+  lifecycle: {
+    enabled: u.lifecycle?.enabled ?? true,
+    capital: {
+      perPositionSol: u.lifecycle?.capital?.perPositionSol ?? u.deployAmountSol ?? 0.2,
+      minSolReserve: u.lifecycle?.capital?.minSolReserve ?? u.gasReserve ?? 0.05,
+    },
+    entry: {
+      bidAskRangeBins: u.lifecycle?.entry?.bidAskRangeBins ?? 20,
+      curveBinsMin: u.lifecycle?.entry?.curveBinsMin ?? 35,
+      curveBinsMax: u.lifecycle?.entry?.curveBinsMax ?? 60,
+      volatilityFullRangePct: u.lifecycle?.entry?.volatilityFullRangePct ?? 8,
+      lookbackCandles: u.lifecycle?.entry?.lookbackCandles ?? 48,
+      pumpPctThreshold: u.lifecycle?.entry?.pumpPctThreshold ?? 50,
+      downtrendPctThreshold: u.lifecycle?.entry?.downtrendPctThreshold ?? -25,
+      bottomDrawdownPct: u.lifecycle?.entry?.bottomDrawdownPct ?? -40,
+      bottomFlatSlopePct: u.lifecycle?.entry?.bottomFlatSlopePct ?? 2,
+      bottomSlopeCandles: u.lifecycle?.entry?.bottomSlopeCandles ?? 6,
+    },
+    flip: {
+      ratioLow: u.lifecycle?.flip?.ratioLow ?? 0.4,
+      ratioHigh: u.lifecycle?.flip?.ratioHigh ?? 0.6,
+    },
+    reshape: {
+      binTrigger: u.lifecycle?.reshape?.binTrigger ?? 3,
+      claimEach: u.lifecycle?.reshape?.claimEach ?? true,
+      minReshapeIntervalMs: u.lifecycle?.reshape?.minReshapeIntervalMs ?? 10_000,
+      walletSettleMs: u.lifecycle?.reshape?.walletSettleMs ?? 800,
+    },
+    rebalance: {
+      oorBufferBins: u.lifecycle?.rebalance?.oorBufferBins ?? 0,
+      cooldownMs: u.lifecycle?.rebalance?.cooldownMs ?? 15_000,
+      trigger: u.lifecycle?.rebalance?.trigger ?? "both",
+    },
+    risk: {
+      takeProfitPct: u.lifecycle?.risk?.takeProfitPct ?? 30,
+      stopLossPct: u.lifecycle?.risk?.stopLossPct ?? -15,
+      maxLossPct: u.lifecycle?.risk?.maxLossPct ?? -25,
+      confirmMs: u.lifecycle?.risk?.confirmMs ?? 3000,
+      suppressMsAfterEntry: u.lifecycle?.risk?.suppressMsAfterEntry ?? 12_000,
+      suppressMsAfterLiquidityOp: u.lifecycle?.risk?.suppressMsAfterLiquidityOp ?? 12_000,
+    },
+    pollIntervalMs: u.lifecycle?.pollIntervalMs ?? 5000,
+    // Cap fee_tvl at entry (history: extreme fee_tvl → fat-tail losses)
+    maxFeeActiveTvlRatio: u.lifecycle?.maxFeeActiveTvlRatio ?? 1.2,
+  },
+
   // ─── Scheduling ─────────────────────────
   schedule: {
     managementIntervalMin:  u.managementIntervalMin  ?? 10,
