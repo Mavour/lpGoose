@@ -372,10 +372,40 @@ export function applyRuntimeConfig(fresh) {
 
 export function formatRuntimeConfigSnapshot() {
   const s = config.screening;
+  const minVolumeTvl = normalizeVolumeTvlThreshold(s.minVolumeToActiveTvlRatio);
+  const lc = config.lifecycle;
+
+  // Lifecycle (fee-maxi): only print knobs that actually affect the bot.
+  // Do not print retired Supertrend / momentum bin matrix — they are skipped.
+  if (lc?.enabled) {
+    const e = lc.entry || {};
+    const r = lc.risk || {};
+    const cap = lc.capital || {};
+    return [
+      `engine=lifecycle`,
+      `size=${cap.perPositionSol ?? config.management.deployAmountSol} SOL`,
+      `max_pos=1`,
+      `fee_tvl=${s.minFeeActiveTvlRatio}–${lc.maxFeeActiveTvlRatio ?? s.maxFeeActiveTvlRatio ?? "∞"}%`,
+      `min_volume=${s.minVolume}`,
+      `min_volume_tvl=${minVolumeTvl == null ? "off" : `${Number((minVolumeTvl * 100).toFixed(4))}%`}`,
+      `organic>=${s.minOrganic}`,
+      `holders>=${s.minHolders}`,
+      `age=${s.minTokenAgeHours ?? 0}–${s.maxTokenAgeHours ?? "∞"}h`,
+      `ath_filter=${s.athFilterPct ?? "off"}`,
+      `bins_curve=${e.curveBinsMin ?? "?"}-${e.curveBinsMax ?? "?"}`,
+      `bins_bidask=${e.bidAskRangeBins ?? "?"}`,
+      `risk=TP${r.takeProfitPct ?? "?"}/SL${r.stopLossPct ?? "?"}/max${r.maxLossPct ?? "?"}`,
+      `tick=${lc.pollIntervalMs ?? 5000}ms`,
+      `supertrend=off`,
+      `momentum_bins=off`,
+      `confidence=off`,
+    ].join(" | ");
+  }
+
   const m = config.momentum;
   const c = config.chartIndicators;
-  const minVolumeTvl = normalizeVolumeTvlThreshold(s.minVolumeToActiveTvlRatio);
   return [
+    `engine=legacy`,
     `min_fee_active_tvl=${s.minFeeActiveTvlRatio}%`,
     `min_volume=${s.minVolume}`,
     `min_volume_tvl=${minVolumeTvl == null ? "off" : `${Number((minVolumeTvl * 100).toFixed(4))}%`}`,
@@ -383,10 +413,7 @@ export function formatRuntimeConfigSnapshot() {
     `momentum_threshold=${m.strongThreshold}`,
     `strong_band=${m.strongMinBins}-${m.strongMaxBins}`,
     `weak_band=${m.weakMinBins}-${m.weakMaxBins}`,
-    `age_bands=<${m.ageNewMaxHours}h:${m.newMinBins}-${m.newMaxBins},<${m.ageYoungMaxHours}h:${m.youngMinBins}-${m.youngMaxBins},<${m.ageMatureMaxHours}h:${m.matureMinBins}-${m.matureMaxBins},old:${m.oldMinBins}-${m.oldMaxBins}`,
-    `supertrend=${c.entryInterval || c.interval}/${c.stPeriod}/${c.stMultiplier}`,
-    `entry_preset=${c.entryPreset}`,
-    `entry_min_change=${c.entryMinPriceChangePct}%`,
+    `supertrend=${c.enabled === false ? "off" : `${c.entryInterval || c.interval}/${c.stPeriod}/${c.stMultiplier}`}`,
     `ath_filter=${s.athFilterPct ?? "off"}`,
   ].join(" | ");
 }
